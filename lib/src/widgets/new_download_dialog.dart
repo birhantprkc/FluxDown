@@ -43,12 +43,23 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
   final _saveDirController = TextEditingController();
   final _renameController = TextEditingController();
   String? selectedThreads;
+  bool _isMagnet = false;
 
   @override
   void initState() {
     super.initState();
     _saveDirController.text = widget.settingsProvider.defaultSaveDir;
+    _urlController.addListener(_onUrlChanged);
     _pasteUrlFromClipboard();
+  }
+
+  void _onUrlChanged() {
+    final isMagnet = _urlController.text.trim().toLowerCase().startsWith(
+      'magnet:',
+    );
+    if (isMagnet != _isMagnet) {
+      setState(() => _isMagnet = isMagnet);
+    }
   }
 
   /// 读取剪切板内容，如果包含 http/https/ftp 开头的 URL，自动填入下载地址
@@ -58,6 +69,11 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
       if (data == null || data.text == null) return;
       final text = data.text!.trim();
       final firstLine = text.split('\n').first.trim();
+      // Support magnet: links in addition to http/https/ftp
+      if (firstLine.toLowerCase().startsWith('magnet:?')) {
+        _urlController.text = firstLine;
+        return;
+      }
       final urlPattern = RegExp(r'^(https?|ftp)://\S+', caseSensitive: false);
       final match = urlPattern.firstMatch(firstLine);
       if (match != null) {
@@ -70,6 +86,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
 
   @override
   void dispose() {
+    _urlController.removeListener(_onUrlChanged);
     _urlController.dispose();
     _saveDirController.dispose();
     _renameController.dispose();
@@ -205,35 +222,39 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
                     ],
                   ),
                 ),
-                const SizedBox(width: 12),
-                SizedBox(
-                  width: 100,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _SectionLabel(
-                        text: LocaleScope.of(context).threads,
-                        c: c,
-                      ),
-                      const SizedBox(height: 6),
-                      ShadSelect<String>(
-                        placeholder: Text(LocaleScope.of(context).auto),
-                        options: ['auto', '4', '8', '16', '32', '64'].map((v) {
-                          final s = LocaleScope.of(context);
-                          return ShadOption(
-                            value: v,
-                            child: Text(v == 'auto' ? s.auto : v),
-                          );
-                        }).toList(),
-                        selectedOptionBuilder: (context, value) {
-                          final s = LocaleScope.of(context);
-                          return Text(value == 'auto' ? s.auto : value);
-                        },
-                        onChanged: (v) => setState(() => selectedThreads = v),
-                      ),
-                    ],
+                if (!_isMagnet) ...[
+                  const SizedBox(width: 12),
+                  SizedBox(
+                    width: 100,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _SectionLabel(
+                          text: LocaleScope.of(context).threads,
+                          c: c,
+                        ),
+                        const SizedBox(height: 6),
+                        ShadSelect<String>(
+                          placeholder: Text(LocaleScope.of(context).auto),
+                          options: ['auto', '4', '8', '16', '32', '64'].map((
+                            v,
+                          ) {
+                            final s = LocaleScope.of(context);
+                            return ShadOption(
+                              value: v,
+                              child: Text(v == 'auto' ? s.auto : v),
+                            );
+                          }).toList(),
+                          selectedOptionBuilder: (context, value) {
+                            final s = LocaleScope.of(context);
+                            return Text(value == 'auto' ? s.auto : value);
+                          },
+                          onChanged: (v) => setState(() => selectedThreads = v),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
+                ],
               ],
             ),
             const SizedBox(height: 14),

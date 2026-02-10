@@ -192,6 +192,11 @@ class TaskList extends StatelessWidget {
             _HeaderCheckbox(controller: controller),
             const SizedBox(width: 10),
           ],
+          // 管理按钮（放在文件名列之前）
+          if (hasTasks && !isManage) ...[
+            _ManageToggleButton(onTap: () => controller.toggleManageMode()),
+            const SizedBox(width: 6),
+          ],
           Expanded(
             child: Text(
               s.colFileName,
@@ -239,9 +244,6 @@ class TaskList extends StatelessWidget {
               ),
             ),
           ),
-          // 管理按钮
-          if (hasTasks && !isManage)
-            _ManageToggleButton(onTap: () => controller.toggleManageMode()),
         ],
       ),
     );

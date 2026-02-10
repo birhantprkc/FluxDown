@@ -9,6 +9,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::bt_downloader::{self, BtDownloadParams, SharedBtSession};
 use crate::db::Db;
 use crate::downloader::{self, DownloadParams, ProgressUpdate, SegmentProgressInfo};
 use crate::ftp_downloader;
@@ -18,6 +19,11 @@ use crate::speed_limiter::SpeedLimiter;
 /// Determine if a URL uses the FTP protocol (case-insensitive).
 fn is_ftp_url(url: &str) -> bool {
     url.len() >= 6 && url[..6].eq_ignore_ascii_case("ftp://")
+}
+
+/// Determine if a URL is a magnet link.
+fn is_magnet(url: &str) -> bool {
+    bt_downloader::is_magnet_url(url)
 }
 
 /// Notification sent from a spawned download task when it finishes.
@@ -75,12 +81,23 @@ pub struct DownloadManager {
     max_concurrent: usize,
     /// FIFO queue of tasks waiting for a free slot.
     pending_queue: Vec<QueuedTask>,
-    /// Global speed limiter shared with all download tasks.
+    /// Global speed limiter shared with all HTTP/FTP download tasks.
     speed_limiter: SpeedLimiter,
+    /// Shared BT session — lazily initialised on first BT download.
+    /// All BT tasks share a single `librqbit::Session` (DHT, trackers,
+    /// listening port, speed limits) to avoid per-task resource waste.
+    bt_session: Option<SharedBtSession>,
+    /// Default save directory used to initialise the BT session.
+    default_save_dir: String,
 }
 
 impl DownloadManager {
-    pub fn new(db: Db, max_concurrent: usize, speed_limit_bps: u64) -> Result<Self, downloader::DownloadError> {
+    pub fn new(
+        db: Db,
+        max_concurrent: usize,
+        speed_limit_bps: u64,
+        default_save_dir: String,
+    ) -> Result<Self, downloader::DownloadError> {
         let client = downloader::build_client()?;
         let (tx, rx) = mpsc::channel(256);
         let (done_tx, done_rx) = mpsc::channel(64);
@@ -99,6 +116,8 @@ impl DownloadManager {
             max_concurrent,
             pending_queue: Vec::new(),
             speed_limiter: limiter,
+            bt_session: None,
+            default_save_dir,
         })
     }
 
@@ -125,14 +144,44 @@ impl DownloadManager {
     }
 
     /// Update global speed limit (bytes/sec).  Takes effect immediately on
-    /// all active and future downloads.  0 = unlimited.
+    /// all active and future HTTP/FTP/BT downloads.  0 = unlimited.
     pub fn set_speed_limit(&mut self, bps: u64) {
         self.speed_limiter.set_limit(bps);
+        // Synchronise speed limit to the shared BT session (if initialised).
+        if let Some(ref bt) = self.bt_session {
+            bt.set_speed_limit(bps);
+        }
     }
 
     // -----------------------------------------------------------------------
     // Concurrency helpers
     // -----------------------------------------------------------------------
+
+    /// Lazily initialise the shared BT session.  Returns an error if the
+    /// session cannot be created (e.g. port in use).
+    ///
+    /// After calling this, `self.bt_session` is guaranteed to be `Some`.
+    /// Callers should access `self.bt_session.as_ref()` afterwards to avoid
+    /// borrow-checker issues with `&mut self`.
+    ///
+    /// The session is created on a blocking thread via `spawn_blocking`
+    /// because `SharedBtSession::new` internally calls `Runtime::block_on`,
+    /// which cannot be invoked from within an existing tokio runtime.
+    async fn ensure_bt_session(&mut self) -> Result<(), downloader::DownloadError> {
+        if self.bt_session.is_none() {
+            let speed_limit = self.speed_limiter.limit();
+            let save_dir = self.default_save_dir.clone();
+            let session = tokio::task::spawn_blocking(move || {
+                SharedBtSession::new(&save_dir, speed_limit)
+            })
+            .await
+            .map_err(|e| downloader::DownloadError::Other(
+                format!("BT session init thread panicked: {e}"),
+            ))??;
+            self.bt_session = Some(session);
+        }
+        Ok(())
+    }
 
     /// Whether we have a free slot for a new download.
     fn has_capacity(&self) -> bool {
@@ -315,63 +364,130 @@ impl DownloadManager {
             .insert(task_id.clone(), (cancel_token.clone(), spawn_gen));
 
         let use_ftp = is_ftp_url(&url);
-
-        let params = DownloadParams {
-            task_id: task_id.clone(),
-            url,
-            save_dir,
-            file_name,
-            segment_count: segments,
-            is_resume: false,
-            db: self.db.clone(),
-            client: self.client.clone(),
-            progress_tx: self.progress_tx.clone(),
-            cancel_token,
-            speed_limiter: self.speed_limiter.clone(),
-            cookies,
-        };
+        let use_bt = is_magnet(&url);
 
         let done_tx = self.done_tx.clone();
         let panic_progress_tx = self.progress_tx.clone();
         let panic_task_id = task_id.clone();
         let panic_db = self.db.clone();
 
-        let handle = tokio::spawn(async move {
-            let result = if use_ftp {
-                std::panic::AssertUnwindSafe(ftp_downloader::run_ftp_download(params))
-                    .catch_unwind()
-                    .await
-            } else {
-                std::panic::AssertUnwindSafe(downloader::run_download(params))
-                    .catch_unwind()
-                    .await
-            };
-
-            if let Err(panic_info) = result {
-                let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
-                    s.to_string()
-                } else if let Some(s) = panic_info.downcast_ref::<String>() {
-                    s.clone()
-                } else {
-                    "internal panic".to_string()
-                };
-                rinf::debug_print!("[download] PANIC in task {}: {}", panic_task_id, msg);
-                let _ = panic_db.update_task_status(&panic_task_id, 4, &msg).await;
-                let _ = panic_progress_tx
+        let handle = if use_bt {
+            // Lazily initialise the shared BT session.
+            if let Err(e) = self.ensure_bt_session().await {
+                rinf::debug_print!("[manager] failed to init BT session: {}", e);
+                let _ = self.db.update_task_status(&task_id, 4, &e.to_string()).await;
+                let _ = self.progress_tx
                     .send(ProgressUpdate {
-                        task_id: panic_task_id.clone(),
+                        task_id: task_id.clone(),
                         downloaded_bytes: 0,
                         total_bytes: 0,
                         status: 4,
-                        error_message: msg,
+                        error_message: e.to_string(),
                         file_name: String::new(),
                         segment_details: None,
                     })
                     .await;
+                self.active_tokens.remove(&task_id);
+                return;
             }
+            // bt_session is now guaranteed to be Some after ensure_bt_session().
+            let bt_ref = self.bt_session.as_ref().unwrap_or_else(|| unreachable!());
 
-            let _ = done_tx.send(TaskDone { task_id: panic_task_id, generation: spawn_gen }).await;
-        });
+            let bt_params = BtDownloadParams {
+                task_id: task_id.clone(),
+                magnet_url: url,
+                save_dir,
+                file_name,
+                db: self.db.clone(),
+                progress_tx: self.progress_tx.clone(),
+                cancel_token,
+                session: bt_ref.session(),
+                bt_runtime: bt_ref.runtime_handle(),
+            };
+
+            tokio::spawn(async move {
+                let result = std::panic::AssertUnwindSafe(bt_downloader::run_bt_download(bt_params))
+                    .catch_unwind()
+                    .await;
+
+                if let Err(panic_info) = result {
+                    let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "internal panic".to_string()
+                    };
+                    rinf::debug_print!("[download] PANIC in BT task {}: {}", panic_task_id, msg);
+                    let _ = panic_db.update_task_status(&panic_task_id, 4, &msg).await;
+                    let _ = panic_progress_tx
+                        .send(ProgressUpdate {
+                            task_id: panic_task_id.clone(),
+                            downloaded_bytes: 0,
+                            total_bytes: 0,
+                            status: 4,
+                            error_message: msg,
+                            file_name: String::new(),
+                            segment_details: None,
+                        })
+                        .await;
+                }
+
+                let _ = done_tx.send(TaskDone { task_id: panic_task_id, generation: spawn_gen }).await;
+            })
+        } else {
+            let params = DownloadParams {
+                task_id: task_id.clone(),
+                url,
+                save_dir,
+                file_name,
+                segment_count: segments,
+                is_resume: false,
+                db: self.db.clone(),
+                client: self.client.clone(),
+                progress_tx: self.progress_tx.clone(),
+                cancel_token,
+                speed_limiter: self.speed_limiter.clone(),
+                cookies,
+            };
+
+            tokio::spawn(async move {
+                let result = if use_ftp {
+                    std::panic::AssertUnwindSafe(ftp_downloader::run_ftp_download(params))
+                        .catch_unwind()
+                        .await
+                } else {
+                    std::panic::AssertUnwindSafe(downloader::run_download(params))
+                        .catch_unwind()
+                        .await
+                };
+
+                if let Err(panic_info) = result {
+                    let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "internal panic".to_string()
+                    };
+                    rinf::debug_print!("[download] PANIC in task {}: {}", panic_task_id, msg);
+                    let _ = panic_db.update_task_status(&panic_task_id, 4, &msg).await;
+                    let _ = panic_progress_tx
+                        .send(ProgressUpdate {
+                            task_id: panic_task_id.clone(),
+                            downloaded_bytes: 0,
+                            total_bytes: 0,
+                            status: 4,
+                            error_message: msg,
+                            file_name: String::new(),
+                            segment_details: None,
+                        })
+                        .await;
+                }
+
+                let _ = done_tx.send(TaskDone { task_id: panic_task_id, generation: spawn_gen }).await;
+            })
+        };
         self.active_handles.insert(task_id, handle);
     }
 
@@ -478,64 +594,131 @@ impl DownloadManager {
             .insert(task_id.to_string(), (cancel_token.clone(), spawn_gen));
 
         let use_ftp = is_ftp_url(&task.url);
+        let use_bt = is_magnet(&task.url);
 
         let tid = task_id.to_string();
-        let params = DownloadParams {
-            task_id: tid.clone(),
-            url: task.url,
-            save_dir: task.save_dir,
-            file_name: task.file_name,
-            segment_count: seg_count,
-            is_resume: true,
-            db: self.db.clone(),
-            client: self.client.clone(),
-            progress_tx: self.progress_tx.clone(),
-            cancel_token,
-            speed_limiter: self.speed_limiter.clone(),
-            cookies: String::new(), // cookies not available for resume from DB
-        };
-
         let done_tx = self.done_tx.clone();
         let panic_progress_tx = self.progress_tx.clone();
         let panic_task_id = tid.clone();
         let panic_db = self.db.clone();
 
-        let handle = tokio::spawn(async move {
-            let result = if use_ftp {
-                std::panic::AssertUnwindSafe(ftp_downloader::run_ftp_download(params))
-                    .catch_unwind()
-                    .await
-            } else {
-                std::panic::AssertUnwindSafe(downloader::run_download(params))
-                    .catch_unwind()
-                    .await
-            };
-
-            if let Err(panic_info) = result {
-                let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
-                    s.to_string()
-                } else if let Some(s) = panic_info.downcast_ref::<String>() {
-                    s.clone()
-                } else {
-                    "internal panic".to_string()
-                };
-                rinf::debug_print!("[download] PANIC in task {}: {}", panic_task_id, msg);
-                let _ = panic_db.update_task_status(&panic_task_id, 4, &msg).await;
-                let _ = panic_progress_tx
+        let handle = if use_bt {
+            // Lazily initialise the shared BT session.
+            if let Err(e) = self.ensure_bt_session().await {
+                rinf::debug_print!("[manager] failed to init BT session for resume: {}", e);
+                let _ = self.db.update_task_status(task_id, 4, &e.to_string()).await;
+                let _ = self.progress_tx
                     .send(ProgressUpdate {
-                        task_id: panic_task_id.clone(),
+                        task_id: tid.clone(),
                         downloaded_bytes: 0,
                         total_bytes: 0,
                         status: 4,
-                        error_message: msg,
+                        error_message: e.to_string(),
                         file_name: String::new(),
                         segment_details: None,
                     })
                     .await;
+                self.active_tokens.remove(task_id);
+                return;
             }
+            // bt_session is now guaranteed to be Some after ensure_bt_session().
+            let bt_ref = self.bt_session.as_ref().unwrap_or_else(|| unreachable!());
 
-            let _ = done_tx.send(TaskDone { task_id: panic_task_id, generation: spawn_gen }).await;
-        });
+            let bt_params = BtDownloadParams {
+                task_id: tid.clone(),
+                magnet_url: task.url,
+                save_dir: task.save_dir,
+                file_name: task.file_name,
+                db: self.db.clone(),
+                progress_tx: self.progress_tx.clone(),
+                cancel_token,
+                session: bt_ref.session(),
+                bt_runtime: bt_ref.runtime_handle(),
+            };
+
+            tokio::spawn(async move {
+                let result = std::panic::AssertUnwindSafe(bt_downloader::run_bt_download(bt_params))
+                    .catch_unwind()
+                    .await;
+
+                if let Err(panic_info) = result {
+                    let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "internal panic".to_string()
+                    };
+                    rinf::debug_print!("[download] PANIC in BT task {}: {}", panic_task_id, msg);
+                    let _ = panic_db.update_task_status(&panic_task_id, 4, &msg).await;
+                    let _ = panic_progress_tx
+                        .send(ProgressUpdate {
+                            task_id: panic_task_id.clone(),
+                            downloaded_bytes: 0,
+                            total_bytes: 0,
+                            status: 4,
+                            error_message: msg,
+                            file_name: String::new(),
+                            segment_details: None,
+                        })
+                        .await;
+                }
+
+                let _ = done_tx.send(TaskDone { task_id: panic_task_id, generation: spawn_gen }).await;
+            })
+        } else {
+            let params = DownloadParams {
+                task_id: tid.clone(),
+                url: task.url,
+                save_dir: task.save_dir,
+                file_name: task.file_name,
+                segment_count: seg_count,
+                is_resume: true,
+                db: self.db.clone(),
+                client: self.client.clone(),
+                progress_tx: self.progress_tx.clone(),
+                cancel_token,
+                speed_limiter: self.speed_limiter.clone(),
+                cookies: String::new(),
+            };
+
+            tokio::spawn(async move {
+                let result = if use_ftp {
+                    std::panic::AssertUnwindSafe(ftp_downloader::run_ftp_download(params))
+                        .catch_unwind()
+                        .await
+                } else {
+                    std::panic::AssertUnwindSafe(downloader::run_download(params))
+                        .catch_unwind()
+                        .await
+                };
+
+                if let Err(panic_info) = result {
+                    let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "internal panic".to_string()
+                    };
+                    rinf::debug_print!("[download] PANIC in task {}: {}", panic_task_id, msg);
+                    let _ = panic_db.update_task_status(&panic_task_id, 4, &msg).await;
+                    let _ = panic_progress_tx
+                        .send(ProgressUpdate {
+                            task_id: panic_task_id.clone(),
+                            downloaded_bytes: 0,
+                            total_bytes: 0,
+                            status: 4,
+                            error_message: msg,
+                            file_name: String::new(),
+                            segment_details: None,
+                        })
+                        .await;
+                }
+
+                let _ = done_tx.send(TaskDone { task_id: panic_task_id, generation: spawn_gen }).await;
+            })
+        };
         self.active_handles.insert(tid, handle);
     }
 
@@ -682,12 +865,15 @@ pub async fn progress_reporter(mut rx: mpsc::Receiver<ProgressUpdate>, db: Db) {
         let has_new_name = !update.file_name.is_empty();
 
         if should_send || has_new_name {
+            // Terminal states (completed / error / paused) should report zero
+            // speed so the UI doesn't show a stale EMA value.
+            let report_speed = if is_terminal { 0 } else { smoothed_speed };
             TaskProgress {
                 task_id: update.task_id.clone(),
                 status: update.status,
                 downloaded_bytes: update.downloaded_bytes,
                 total_bytes: update.total_bytes,
-                speed: smoothed_speed,
+                speed: report_speed,
                 file_name: resolved_name,
                 save_dir: String::new(),
                 url: String::new(),

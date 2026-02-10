@@ -442,6 +442,21 @@ impl Db {
         .await?
     }
 
+    /// Update the total_bytes for a task.
+    pub async fn update_task_total_bytes(&self, id: &str, total_bytes: i64) -> Result<(), DbError> {
+        let conn = self.conn.clone();
+        let id = id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().map_err(|_| DbError::LockPoisoned)?;
+            conn.execute(
+                "UPDATE tasks SET total_bytes = ?1 WHERE id = ?2",
+                params![total_bytes, id],
+            )?;
+            Ok(())
+        })
+        .await?
+    }
+
     /// Get the configured segment count for a task from the tasks table.
     pub async fn get_task_segments(&self, id: &str) -> Result<i32, DbError> {
         let conn = self.conn.clone();

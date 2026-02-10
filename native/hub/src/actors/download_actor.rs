@@ -31,7 +31,7 @@ fn default_save_dir() -> String {
 }
 
 /// Read initial config values from DB to pass to DownloadManager.
-async fn load_initial_config(db: &Db) -> (usize, u64) {
+async fn load_initial_config(db: &Db) -> (usize, u64, String) {
     let config = db.get_all_config().await.unwrap_or_default();
 
     let max_concurrent = config
@@ -44,7 +44,12 @@ async fn load_initial_config(db: &Db) -> (usize, u64) {
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(0);
 
-    (max_concurrent, speed_limit_bytes)
+    let save_dir = config
+        .get("default_save_dir")
+        .cloned()
+        .unwrap_or_else(default_save_dir);
+
+    (max_concurrent, speed_limit_bytes, save_dir)
 }
 
 pub async fn run(db_dir: PathBuf) {
@@ -62,14 +67,15 @@ pub async fn run(db_dir: PathBuf) {
     }
 
     // Load persisted config to initialize the manager with correct limits.
-    let (max_concurrent, speed_limit_bps) = load_initial_config(&db).await;
+    let (max_concurrent, speed_limit_bps, save_dir) = load_initial_config(&db).await;
     rinf::debug_print!(
-        "[actor] init config: max_concurrent={}, speed_limit_bps={}",
+        "[actor] init config: max_concurrent={}, speed_limit_bps={}, save_dir={}",
         max_concurrent,
-        speed_limit_bps
+        speed_limit_bps,
+        save_dir,
     );
 
-    let mut manager = match DownloadManager::new(db.clone(), max_concurrent, speed_limit_bps) {
+    let mut manager = match DownloadManager::new(db.clone(), max_concurrent, speed_limit_bps, save_dir) {
         Ok(m) => m,
         Err(e) => {
             rinf::debug_print!("Failed to create download manager: {}", e);

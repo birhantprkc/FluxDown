@@ -306,24 +306,32 @@ class DownloadTask {
     return '${formatBytes(speed)}/s';
   }
 
+  /// 协议类型标识
+  String get protocolLabel {
+    if (url.toLowerCase().startsWith('magnet:')) return 'BT';
+    if (url.toLowerCase().startsWith('ftp://')) return 'FTP';
+    return 'HTTP';
+  }
+
   /// 副标题信息
   String get subtitle {
     final s = currentS;
+    final proto = protocolLabel;
     switch (status) {
       case TaskStatus.downloading:
-        return 'HTTP · $sizeText · $speedText';
+        return '$proto · $sizeText · $speedText';
       case TaskStatus.paused:
-        return 'HTTP · $sizeText · ${s.subtitlePaused}';
+        return '$proto · $sizeText · ${s.subtitlePaused}';
       case TaskStatus.completed:
-        return 'HTTP · $sizeText';
+        return '$proto · $sizeText';
       case TaskStatus.error:
-        return 'HTTP · $sizeText · ${errorMessage.isEmpty ? s.subtitleError : errorMessage}';
+        return '$proto · $sizeText · ${errorMessage.isEmpty ? s.subtitleError : errorMessage}';
       case TaskStatus.pending:
-        return 'HTTP · ${s.subtitlePending}';
+        return '$proto · ${s.subtitlePending}';
       case TaskStatus.preparing:
-        return 'HTTP · ${s.subtitlePreparing}';
+        return '$proto · ${s.subtitlePreparing}';
       case TaskStatus.resuming:
-        return 'HTTP · $sizeText · ${s.subtitleResuming}';
+        return '$proto · $sizeText · ${s.subtitleResuming}';
     }
   }
 

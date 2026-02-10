@@ -276,7 +276,7 @@ pub fn install(installer_path: &str) -> Result<(), UpdateError> {
             .args(["/SILENT", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"])
             .creation_flags(0x08000000)
             .spawn()
-            .map_err(|e| UpdateError::Io(e))?;
+            .map_err(UpdateError::Io)?;
 
         // Give installer a moment to start, then exit
         std::thread::sleep(Duration::from_millis(500));

@@ -236,8 +236,8 @@ class DetailPanel extends StatelessWidget {
           _buildSegmentGrid(c, segs!, task.totalBytes),
         ],
 
-        // 分片图例
-        if (hasSegs && segs!.length > 1) ...[
+        // 分片图例 — 分片过多时（如 BT 多文件）隐藏避免溢出
+        if (hasSegs && segs!.length > 1 && segs.length <= 32) ...[
           const SizedBox(height: 12),
           _buildSegmentLegend(c, segs),
         ],

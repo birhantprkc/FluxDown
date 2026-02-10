@@ -1,4 +1,5 @@
 mod actors;
+mod bt_downloader;
 mod db;
 mod download_manager;
 mod downloader;
