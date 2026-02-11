@@ -52,6 +52,11 @@ impl Db {
             CREATE TABLE IF NOT EXISTS config (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS torrent_files (
+                task_id TEXT PRIMARY KEY,
+                file_bytes BLOB NOT NULL,
+                FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
             );",
         )?;
         Ok(Self {
@@ -226,8 +231,56 @@ impl Db {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|_| DbError::LockPoisoned)?;
             conn.execute("DELETE FROM task_segments WHERE task_id = ?1", params![id])?;
+            conn.execute("DELETE FROM torrent_files WHERE task_id = ?1", params![id])?;
             conn.execute("DELETE FROM tasks WHERE id = ?1", params![id])?;
             Ok(())
+        })
+        .await?
+    }
+
+    // -----------------------------------------------------------------------
+    // Torrent file bytes persistence
+    // -----------------------------------------------------------------------
+
+    /// Save raw .torrent file bytes for a task (for resume after restart).
+    pub async fn save_torrent_file_bytes(
+        &self,
+        task_id: &str,
+        file_bytes: &[u8],
+    ) -> Result<(), DbError> {
+        let conn = self.conn.clone();
+        let task_id = task_id.to_owned();
+        let file_bytes = file_bytes.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().map_err(|_| DbError::LockPoisoned)?;
+            conn.execute(
+                "INSERT OR REPLACE INTO torrent_files (task_id, file_bytes)
+                 VALUES (?1, ?2)",
+                params![task_id, file_bytes],
+            )?;
+            Ok(())
+        })
+        .await?
+    }
+
+    /// Load raw .torrent file bytes for a task (used when resuming).
+    pub async fn load_torrent_file_bytes(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<Vec<u8>>, DbError> {
+        let conn = self.conn.clone();
+        let task_id = task_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().map_err(|_| DbError::LockPoisoned)?;
+            match conn.query_row(
+                "SELECT file_bytes FROM torrent_files WHERE task_id = ?1",
+                params![task_id],
+                |row| row.get(0),
+            ) {
+                Ok(bytes) => Ok(Some(bytes)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(DbError::Sqlite(e)),
+            }
         })
         .await?
     }
@@ -385,7 +438,8 @@ impl Db {
                     ('bt_enable_upnp', 'true'),
                     ('bt_port_start', '6881'),
                     ('bt_port_end', '6891'),
-                    ('bt_custom_trackers', '');",
+                    ('bt_custom_trackers', ''),
+                    ('torrent_assoc_prompted', 'false');",
                 default_save_dir.replace('\'', "''")
             ))?;
             Ok(())

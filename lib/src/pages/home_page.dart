@@ -1,5 +1,9 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shadcn_ui/shadcn_ui.dart';
+import '../i18n/locale_provider.dart';
 import '../models/download_controller.dart';
 import '../models/settings_provider.dart';
 import '../services/log_service.dart';
@@ -58,18 +62,76 @@ class _HomePageState extends State<HomePage> {
     _controller.addListener(_onControllerChanged);
     // 全局键盘快捷键
     HardwareKeyboard.instance.addHandler(_onGlobalKey);
+    // 首次启动 .torrent 文件关联提示（仅 Windows）
+    if (Platform.isWindows) {
+      _settingsProvider.addListener(_onSettingsLoadedForAssocPrompt);
+    }
   }
 
   @override
   void dispose() {
     logInfo('HomePage', 'dispose');
     HardwareKeyboard.instance.removeHandler(_onGlobalKey);
+    _settingsProvider.removeListener(_onSettingsLoadedForAssocPrompt);
     _controller.removeListener(_onControllerChanged);
     _controller.onTaskCompleted = null;
     _controller.dispose();
     _settingsProvider.dispose();
     super.dispose();
     logInfo('HomePage', 'dispose done');
+  }
+
+  /// 首次启动时，配置加载完毕后检查是否需要弹窗提示文件关联。
+  /// 一旦触发（或不需要）就移除监听，避免重复弹窗。
+  void _onSettingsLoadedForAssocPrompt() {
+    if (!_settingsProvider.loaded) return;
+    // 只触发一次
+    _settingsProvider.removeListener(_onSettingsLoadedForAssocPrompt);
+
+    if (_settingsProvider.torrentAssocPrompted) return;
+    if (_settingsProvider.torrentAssociated) {
+      // 已经关联了（可能安装器设置过），标记已提示
+      _settingsProvider.markTorrentAssocPrompted();
+      return;
+    }
+
+    // 延迟一帧后弹窗，确保 build 完成
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _showTorrentAssocDialog();
+    });
+  }
+
+  /// 弹窗询问用户是否关联 .torrent 文件
+  void _showTorrentAssocDialog() {
+    final s = LocaleScope.of(context);
+    showShadDialog(
+      context: context,
+      barrierColor: const Color(0x1A000000),
+      animateIn: const [],
+      animateOut: const [],
+      builder: (ctx) => ShadDialog.alert(
+        title: Text(s.torrentAssocDialogTitle),
+        description: Text(s.torrentAssocDialogDesc),
+        actions: [
+          ShadButton.outline(
+            child: Text(s.cancel),
+            onPressed: () {
+              _settingsProvider.markTorrentAssocPrompted();
+              Navigator.of(ctx).pop();
+            },
+          ),
+          ShadButton(
+            child: Text(s.confirm),
+            onPressed: () {
+              _settingsProvider.setFileAssociation(true);
+              _settingsProvider.markTorrentAssocPrompted();
+              Navigator.of(ctx).pop();
+            },
+          ),
+        ],
+      ),
+    );
   }
 
   /// 当选中任务被删除后，controller.selectedTask 变为 null，

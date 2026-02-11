@@ -4,6 +4,7 @@ const en = {
   "nav.extension": "Extension",
   "nav.download": "Download",
   "nav.feedback": "Feedback",
+  "nav.changelog": "Changelog",
 
   // Hero
   "hero.badge": "Powered by Rust",
@@ -185,20 +186,119 @@ const en = {
   "faq.items.7.q": "How do I install the browser extension?",
   "faq.items.7.a": "Download the extension zip from the Download section, extract it, then open your browser's extension management page (chrome://extensions), enable Developer Mode, and click 'Load unpacked' to select the extracted folder.",
 
+  // Changelog
+  "changelog.badge": "Changelog",
+  "changelog.title": "What's ",
+  "changelog.titleHighlight": "new",
+  "changelog.subtitle": "Track every update and improvement to FluxDown.",
+  "changelog.error": "Failed to load changelog. Please try again later.",
+  "changelog.empty": "No releases found.",
+  "changelog.loadMore": "Load more",
+  "changelog.loading": "Loading...",
+
+  // Privacy Policy
+  "privacy.title": "Privacy Policy",
+  "privacy.lastUpdated": "Last updated: February 2026",
+  "privacy.intro": "FluxDown (\"we\", \"our\", or \"the software\") is committed to protecting your privacy. This Privacy Policy explains what information we collect, what we do not collect, and how your data is handled when you use FluxDown desktop application, browser extension, and this website.",
+
+  "privacy.s1.title": "1. Information We Collect",
+  "privacy.s1.desc": "We collect minimal information necessary to provide and improve our services:",
+  "privacy.s1.item1": "Website analytics: We use Vercel Web Analytics, a privacy-friendly analytics service that collects anonymous, aggregated page view data. No cookies are used, no personal data is collected, and no individual users are tracked.",
+  "privacy.s1.item2": "Feedback submissions: When you voluntarily submit feedback through our website, we collect the feedback type, title, description, and optionally your contact information. This data is stored as GitHub Issues in our repository.",
+  "privacy.s1.item3": "Email subscriptions: If you subscribe to platform availability notifications, we store your email address in a GitHub Issue. This is used solely to notify you when the requested platform becomes available.",
+
+  "privacy.s2.title": "2. Information We Do NOT Collect",
+  "privacy.s2.desc": "FluxDown is designed with a local-first architecture. The desktop application:",
+  "privacy.s2.item1": "Does NOT collect, transmit, or store any of your download URLs, file names, or download history on any remote server. All download data is stored locally in a SQLite database on your device.",
+  "privacy.s2.item2": "Does NOT include any telemetry, crash reporting, or usage analytics in the desktop application.",
+  "privacy.s2.item3": "Does NOT require an account, login, or registration of any kind.",
+  "privacy.s2.item4": "Does NOT communicate with any external server. The application operates entirely offline after installation.",
+
+  "privacy.s3.title": "3. Browser Extension",
+  "privacy.s3.desc": "The FluxDown browser extension communicates exclusively with the FluxDown desktop application via a local HTTP endpoint (localhost:19527). Specifically:",
+  "privacy.s3.item1": "All data transfer occurs locally on your machine between the browser extension and the desktop application. No data is sent to any external server.",
+  "privacy.s3.item2": "The extension stores your preferences (auto-intercept toggle, file type filters, domain rules) in your browser's local storage (chrome.storage.sync/local). This data syncs only through your browser's built-in sync mechanism, if enabled.",
+  "privacy.s3.item3": "The extension does not access, read, or modify any web page content beyond intercepting download requests.",
+
+  "privacy.s4.title": "4. Website Analytics",
+  "privacy.s4.desc": "This website uses Vercel Web Analytics, which is a privacy-focused analytics service. It does not use cookies, does not collect personal information, does not track individual users across sessions, and is compliant with GDPR, CCPA, and other privacy regulations without requiring a cookie consent banner.",
+
+  "privacy.s5.title": "5. Data Storage & Security",
+  "privacy.s5.desc": "All download data (task records, file paths, progress) is stored locally on your device in a SQLite database managed by the FluxDown application. We have no access to this data. Website feedback and subscription data is stored in GitHub Issues within our repository, subject to GitHub's privacy policy.",
+
+  "privacy.s6.title": "6. Third-Party Services",
+  "privacy.s6.desc": "Our website interacts with the following third-party services:",
+  "privacy.s6.item1": "GitHub API: Used server-side to fetch release information and process feedback submissions. Your IP address is not forwarded to GitHub.",
+  "privacy.s6.item2": "Google Fonts: Used to load the Inter font family. Subject to Google's privacy policy.",
+
+  "privacy.s7.title": "7. Children's Privacy",
+  "privacy.s7.desc": "FluxDown does not knowingly collect any personal information from children under the age of 13. Since the desktop application collects no personal data at all, and website data collection is limited to voluntary feedback submissions, we believe our service is inherently safe for users of all ages.",
+
+  "privacy.s8.title": "8. Changes to This Policy",
+  "privacy.s8.desc": "We may update this Privacy Policy from time to time. Changes will be posted on this page with an updated revision date. We encourage you to review this page periodically.",
+
+  "privacy.s9.title": "9. Contact Us",
+  "privacy.s9.desc": "If you have any questions about this Privacy Policy, please reach out to us through the Feedback page on our website.",
+
+  // Terms of Service
+  "terms.title": "Terms of Service",
+  "terms.lastUpdated": "Last updated: February 2026",
+  "terms.intro": "Please read these Terms of Service (\"Terms\") carefully before using FluxDown software, browser extension, and website (collectively, the \"Service\"). By using the Service, you agree to be bound by these Terms.",
+
+  "terms.s1.title": "1. Acceptance of Terms",
+  "terms.s1.desc": "By downloading, installing, or using FluxDown, you agree to these Terms. If you do not agree, please do not use the Service. We reserve the right to update these Terms at any time, and continued use constitutes acceptance of any changes.",
+
+  "terms.s2.title": "2. License",
+  "terms.s2.desc": "FluxDown is provided as free software. Subject to these Terms, we grant you a non-exclusive, non-transferable, revocable license to use the software for personal or commercial purposes. You may:",
+  "terms.s2.item1": "Download, install, and use FluxDown on any number of devices you own or control.",
+  "terms.s2.item2": "Use the browser extension alongside the desktop application.",
+  "terms.s2.item3": "Share the official download link with others.",
+
+  "terms.s3.title": "3. Acceptable Use",
+  "terms.s3.desc": "You agree to use FluxDown only for lawful purposes. You must NOT use the Service to:",
+  "terms.s3.item1": "Download content that infringes upon the intellectual property rights of others, including copyrighted material without authorization.",
+  "terms.s3.item2": "Violate any applicable local, national, or international laws or regulations.",
+  "terms.s3.item3": "Attempt to reverse-engineer, decompile, or disassemble the software, except as permitted by applicable law.",
+  "terms.s3.item4": "Distribute modified versions of the software under the FluxDown name without explicit permission.",
+
+  "terms.s4.title": "4. Intellectual Property",
+  "terms.s4.desc": "The FluxDown name, logo, and associated branding are the intellectual property of the FluxDown project. The software's source code is subject to its respective license terms. All content on this website, including text, graphics, and design, is owned by FluxDown unless otherwise noted.",
+
+  "terms.s5.title": "5. Disclaimer of Warranties",
+  "terms.s5.desc": "FluxDown is provided \"AS IS\" and \"AS AVAILABLE\" without warranties of any kind, either express or implied, including but not limited to implied warranties of merchantability, fitness for a particular purpose, and non-infringement. We do not warrant that the Service will be uninterrupted, error-free, or free of harmful components.",
+
+  "terms.s6.title": "6. Limitation of Liability",
+  "terms.s6.desc": "To the maximum extent permitted by applicable law, FluxDown and its contributors shall not be liable for any indirect, incidental, special, consequential, or punitive damages, or any loss of profits or revenues, whether incurred directly or indirectly, or any loss of data, use, goodwill, or other intangible losses resulting from your use of the Service.",
+
+  "terms.s7.title": "7. User Content & Feedback",
+  "terms.s7.desc": "When you submit feedback, bug reports, or feature requests through our website, you grant us a non-exclusive, worldwide, royalty-free license to use, reproduce, and display such content for the purpose of improving FluxDown. We will not share your contact information with third parties.",
+
+  "terms.s8.title": "8. Termination",
+  "terms.s8.desc": "You may stop using FluxDown at any time by uninstalling the software and removing the browser extension. We reserve the right to modify or discontinue the Service at any time without prior notice. Upon termination, all provisions of these Terms that by their nature should survive will remain in effect.",
+
+  "terms.s9.title": "9. Changes to These Terms",
+  "terms.s9.desc": "We reserve the right to modify these Terms at any time. Updated Terms will be posted on this page with a revised date. Your continued use of the Service after any changes indicates your acceptance of the new Terms.",
+
+  "terms.s10.title": "10. Contact Us",
+  "terms.s10.desc": "If you have any questions about these Terms of Service, please reach out to us through the Feedback page on our website.",
+
   // Footer
-  "footer.desc": "A modern multi-protocol download manager powered by Rust. Fast, reliable, and free to use.",
+  "footer.desc": "Open-source download manager engineered with Rust for speed and reliability. Multi-threaded acceleration, smart segmentation, and seamless browser integration — all free, forever.",
   "footer.product": "Product",
   "footer.features": "Features",
-  "footer.browserExtension": "Browser Extension",
+  "footer.browserExtension": "Extension",
   "footer.download": "Download",
-  "footer.support": "Support",
+  "footer.support": "Resources",
   "footer.documentation": "Documentation",
   "footer.faq": "FAQ",
   "footer.contact": "Contact",
   "footer.feedback": "Feedback",
+  "footer.changelog": "Changelog",
+  "footer.legal": "Legal",
+  "footer.privacy": "Privacy",
+  "footer.terms": "Terms",
   "footer.copyright": "© {year} FluxDown. All rights reserved.",
-  "footer.builtWith": "Built with",
-  "footer.using": "using Astro + Rust",
+  "footer.builtWith": "Astro + React + Rust",
 } as const;
 
 export type Messages = { [K in keyof typeof en]: string };

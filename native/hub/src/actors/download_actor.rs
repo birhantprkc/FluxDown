@@ -7,10 +7,12 @@ use crate::bt_downloader::{self, BtConfig};
 use crate::db::Db;
 use crate::download_manager::{self, DownloadManager, TaskDone};
 use crate::native_messaging::{self};
+use crate::file_association;
 use crate::signals::{
-    BatchCreateTask, CheckForUpdate, ConfigEntry, ConfigLoaded, ConfirmExternalDownload,
-    ControlTask, CreateTask, DownloadUpdate, ExternalDownloadRequest, InstallUpdate,
-    RequestAllTasks, RequestConfig, SaveConfig, UpdateCheckResult,
+    BatchCreateTask, CheckFileAssociation, CheckForUpdate, ConfigEntry, ConfigLoaded,
+    ConfirmExternalDownload, ControlTask, CreateTask, DownloadUpdate, ExternalDownloadRequest,
+    FileAssociationStatus, InstallUpdate, RequestAllTasks, RequestConfig, SaveConfig,
+    SetFileAssociation, UpdateCheckResult,
 };
 use crate::updater;
 
@@ -109,7 +111,8 @@ pub async fn run(db_dir: PathBuf) {
         bt_config,
     );
 
-    let mut manager = match DownloadManager::new(db.clone(), max_concurrent, speed_limit_bps, save_dir, bt_config) {
+    let app_data_dir = db_dir.to_string_lossy().into_owned();
+    let mut manager = match DownloadManager::new(db.clone(), max_concurrent, speed_limit_bps, save_dir, app_data_dir, bt_config) {
         Ok(m) => m,
         Err(e) => {
             rinf::debug_print!("Failed to create download manager: {}", e);
@@ -141,6 +144,8 @@ pub async fn run(db_dir: PathBuf) {
     let check_update_recv = CheckForUpdate::get_dart_signal_receiver();
     let download_update_recv = DownloadUpdate::get_dart_signal_receiver();
     let install_update_recv = InstallUpdate::get_dart_signal_receiver();
+    let set_file_assoc_recv = SetFileAssociation::get_dart_signal_receiver();
+    let check_file_assoc_recv = CheckFileAssociation::get_dart_signal_receiver();
 
     // Spawn the Native Messaging listener (reads from stdin in a blocking thread).
     // When the browser extension sends a download request, it arrives on this channel.
@@ -151,7 +156,7 @@ pub async fn run(db_dir: PathBuf) {
             Some(signal) = create_recv.recv() => {
                 let msg = signal.message;
                 manager
-                    .create_task(msg.url, msg.save_dir, msg.file_name, msg.segments, msg.cookies)
+                    .create_task(msg.url, msg.save_dir, msg.file_name, msg.segments, msg.cookies, msg.torrent_file_bytes)
                     .await;
             }
             Some(signal) = batch_create_recv.recv() => {
@@ -162,7 +167,7 @@ pub async fn run(db_dir: PathBuf) {
                 );
                 for url in msg.urls {
                     manager
-                        .create_task(url, msg.save_dir.clone(), String::new(), msg.segments, String::new())
+                        .create_task(url, msg.save_dir.clone(), String::new(), msg.segments, String::new(), Vec::new())
                         .await;
                 }
             }
@@ -282,7 +287,7 @@ pub async fn run(db_dir: PathBuf) {
                     msg.cookies.len()
                 );
                 manager
-                    .create_task(msg.url, msg.save_dir, msg.file_name, msg.segments, msg.cookies)
+                    .create_task(msg.url, msg.save_dir, msg.file_name, msg.segments, msg.cookies, Vec::new())
                     .await;
             }
             Some(done) = done_rx.recv() => {
@@ -322,6 +327,34 @@ pub async fn run(db_dir: PathBuf) {
                     if let Err(e) = updater::install(&path) {
                         rinf::debug_print!("[updater] install error: {}", e);
                     }
+                });
+            }
+            // --- File association signals ---
+            Some(signal) = set_file_assoc_recv.recv() => {
+                let enable = signal.message.enable;
+                tokio::task::spawn_blocking(move || {
+                    rinf::debug_print!("[actor] set_file_association enable={}", enable);
+                    let result = if enable {
+                        file_association::associate()
+                    } else {
+                        file_association::disassociate()
+                    };
+                    if let Err(e) = result {
+                        rinf::debug_print!("[actor] file association error: {}", e);
+                    }
+                    // Report current status back to Dart
+                    FileAssociationStatus {
+                        is_associated: file_association::is_associated(),
+                    }
+                    .send_signal_to_dart();
+                });
+            }
+            Some(_) = check_file_assoc_recv.recv() => {
+                tokio::task::spawn_blocking(|| {
+                    FileAssociationStatus {
+                        is_associated: file_association::is_associated(),
+                    }
+                    .send_signal_to_dart();
                 });
             }
         }

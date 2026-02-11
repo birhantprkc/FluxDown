@@ -1,14 +1,17 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:ui';
 
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:launch_at_startup/launch_at_startup.dart';
 import 'package:rinf/rinf.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 import 'package:window_manager/window_manager.dart';
 import 'src/bindings/bindings.dart';
+import 'src/models/download_controller.dart';
 import 'src/models/settings_provider.dart';
 import 'src/pages/home_page.dart';
 import 'src/services/external_download_service.dart';
@@ -63,9 +66,17 @@ Future<void> main(List<String> args) async {
 
   // ===== 主窗口正常启动流程 =====
 
+  // 提取启动参数中的 .torrent 文件路径（Windows 文件关联双击打开）
+  final torrentFilePaths = args
+      .where((a) => a.toLowerCase().endsWith('.torrent') && !a.startsWith('-'))
+      .toList();
+
   // 初始化日志服务 — 最先初始化，以捕获后续所有日志
   LogService.instance.init();
-  logInfo('main', 'FluxDown starting, args=$args');
+  logInfo(
+    'main',
+    'FluxDown starting, args=$args, torrentFiles=${torrentFilePaths.length}',
+  );
 
   // 设置全局异常捕获 — Flutter 框架异常
   FlutterError.onError = (details) {
@@ -125,7 +136,11 @@ Future<void> main(List<String> args) async {
   await initializeRust(assignRustSignal);
   logInfo('main', 'Rust runtime initialized, calling runApp...');
   runApp(
-    FluxDownApp(themeProvider: themeProvider, localeNotifier: localeNotifier),
+    FluxDownApp(
+      themeProvider: themeProvider,
+      localeNotifier: localeNotifier,
+      initialTorrentFiles: torrentFilePaths,
+    ),
   );
 }
 
@@ -133,10 +148,14 @@ class FluxDownApp extends StatefulWidget {
   final ThemeProvider themeProvider;
   final LocaleNotifier localeNotifier;
 
+  /// .torrent file paths passed via command-line args (Windows file association).
+  final List<String> initialTorrentFiles;
+
   const FluxDownApp({
     super.key,
     required this.themeProvider,
     required this.localeNotifier,
+    this.initialTorrentFiles = const [],
   });
 
   /// 允许子组件通过 context 访问 ThemeProvider
@@ -153,7 +172,12 @@ class _FluxDownAppState extends State<FluxDownApp> with WindowListener {
   late final ThemeProvider themeProvider;
   late final LocaleNotifier _localeNotifier;
   final _navigatorKey = GlobalKey<NavigatorState>();
-  final _settingsForExternal = SettingsProvider();
+  final _settingsForExternal = SettingsProvider(enableFileAssoc: false);
+
+  /// MethodChannel for receiving args from second instances (single-instance).
+  static const _singleInstanceChannel = MethodChannel(
+    'com.fluxdown/single_instance',
+  );
 
   /// 防止 _performGracefulExit 被并发调用多次
   bool _isExiting = false;
@@ -195,12 +219,30 @@ class _FluxDownAppState extends State<FluxDownApp> with WindowListener {
       UpdateService.instance.checkForUpdate();
     });
 
+    // Handle .torrent files passed via command-line args (Windows file association).
+    // Wait for SettingsProvider to finish loading config from Rust so we have
+    // a valid defaultSaveDir, instead of a fragile fixed delay.
+    if (widget.initialTorrentFiles.isNotEmpty) {
+      logInfo(
+        'FluxDownApp',
+        'will process ${widget.initialTorrentFiles.length} initial torrent file(s) after config loads',
+      );
+      _waitForConfigAndHandleTorrentFiles();
+    }
+
+    // Listen for args from second instances (single-instance enforcement).
+    // When a second instance is launched (e.g. double-clicking a .torrent
+    // file while the app is already running), the native C++ layer sends
+    // the command-line args here via MethodChannel.
+    _singleInstanceChannel.setMethodCallHandler(_handleSecondInstance);
+
     logInfo('FluxDownApp', 'initState done');
   }
 
   @override
   void dispose() {
     logInfo('FluxDownApp', 'dispose called');
+    _singleInstanceChannel.setMethodCallHandler(null);
     TrayService.instance.onExitApp = null;
     ExternalDownloadService.shutdown();
     _settingsForExternal.dispose();
@@ -222,6 +264,136 @@ class _FluxDownAppState extends State<FluxDownApp> with WindowListener {
     if (mounted) setState(() {});
     // 语言变更后刷新托盘菜单
     TrayService.instance.refreshMenu();
+  }
+
+  /// Wait for SettingsProvider to finish loading config from Rust, then handle
+  /// the initial .torrent files. Uses a listener instead of a fixed delay so
+  /// we react as soon as the config arrives, with a 10-second timeout fallback.
+  void _waitForConfigAndHandleTorrentFiles() {
+    // Already loaded (unlikely but possible if Rust responds before initState completes)
+    if (_settingsForExternal.loaded) {
+      _handleInitialTorrentFiles();
+      return;
+    }
+
+    late final void Function() listener;
+    Timer? timeout;
+
+    void cleanup() {
+      timeout?.cancel();
+      _settingsForExternal.removeListener(listener);
+    }
+
+    listener = () {
+      if (_settingsForExternal.loaded) {
+        cleanup();
+        if (mounted) _handleInitialTorrentFiles();
+      }
+    };
+
+    _settingsForExternal.addListener(listener);
+
+    // Timeout fallback — if config never arrives within 10s, try anyway
+    // (defaultSaveDir has a platform fallback so it won't be empty).
+    timeout = Timer(const Duration(seconds: 10), () {
+      logInfo(
+        'FluxDownApp',
+        'config load timed out after 10s, handling torrent files with fallback dir',
+      );
+      cleanup();
+      if (mounted) _handleInitialTorrentFiles();
+    });
+  }
+
+  /// Handle .torrent files passed via command-line args.
+  /// Creates download tasks using the default save directory from settings.
+  void _handleInitialTorrentFiles() {
+    final saveDir = _settingsForExternal.defaultSaveDir;
+    if (saveDir.isEmpty) {
+      logInfo(
+        'FluxDownApp',
+        'default save dir not ready, skipping torrent file handling',
+      );
+      return;
+    }
+    for (final path in widget.initialTorrentFiles) {
+      logInfo('FluxDownApp', 'creating task from torrent file: $path');
+      // Reuse the static helper from DownloadController — avoids duplicating
+      // the file-read + signal-send logic. DownloadController in HomePage
+      // will pick up the resulting task via Rust signal stream.
+      DownloadController.sendTorrentFileSignal(path, saveDir);
+    }
+  }
+
+  /// Called when a second instance sends its command-line args via WM_COPYDATA.
+  /// Extracts .torrent file paths and creates download tasks, then brings
+  /// the window to the foreground.
+  Future<dynamic> _handleSecondInstance(MethodCall call) async {
+    if (call.method == 'onSecondInstance') {
+      final args = (call.arguments as List<dynamic>).cast<String>();
+      logInfo('FluxDownApp', 'received second-instance args: $args');
+
+      // Bring window to foreground.
+      await windowManager.show();
+      await windowManager.focus();
+
+      // Extract .torrent file paths from the args.
+      final torrentPaths = args
+          .where(
+            (a) => a.toLowerCase().endsWith('.torrent') && !a.startsWith('-'),
+          )
+          .toList();
+
+      if (torrentPaths.isEmpty) {
+        logInfo('FluxDownApp', 'no torrent files in second-instance args');
+        return;
+      }
+
+      logInfo(
+        'FluxDownApp',
+        'second-instance torrent files: ${torrentPaths.length}',
+      );
+
+      // Wait for config if not yet loaded.
+      final saveDir = _settingsForExternal.defaultSaveDir;
+      if (saveDir.isEmpty) {
+        logInfo(
+          'FluxDownApp',
+          'config not loaded yet, waiting before handling second-instance torrents',
+        );
+        // Use a completer to wait for config.
+        final completer = Completer<void>();
+        late final void Function() listener;
+        Timer? timeout;
+
+        listener = () {
+          if (_settingsForExternal.loaded) {
+            timeout?.cancel();
+            _settingsForExternal.removeListener(listener);
+            completer.complete();
+          }
+        };
+
+        _settingsForExternal.addListener(listener);
+        timeout = Timer(const Duration(seconds: 10), () {
+          _settingsForExternal.removeListener(listener);
+          completer.complete();
+        });
+
+        await completer.future;
+      }
+
+      final dir = _settingsForExternal.defaultSaveDir;
+      if (dir.isEmpty) return;
+
+      for (final path in torrentPaths) {
+        logInfo(
+          'FluxDownApp',
+          'creating task from second-instance torrent: $path',
+        );
+        DownloadController.sendTorrentFileSignal(path, dir);
+      }
+    }
   }
 
   /// 优雅退出 — 隐藏窗口 → 清理资源 → 销毁窗口。

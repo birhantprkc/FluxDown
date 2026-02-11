@@ -10,7 +10,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::bt_downloader::{self, BtConfig, BtDownloadParams, SharedBtSession};
+use crate::bt_downloader::{self, BtConfig, BtDownloadParams, SharedBtSession, TorrentSource};
 use crate::db::Db;
 use crate::downloader::{self, DownloadParams, ProgressUpdate, SegmentProgressInfo};
 use crate::ftp_downloader;
@@ -66,6 +66,16 @@ fn is_magnet(url: &str) -> bool {
     bt_downloader::is_magnet_url(url)
 }
 
+/// Determine if a URL is a torrent-file sentinel (task created from .torrent file).
+fn is_torrent_file_url(url: &str) -> bool {
+    url.starts_with("torrent-file://")
+}
+
+/// Determine if a URL represents any kind of BT download (magnet or .torrent file).
+fn is_bt_url(url: &str) -> bool {
+    is_magnet(url) || is_torrent_file_url(url)
+}
+
 /// Notification sent from a spawned download task when it finishes.
 pub struct TaskDone {
     pub task_id: String,
@@ -99,6 +109,8 @@ struct QueuedTask {
     segments: i32,
     is_resume: bool,
     cookies: String,
+    /// Raw .torrent file bytes (empty for magnet/HTTP/FTP tasks).
+    torrent_file_bytes: Vec<u8>,
 }
 
 pub struct DownloadManager {
@@ -137,6 +149,8 @@ pub struct DownloadManager {
     bt_session: Option<Arc<SharedBtSession>>,
     /// Default save directory used to initialise the BT session.
     default_save_dir: String,
+    /// Application data directory (exe dir) for BT persistence files.
+    app_data_dir: String,
     /// User-configurable BT settings (DHT, UPnP, ports, custom trackers).
     bt_config: BtConfig,
 }
@@ -147,6 +161,7 @@ impl DownloadManager {
         max_concurrent: usize,
         speed_limit_bps: u64,
         default_save_dir: String,
+        app_data_dir: String,
         bt_config: BtConfig,
     ) -> Result<Self, downloader::DownloadError> {
         let client = downloader::build_client()?;
@@ -170,6 +185,7 @@ impl DownloadManager {
             speed_limiter: limiter,
             bt_session: None,
             default_save_dir,
+            app_data_dir,
             bt_config,
         })
     }
@@ -233,9 +249,10 @@ impl DownloadManager {
         if self.bt_session.is_none() {
             let speed_limit = self.speed_limiter.limit();
             let save_dir = self.default_save_dir.clone();
+            let data_dir = self.app_data_dir.clone();
             let config = self.bt_config.clone();
             let session = tokio::task::spawn_blocking(move || {
-                SharedBtSession::new(&save_dir, speed_limit, &config)
+                SharedBtSession::new(&save_dir, &data_dir, speed_limit, &config)
             })
             .await
             .map_err(|e| downloader::DownloadError::Other(
@@ -306,6 +323,7 @@ impl DownloadManager {
                     queued.file_name,
                     queued.segments,
                     queued.cookies,
+                    queued.torrent_file_bytes,
                 )
                 .await;
             }
@@ -392,6 +410,7 @@ impl DownloadManager {
         file_name: String,
         segments: i32,
         cookies: String,
+        torrent_file_bytes: Vec<u8>,
     ) {
         let task_id = Uuid::new_v4().to_string();
         // When segments <= 0 ("auto"), store 0 in DB and let the downloader
@@ -399,13 +418,28 @@ impl DownloadManager {
         // CPU cores, and bandwidth.
         let seg = if segments <= 0 { 0 } else { segments };
 
+        // Determine the URL to store in DB.  For .torrent file tasks, use a
+        // sentinel URL since the actual content is in torrent_file_bytes.
+        let db_url = if !torrent_file_bytes.is_empty() {
+            "torrent-file://local".to_string()
+        } else {
+            url.clone()
+        };
+
         if let Err(e) = self
             .db
-            .insert_task(&task_id, &url, &file_name, &save_dir, seg, 0)
+            .insert_task(&task_id, &db_url, &file_name, &save_dir, seg, 0)
             .await
         {
             rinf::debug_print!("insert_task error: {}", e);
             return;
+        }
+
+        // Persist .torrent file bytes to DB for resume after restart.
+        if !torrent_file_bytes.is_empty() {
+            if let Err(e) = self.db.save_torrent_file_bytes(&task_id, &torrent_file_bytes).await {
+                rinf::debug_print!("save_torrent_file_bytes error: {}", e);
+            }
         }
 
         TaskProgress {
@@ -416,16 +450,16 @@ impl DownloadManager {
             speed: 0,
             file_name: file_name.clone(),
             save_dir: save_dir.clone(),
-            url: url.clone(),
+            url: db_url.clone(),
             error_message: String::new(),
         }
         .send_signal_to_dart();
 
         // BT tasks bypass the HTTP/FTP concurrency queue — they are managed
         // by the shared librqbit session with its own concurrency controls.
-        let is_bt = is_magnet(&url);
+        let is_bt = is_magnet(&url) || !torrent_file_bytes.is_empty();
         if is_bt || self.has_capacity() {
-            self.do_start_task(task_id, url, save_dir, file_name, seg, cookies)
+            self.do_start_task(task_id, db_url, save_dir, file_name, seg, cookies, torrent_file_bytes)
                 .await;
             // If do_start_task failed early (e.g. BT session init), the slot
             // was freed — drain the queue so pending tasks can proceed.
@@ -439,12 +473,13 @@ impl DownloadManager {
             );
             self.pending_queue.push_back(QueuedTask {
                 task_id,
-                url,
+                url: db_url,
                 save_dir,
                 file_name,
                 segments: seg,
                 is_resume: false,
                 cookies,
+                torrent_file_bytes,
             });
         }
     }
@@ -458,6 +493,7 @@ impl DownloadManager {
         file_name: String,
         segments: i32,
         cookies: String,
+        torrent_file_bytes: Vec<u8>,
     ) {
         self.generation += 1;
         let spawn_gen = self.generation;
@@ -466,7 +502,7 @@ impl DownloadManager {
             .insert(task_id.clone(), (cancel_token.clone(), spawn_gen));
 
         let use_ftp = is_ftp_url(&url);
-        let use_bt = is_magnet(&url);
+        let use_bt = is_magnet(&url) || !torrent_file_bytes.is_empty() || is_torrent_file_url(&url);
 
         if use_bt {
             self.bt_task_ids.insert(task_id.clone());
@@ -504,9 +540,17 @@ impl DownloadManager {
                 return;
             };
 
+            // Build the torrent source: prefer torrent file bytes if available,
+            // otherwise use the URL as a magnet link.
+            let torrent_source = if !torrent_file_bytes.is_empty() {
+                TorrentSource::TorrentFileBytes(torrent_file_bytes)
+            } else {
+                TorrentSource::Magnet(url)
+            };
+
             let bt_params = BtDownloadParams {
                 task_id: task_id.clone(),
-                magnet_url: url,
+                torrent_source,
                 save_dir,
                 db: self.db.clone(),
                 progress_tx: self.progress_tx.clone(),
@@ -642,7 +686,7 @@ impl DownloadManager {
         let is_bt = self.db.load_task_by_id(task_id).await
             .ok()
             .flatten()
-            .map(|t| is_magnet(&t.url))
+            .map(|t| is_bt_url(&t.url))
             .unwrap_or(false);
 
         if is_bt || self.has_capacity() {
@@ -667,6 +711,7 @@ impl DownloadManager {
                     segments: 0, // not used for resume
                     is_resume: true,
                     cookies: String::new(), // cookies not available for resume from DB
+                    torrent_file_bytes: Vec::new(), // loaded from DB in do_resume_task
                 });
             }
         }
@@ -690,7 +735,7 @@ impl DownloadManager {
             .insert(task_id.to_string(), (cancel_token.clone(), spawn_gen));
 
         let use_ftp = is_ftp_url(&task.url);
-        let use_bt = is_magnet(&task.url);
+        let use_bt = is_bt_url(&task.url);
 
         if use_bt {
             self.bt_task_ids.insert(task_id.to_string());
@@ -761,9 +806,31 @@ impl DownloadManager {
                 }
             }
 
+            // Build the torrent source for resume: if the task was created
+            // from a .torrent file, load the persisted bytes from DB.
+            let torrent_source = if is_torrent_file_url(&task.url) {
+                let bytes = self.db.load_torrent_file_bytes(task_id).await
+                    .unwrap_or_default()
+                    .unwrap_or_default();
+                if bytes.is_empty() {
+                    rinf::debug_print!(
+                        "[manager] BT task {} has torrent-file:// URL but no persisted bytes!",
+                        task_id
+                    );
+                    let msg = "torrent file bytes lost — cannot resume";
+                    let _ = self.db.update_task_status(task_id, 4, msg).await;
+                    self.active_tokens.remove(task_id);
+                    self.bt_task_ids.remove(task_id);
+                    return;
+                }
+                TorrentSource::TorrentFileBytes(bytes)
+            } else {
+                TorrentSource::Magnet(task.url.clone())
+            };
+
             let bt_params = BtDownloadParams {
                 task_id: tid.clone(),
-                magnet_url: task.url,
+                torrent_source,
                 save_dir: task.save_dir,
                 db: self.db.clone(),
                 progress_tx: self.progress_tx.clone(),
@@ -899,7 +966,7 @@ impl DownloadManager {
         if let Ok(Some(t)) = self.db.load_task_by_id(task_id).await {
             let path = PathBuf::from(&t.save_dir).join(&t.file_name);
 
-            if is_magnet(&t.url) {
+            if is_bt_url(&t.url) {
                 // Permanently remove from librqbit session (clears
                 // persistence data and optionally deletes files via
                 // librqbit's own cleanup).

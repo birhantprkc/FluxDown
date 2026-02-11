@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use bytes::Bytes;
 use librqbit::{
     AddTorrent, AddTorrentOptions, AddTorrentResponse, ManagedTorrent,
     PeerConnectionOptions, Session, SessionOptions, SessionPersistenceConfig,
@@ -55,6 +56,46 @@ pub fn is_magnet_url(url: &str) -> bool {
     url.get(..8)
         .map(|prefix| prefix.eq_ignore_ascii_case("magnet:?"))
         .unwrap_or(false)
+}
+
+/// Torrent input source — either a magnet URI or raw .torrent file bytes.
+/// Replaces the old hardcoded `magnet_url: String` field so that
+/// `BtDownloadParams` can represent both kinds of BT downloads uniformly.
+#[derive(Clone)]
+pub enum TorrentSource {
+    /// A magnet link URI string (e.g. `magnet:?xt=urn:btih:...`).
+    Magnet(String),
+    /// Raw bytes of a `.torrent` file read from disk.
+    TorrentFileBytes(Vec<u8>),
+}
+
+impl TorrentSource {
+    /// Returns `true` if this source is a magnet link.
+    #[allow(dead_code)]
+    pub fn is_magnet(&self) -> bool {
+        matches!(self, TorrentSource::Magnet(_))
+    }
+
+    /// Best-effort display name for logging / early UI display.
+    /// For magnet links, extracts the `dn=` parameter.
+    /// For torrent file bytes, returns None (the name comes from metadata).
+    pub fn display_name(&self) -> Option<String> {
+        match self {
+            TorrentSource::Magnet(url) => magnet_display_name(url),
+            TorrentSource::TorrentFileBytes(_) => None,
+        }
+    }
+
+    /// URL string for DB storage.  Magnet links store the URI directly.
+    /// Torrent file sources store a sentinel `torrent-file://` URL since the
+    /// actual content is persisted separately in the `torrent_file_bytes` column.
+    #[allow(dead_code)]
+    pub fn url_for_db(&self) -> &str {
+        match self {
+            TorrentSource::Magnet(url) => url,
+            TorrentSource::TorrentFileBytes(_) => "torrent-file://local",
+        }
+    }
 }
 
 /// Extract the `dn=` (display name) parameter from a magnet URI, if present.
@@ -250,6 +291,10 @@ impl SharedBtSession {
     /// `default_save_dir` is used as the Session's default output folder
     /// (individual torrents override this via `AddTorrentOptions::output_folder`).
     ///
+    /// `app_data_dir` is the application data directory where BT persistence
+    /// files (session.json, .bitv, .torrent) are stored. This should be the
+    /// exe directory or an app-specific folder — NOT the user's download dir.
+    ///
     /// `speed_limit_bps` is the global download speed limit in bytes/sec
     /// (0 = unlimited).
     ///
@@ -257,6 +302,7 @@ impl SharedBtSession {
     /// custom trackers).
     pub fn new(
         default_save_dir: &str,
+        app_data_dir: &str,
         speed_limit_bps: u64,
         bt_config: &BtConfig,
     ) -> Result<Self, DownloadError> {
@@ -296,8 +342,10 @@ impl SharedBtSession {
         let download_bps = NonZeroU32::new(speed_limit_bps.min(u32::MAX as u64) as u32);
 
         // Persistence folder: store session.json + {hash}.bitv + {hash}.torrent
-        // alongside the download database so everything is co-located.
-        let persistence_folder = PathBuf::from(default_save_dir).join(".fluxdown_bt");
+        // in the app data directory (next to flux_down.db), NOT in the user's
+        // download folder. This matches how professional tools (qBittorrent,
+        // Thunder, etc.) keep internal data out of user-visible directories.
+        let persistence_folder = PathBuf::from(app_data_dir).join("bt_session");
 
         // Validate and clamp port range.
         let port_start = bt_config.port_start.max(1024);
@@ -486,7 +534,8 @@ impl SharedBtSession {
 
 pub struct BtDownloadParams {
     pub task_id: String,
-    pub magnet_url: String,
+    /// Torrent input source — magnet URI or raw .torrent file bytes.
+    pub torrent_source: TorrentSource,
     pub save_dir: String,
     pub db: Db,
     pub progress_tx: mpsc::Sender<ProgressUpdate>,
@@ -548,7 +597,7 @@ pub async fn run_bt_download(params: BtDownloadParams) -> Result<(), DownloadErr
 
     let progress_tx = params.progress_tx.clone();
     let db = params.db.clone();
-    let magnet_url = params.magnet_url.clone();
+    let torrent_source = params.torrent_source.clone();
     let save_dir = params.save_dir.clone();
     let tid = task_id.clone();
     let session = params.session.clone();
@@ -565,7 +614,7 @@ pub async fn run_bt_download(params: BtDownloadParams) -> Result<(), DownloadErr
     // many concurrent BT tasks.
     let inner_params = BtInnerParams {
         task_id: tid,
-        magnet_url,
+        torrent_source,
         save_dir,
         db,
         progress_tx,
@@ -595,7 +644,7 @@ pub async fn run_bt_download(params: BtDownloadParams) -> Result<(), DownloadErr
 /// Parameters for the inner BT download loop (avoids too-many-arguments warning).
 struct BtInnerParams {
     task_id: String,
-    magnet_url: String,
+    torrent_source: TorrentSource,
     save_dir: String,
     db: Db,
     progress_tx: mpsc::Sender<ProgressUpdate>,
@@ -618,8 +667,6 @@ const STATUS_PREPARING: i32 = 5;
 /// Number of virtual segments for single-file BT progress visualization.
 const BT_VIRTUAL_SEGMENTS: i32 = 16;
 
-/// Build segment progress data from real BT file-level progress.
-///
 /// For **multi-file** torrents each file becomes a segment — this naturally
 /// reflects the concurrent piece-based download because different files
 /// accumulate downloaded bytes independently.
@@ -836,7 +883,7 @@ fn build_piece_scatter_segments(
 async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
     let BtInnerParams {
         task_id,
-        magnet_url,
+        torrent_source,
         save_dir,
         db,
         progress_tx,
@@ -849,7 +896,7 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
     // Phase 1: Send initial file name from dn= parameter so user sees something
     // -----------------------------------------------------------------------
 
-    let dn_name = magnet_display_name(&magnet_url).unwrap_or_default();
+    let dn_name = torrent_source.display_name().unwrap_or_default();
     if !dn_name.is_empty() {
         let _ = db.update_task_file_info(&task_id, &dn_name, 0).await;
         let _ = progress_tx
@@ -885,15 +932,21 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
         };
 
         rinf::debug_print!(
-            "[BT] task={} adding magnet to shared session (metadata resolution may take a while)...",
+            "[BT] task={} adding torrent to shared session (metadata resolution may take a while)...",
             short_id(&task_id)
         );
 
         let session_for_add = session.clone();
-        let magnet_for_add = magnet_url.clone();
+        let source_for_add = torrent_source.clone();
         let add_handle = tokio::spawn(async move {
+            let add_input = match source_for_add {
+                TorrentSource::Magnet(ref url) => AddTorrent::from_url(url),
+                TorrentSource::TorrentFileBytes(ref bytes) => {
+                    AddTorrent::from_bytes(Bytes::from(bytes.clone()))
+                }
+            };
             session_for_add
-                .add_torrent(AddTorrent::from_url(&magnet_for_add), Some(add_opts))
+                .add_torrent(add_input, Some(add_opts))
                 .await
         });
 

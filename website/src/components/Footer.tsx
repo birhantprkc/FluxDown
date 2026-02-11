@@ -5,56 +5,134 @@ export default function Footer() {
   const year = new Date().getFullYear();
 
   return (
-    <footer className="border-t border-dark-border bg-dark-surface1">
-      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8 sm:py-12">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
-          {/* Brand */}
-          <div className="md:col-span-2">
-            <a href="/" className="flex items-center gap-2.5 mb-4">
-              <img src="/logo.svg" alt="FluxDown" className="h-8 w-8" />
-              <span className="text-lg font-semibold tracking-tight">
-                <span className="text-brand-sky">Flux</span><span className="text-dark-text">Down</span>
+    <footer className="relative overflow-hidden bg-dark-bg">
+      {/* Top gradient divider */}
+      <div className="relative h-px w-full">
+        <div className="absolute inset-0 bg-gradient-to-r from-transparent via-brand-sky/30 to-transparent" />
+      </div>
+
+      {/* Main content */}
+      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-14 sm:pt-16 pb-8">
+        <div className="grid grid-cols-2 gap-10 sm:grid-cols-6 lg:grid-cols-12">
+          {/* Brand column */}
+          <div className="col-span-2 sm:col-span-6 lg:col-span-5">
+            <a href="/" className="inline-flex items-center gap-2.5 group">
+              <img
+                src="/logo.svg"
+                alt="FluxDown"
+                className="h-8 w-8 transition-transform duration-300 group-hover:scale-110"
+              />
+              <span className="text-lg font-bold tracking-tight">
+                <span className="bg-gradient-to-r from-brand-sky to-brand-cyan bg-clip-text text-transparent">
+                  Flux
+                </span>
+                <span className="text-dark-text">Down</span>
               </span>
             </a>
-            <p className="text-sm text-dark-text-secondary max-w-md leading-relaxed">
+
+            <p className="mt-4 text-[13px] leading-relaxed text-dark-text-secondary max-w-sm">
               {t("footer.desc")}
             </p>
+
+            {/* Tech badges */}
+            <div className="mt-5 flex flex-wrap gap-2">
+              {["Rust", "Flutter", "Tokio", "SQLite"].map((tech) => (
+                <span
+                  key={tech}
+                  className="inline-flex items-center rounded-md border border-dark-border/60 bg-dark-surface1 px-2 py-0.5 text-[10px] font-medium text-dark-text-muted tracking-wide"
+                >
+                  {tech}
+                </span>
+              ))}
+            </div>
           </div>
 
-          {/* Links */}
-          <div>
-            <h3 className="text-sm font-semibold text-dark-text mb-4">{t("footer.product")}</h3>
+          {/* Product column */}
+          <div className="col-span-1 sm:col-span-2 lg:col-span-2">
+            <h3 className="text-xs font-semibold uppercase tracking-widest text-dark-text-muted mb-4">
+              {t("footer.product")}
+            </h3>
             <ul className="space-y-2.5">
-              <li><a href="/#features" className="text-sm text-dark-text-secondary hover:text-dark-text transition-colors">{t("footer.features")}</a></li>
-              <li><a href="/#extension" className="text-sm text-dark-text-secondary hover:text-dark-text transition-colors">{t("footer.browserExtension")}</a></li>
-              <li><a href="/#download" className="text-sm text-dark-text-secondary hover:text-dark-text transition-colors">{t("footer.download")}</a></li>
+              {[
+                { href: "/#features", label: t("footer.features") },
+                { href: "/#extension", label: t("footer.browserExtension") },
+                { href: "/#download", label: t("footer.download") },
+                { href: "/changelog", label: t("footer.changelog") },
+              ].map(({ href, label }) => (
+                <li key={href}>
+                  <a
+                    href={href}
+                    className="text-[13px] text-dark-text-secondary hover:text-brand-sky transition-colors duration-200"
+                  >
+                    {label}
+                  </a>
+                </li>
+              ))}
             </ul>
           </div>
 
-          <div>
-            <h3 className="text-sm font-semibold text-dark-text mb-4">{t("footer.support")}</h3>
+          {/* Resources column */}
+          <div className="col-span-1 sm:col-span-2 lg:col-span-2">
+            <h3 className="text-xs font-semibold uppercase tracking-widest text-dark-text-muted mb-4">
+              {t("footer.support")}
+            </h3>
             <ul className="space-y-2.5">
-              <li><a href="/faq" className="text-sm text-dark-text-secondary hover:text-dark-text transition-colors">{t("footer.faq")}</a></li>
-              <li><a href="/feedback" className="text-sm text-dark-text-secondary hover:text-dark-text transition-colors">{t("footer.feedback")}</a></li>
-              <li><a href="/feedback" className="text-sm text-dark-text-secondary hover:text-dark-text transition-colors">{t("footer.contact")}</a></li>
+              {[
+                { href: "/faq", label: t("footer.faq") },
+                { href: "/feedback", label: t("footer.feedback") },
+                { href: "/feedback", label: t("footer.contact") },
+              ].map(({ href, label }, i) => (
+                <li key={`${href}-${i}`}>
+                  <a
+                    href={href}
+                    className="text-[13px] text-dark-text-secondary hover:text-brand-sky transition-colors duration-200"
+                  >
+                    {label}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          {/* Legal column */}
+          <div className="col-span-1 sm:col-span-2 lg:col-span-2 lg:col-start-11">
+            <h3 className="text-xs font-semibold uppercase tracking-widest text-dark-text-muted mb-4">
+              {t("footer.legal")}
+            </h3>
+            <ul className="space-y-2.5">
+              {[
+                { href: "/privacy", label: t("footer.privacy") },
+                { href: "/terms", label: t("footer.terms") },
+              ].map(({ href, label }) => (
+                <li key={href}>
+                  <a
+                    href={href}
+                    className="text-[13px] text-dark-text-secondary hover:text-brand-sky transition-colors duration-200"
+                  >
+                    {label}
+                  </a>
+                </li>
+              ))}
             </ul>
           </div>
         </div>
 
-        {/* Bottom */}
-        <div className="mt-12 pt-6 border-t border-dark-border flex flex-col sm:flex-row items-center justify-between gap-4">
-          <p className="text-xs text-dark-text-muted">
-            {t("footer.copyright", { year: String(year) })}
-          </p>
-          <div className="flex items-center gap-1 text-xs text-dark-text-muted">
-            {t("footer.builtWith")}
-            <svg className="h-3 w-3 text-danger mx-0.5" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
-            </svg>
-            {t("footer.using")}
+        {/* Bottom bar */}
+        <div className="mt-14 pt-6 border-t border-dark-border/50">
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
+            <p className="text-xs text-dark-text-muted/80">
+              {t("footer.copyright", { year: String(year) })}
+            </p>
+
+            <span className="text-[11px] text-dark-text-muted/50">
+              {t("footer.builtWith")}
+            </span>
           </div>
         </div>
       </div>
+
+      {/* Background decorative glow */}
+      <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-[600px] h-[200px] bg-brand-sky/[0.02] blur-[120px] rounded-full pointer-events-none" />
     </footer>
   );
 }

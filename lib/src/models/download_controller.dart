@@ -275,10 +275,11 @@ class DownloadController extends ChangeNotifier {
     String fileName = '',
     int segments = 0,
     String cookies = '',
+    Uint8List? torrentFileBytes,
   }) {
     logInfo(
       _tag,
-      'createTask: url=$url, dir=$saveDir, file=$fileName, seg=$segments, cookies_len=${cookies.length}',
+      'createTask: url=$url, dir=$saveDir, file=$fileName, seg=$segments, cookies_len=${cookies.length}, torrent_bytes=${torrentFileBytes?.length ?? 0}',
     );
     CreateTask(
       url: url,
@@ -286,7 +287,55 @@ class DownloadController extends ChangeNotifier {
       fileName: fileName,
       segments: segments,
       cookies: cookies,
+      torrentFileBytes: torrentFileBytes ?? Uint8List(0),
     ).sendSignalToRust();
+  }
+
+  /// Create a download task from a .torrent file on disk.
+  Future<void> createTaskFromTorrentFile({
+    required String torrentFilePath,
+    required String saveDir,
+  }) async {
+    logInfo(
+      _tag,
+      'createTaskFromTorrentFile: path=$torrentFilePath, dir=$saveDir',
+    );
+    await sendTorrentFileSignal(torrentFilePath, saveDir);
+  }
+
+  /// Read a .torrent file from disk and send a [CreateTask] signal to Rust.
+  ///
+  /// This is a static helper so it can be called both from a
+  /// [DownloadController] instance and from [main.dart] (which has no
+  /// controller instance at startup).
+  static Future<void> sendTorrentFileSignal(
+    String torrentFilePath,
+    String saveDir,
+  ) async {
+    try {
+      final file = File(torrentFilePath);
+      final bytes = await file.readAsBytes();
+      if (bytes.isEmpty) {
+        logInfo(_tag, 'torrent file is empty: $torrentFilePath');
+        return;
+      }
+      // Use the .torrent file name (without extension) as the initial display name.
+      final baseName = file.uri.pathSegments.last;
+      final displayName = baseName.endsWith('.torrent')
+          ? baseName.substring(0, baseName.length - 8)
+          : baseName;
+
+      CreateTask(
+        url: '',
+        saveDir: saveDir,
+        fileName: displayName,
+        segments: 0,
+        cookies: '',
+        torrentFileBytes: bytes,
+      ).sendSignalToRust();
+    } catch (e) {
+      logInfo(_tag, 'failed to read torrent file: $e');
+    }
   }
 
   /// 批量创建下载任务（多个 URL 共享同一保存目录和线程数）

@@ -172,13 +172,21 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          fetch-tags: true
 
-      - name: Extract tag message for release notes
+      - name: Extract tag annotation for release notes
         id: tag_message
         shell: bash
         run: |
           TAG_NAME="${GITHUB_REF#refs/tags/}"
-          TAG_MSG=$(git tag -l --format='%(contents)' "$TAG_NAME" 2>/dev/null || echo "")
+          # 仅当 tag 是 annotated tag 时提取其注解内容
+          OBJ_TYPE=$(git cat-file -t "$TAG_NAME" 2>/dev/null || echo "unknown")
+          if [ "$OBJ_TYPE" = "tag" ]; then
+            # git tag -m 写入的完整注解（subject + body）
+            TAG_MSG=$(git tag -l --format='%(contents:subject)%0a%(contents:body)' "$TAG_NAME" | sed '/^$/d')
+          else
+            TAG_MSG=""
+          fi
           if [ -z "$TAG_MSG" ]; then
             TAG_MSG="Release $TAG_NAME"
           fi
@@ -214,4 +222,5 @@ jobs:
         with:
           files: release-assets/*
           body: ${{ steps.tag_message.outputs.body }}
+          generate_release_notes: false
           draft: false

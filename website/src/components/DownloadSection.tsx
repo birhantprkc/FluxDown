@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, type ComponentType } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Monitor, Apple, Terminal, Globe, Smartphone, Download, Check, Loader2, ChevronDown, Puzzle, TrendingUp, Bell, CheckCircle2, AlertCircle } from "lucide-react";
+import { Download, Check, Loader2, ChevronDown, Puzzle, TrendingUp, Bell, CheckCircle2, AlertCircle, Globe, Smartphone } from "lucide-react";
+import { SiApple, SiLinux } from "@icons-pack/react-simple-icons";
 import { LampEffect } from "@/components/ui/lamp-effect";
 import { useLocale } from "@/lib/i18n";
 
@@ -10,6 +11,15 @@ const techStack = [
   { name: "Tokio", color: "text-brand-cyan" },
   { name: "SQLite", color: "text-success" },
 ];
+
+/* Windows logo — not available in Simple Icons (trademark), use inline SVG */
+function WindowsLogo({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor">
+      <path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-13.051-1.849" />
+    </svg>
+  );
+}
 
 interface ReleaseAsset {
   name: string;
@@ -75,10 +85,10 @@ export default function DownloadSection() {
     }
   }, [subscribeEmail]);
 
-  const platforms = [
-    { key: "windows", name: t("dl.windows"), icon: Monitor, arch: "x64", available: true, primary: true, badge: t("dl.availableNow") },
-    { key: "macos", name: t("dl.macos"), icon: Apple, arch: "Apple Silicon", available: false, primary: false, badge: t("dl.comingSoon") },
-    { key: "linux", name: t("dl.linux"), icon: Terminal, arch: "x64", available: false, primary: false, badge: t("dl.comingSoon") },
+  const platforms: { key: string; name: string; icon: ComponentType<{ className?: string; size?: number; color?: string }>; arch: string; available: boolean; primary: boolean; badge: string }[] = [
+    { key: "windows", name: t("dl.windows"), icon: WindowsLogo, arch: "x64", available: true, primary: true, badge: t("dl.availableNow") },
+    { key: "macos", name: t("dl.macos"), icon: SiApple, arch: "Apple Silicon", available: false, primary: false, badge: t("dl.comingSoon") },
+    { key: "linux", name: t("dl.linux"), icon: SiLinux, arch: "x64", available: false, primary: false, badge: t("dl.comingSoon") },
     { key: "web", name: t("dl.web"), icon: Globe, arch: t("dl.webArch"), available: false, primary: false, badge: t("dl.comingSoon") },
     { key: "mobile", name: t("dl.mobile"), icon: Smartphone, arch: "Android / iOS", available: false, primary: false, badge: t("dl.comingSoon") },
   ];
@@ -144,11 +154,14 @@ export default function DownloadSection() {
                       ? "bg-gradient-to-br from-brand-sky to-brand-cyan"
                       : "bg-dark-surface2 border border-dark-border/50 group-hover:border-brand-blue/20 group-hover:bg-gradient-to-br group-hover:from-brand-blue/10 group-hover:to-brand-cyan/5"
                   }`}>
-                    <Icon className={`w-7 h-7 transition-colors duration-300 ${
-                      p.primary
-                        ? "text-white"
-                        : "text-dark-text-muted group-hover:text-brand-blue/70"
-                    }`} />
+                    <Icon
+                      className={`w-7 h-7 transition-colors duration-300 ${
+                        p.primary
+                          ? "text-white"
+                          : "text-dark-text-muted group-hover:text-brand-blue/70"
+                      }`}
+                      color="currentColor"
+                    />
                   </div>
                   <h3 className="text-base font-semibold text-dark-text">{p.name}</h3>
                   <p className="text-xs text-dark-text-muted mt-1">{p.arch}</p>

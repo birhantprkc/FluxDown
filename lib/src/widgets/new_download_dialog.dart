@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart'
     show
@@ -61,6 +63,9 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
 
   /// 是否所有链接都是 magnet
   bool _allMagnet = false;
+
+  /// 已选择的 .torrent 文件路径列表
+  final List<String> _torrentFilePaths = [];
 
   @override
   void initState() {
@@ -130,6 +135,30 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     super.dispose();
   }
 
+  Future<void> _pickTorrentFiles() async {
+    final result = await FilePicker.platform.pickFiles(
+      dialogTitle: currentS.selectTorrentFile,
+      type: FileType.custom,
+      allowedExtensions: ['torrent'],
+      allowMultiple: true,
+    );
+    if (result != null && result.files.isNotEmpty) {
+      setState(() {
+        for (final file in result.files) {
+          if (file.path != null && !_torrentFilePaths.contains(file.path)) {
+            _torrentFilePaths.add(file.path!);
+          }
+        }
+      });
+    }
+  }
+
+  void _removeTorrentFile(int index) {
+    setState(() {
+      _torrentFilePaths.removeAt(index);
+    });
+  }
+
   Future<void> _pickSaveDir() async {
     final result = await FilePicker.platform.getDirectoryPath(
       dialogTitle: currentS.selectSaveDir,
@@ -143,10 +172,23 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
   }
 
   bool get _isBatch => _urlCount > 1;
+  bool get _hasTorrentFiles => _torrentFilePaths.isNotEmpty;
 
   void _startDownload() {
     final saveDir = _saveDirController.text.trim();
     if (saveDir.isEmpty) return;
+
+    // Handle .torrent file downloads
+    if (_hasTorrentFiles) {
+      for (final path in _torrentFilePaths) {
+        widget.controller.createTaskFromTorrentFile(
+          torrentFilePath: path,
+          saveDir: saveDir,
+        );
+      }
+      Navigator.of(context).pop();
+      return;
+    }
 
     final urls = _parseUrls(_urlController.text);
     if (urls.isEmpty) return;
@@ -217,7 +259,11 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
               const Icon(LucideIcons.download, size: 13, color: Colors.white),
               const SizedBox(width: 6),
               Text(
-                _isBatch ? s.startBatchDownload(_urlCount) : s.startDownload,
+                _hasTorrentFiles
+                    ? s.startBatchDownload(_torrentFilePaths.length)
+                    : _isBatch
+                    ? s.startBatchDownload(_urlCount)
+                    : s.startDownload,
                 style: const TextStyle(color: Colors.white),
               ),
             ],
@@ -230,73 +276,192 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // URL 输入区 — 始终多行
-            Row(
-              children: [
-                _SectionLabel(text: s.downloadUrl, c: c),
-                const Spacer(),
-                if (_urlCount > 0)
+            // .torrent 文件选择区域（当有 torrent 文件时替换 URL 输入区）
+            if (_hasTorrentFiles) ...[
+              Row(
+                children: [
+                  _SectionLabel(text: s.torrentFileSelected, c: c),
+                  const Spacer(),
                   Text(
-                    s.urlCount(_urlCount),
+                    s.torrentFileCount(_torrentFilePaths.length),
                     style: TextStyle(fontSize: 11, color: c.textMuted),
                   ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            SizedBox(
-              height: 120,
-              child: Localizations(
-                locale: const Locale('en'),
-                delegates: const [
-                  DefaultWidgetsLocalizations.delegate,
-                  DefaultMaterialLocalizations.delegate,
                 ],
-                child: Material(
-                  type: MaterialType.transparency,
-                  child: TextSelectionTheme(
-                    data: TextSelectionThemeData(
-                      selectionColor: c.accent.withValues(alpha: 0.25),
-                      cursorColor: c.accent,
-                      selectionHandleColor: c.accent,
+              ),
+              const SizedBox(height: 6),
+              Container(
+                constraints: const BoxConstraints(maxHeight: 120),
+                decoration: BoxDecoration(
+                  color: c.surface1,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: c.border),
+                ),
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  padding: const EdgeInsets.all(6),
+                  itemCount: _torrentFilePaths.length,
+                  itemBuilder: (context, index) {
+                    final path = _torrentFilePaths[index];
+                    final fileName = File(path).uri.pathSegments.last;
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 2),
+                      child: Row(
+                        children: [
+                          Icon(LucideIcons.fileDown, size: 14, color: c.accent),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              fileName,
+                              style: TextStyle(
+                                fontSize: 12.5,
+                                color: c.textPrimary,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          GestureDetector(
+                            onTap: () => _removeTorrentFile(index),
+                            child: Icon(
+                              LucideIcons.x,
+                              size: 14,
+                              color: c.textMuted,
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  ShadButton.outline(
+                    size: ShadButtonSize.sm,
+                    onPressed: _pickTorrentFiles,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          LucideIcons.plus,
+                          size: 13,
+                          color: c.textSecondary,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          s.openTorrentFile,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: c.textSecondary,
+                          ),
+                        ),
+                      ],
                     ),
-                    child: TextField(
-                      controller: _urlController,
-                      focusNode: _urlFocusNode,
-                      maxLines: null,
-                      expands: true,
-                      textAlignVertical: TextAlignVertical.top,
-                      cursorColor: c.accent,
-                      style: TextStyle(fontSize: 13, color: c.textPrimary),
-                      decoration: InputDecoration(
-                        hintText: s.batchUrlPlaceholder,
-                        hintStyle: TextStyle(
-                          fontSize: 12.5,
-                          color: c.textMuted,
-                        ),
-                        hintMaxLines: 5,
-                        contentPadding: const EdgeInsets.all(10),
-                        filled: true,
-                        fillColor: c.surface1,
-                        hoverColor: Colors.transparent,
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(8),
-                          borderSide: BorderSide(color: c.border),
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(8),
-                          borderSide: BorderSide(color: c.border),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(8),
-                          borderSide: BorderSide(color: c.accent),
+                  ),
+                  const SizedBox(width: 8),
+                  GestureDetector(
+                    onTap: () => setState(() => _torrentFilePaths.clear()),
+                    child: Text(
+                      s.cancel,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: c.textMuted,
+                        decoration: TextDecoration.underline,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+            ] else ...[
+              // URL 输入区 — 始终多行
+              Row(
+                children: [
+                  _SectionLabel(text: s.downloadUrl, c: c),
+                  const Spacer(),
+                  if (_urlCount > 0)
+                    Text(
+                      s.urlCount(_urlCount),
+                      style: TextStyle(fontSize: 11, color: c.textMuted),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              SizedBox(
+                height: 120,
+                child: Localizations(
+                  locale: const Locale('en'),
+                  delegates: const [
+                    DefaultWidgetsLocalizations.delegate,
+                    DefaultMaterialLocalizations.delegate,
+                  ],
+                  child: Material(
+                    type: MaterialType.transparency,
+                    child: TextSelectionTheme(
+                      data: TextSelectionThemeData(
+                        selectionColor: c.accent.withValues(alpha: 0.25),
+                        cursorColor: c.accent,
+                        selectionHandleColor: c.accent,
+                      ),
+                      child: TextField(
+                        controller: _urlController,
+                        focusNode: _urlFocusNode,
+                        maxLines: null,
+                        expands: true,
+                        textAlignVertical: TextAlignVertical.top,
+                        cursorColor: c.accent,
+                        style: TextStyle(fontSize: 13, color: c.textPrimary),
+                        decoration: InputDecoration(
+                          hintText: s.batchUrlPlaceholder,
+                          hintStyle: TextStyle(
+                            fontSize: 12.5,
+                            color: c.textMuted,
+                          ),
+                          hintMaxLines: 5,
+                          contentPadding: const EdgeInsets.all(10),
+                          filled: true,
+                          fillColor: c.surface1,
+                          hoverColor: Colors.transparent,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                            borderSide: BorderSide(color: c.border),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                            borderSide: BorderSide(color: c.border),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                            borderSide: BorderSide(color: c.accent),
+                          ),
                         ),
                       ),
                     ),
                   ),
                 ),
               ),
-            ),
-            const SizedBox(height: 14),
+              const SizedBox(height: 6),
+              // .torrent 文件选择按钮
+              Align(
+                alignment: Alignment.centerLeft,
+                child: ShadButton.ghost(
+                  size: ShadButtonSize.sm,
+                  onPressed: _pickTorrentFiles,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(LucideIcons.fileDown, size: 13, color: c.accent),
+                      const SizedBox(width: 6),
+                      Text(
+                        s.openTorrentFile,
+                        style: TextStyle(fontSize: 12, color: c.accent),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
 
             // 保存目录 + 线程数
             Row(
@@ -329,7 +494,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
                     ],
                   ),
                 ),
-                if (!_allMagnet) ...[
+                if (!_allMagnet && !_hasTorrentFiles) ...[
                   const SizedBox(width: 12),
                   SizedBox(
                     width: 100,
@@ -360,8 +525,8 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
               ],
             ),
 
-            // 重命名 — 仅单条时显示
-            if (!_isBatch) ...[
+            // 重命名 — 仅单条 URL 时显示（torrent 文件自动识别名称）
+            if (!_isBatch && !_hasTorrentFiles) ...[
               const SizedBox(height: 14),
               _SectionLabel(text: s.renameOptional, c: c),
               const SizedBox(height: 6),

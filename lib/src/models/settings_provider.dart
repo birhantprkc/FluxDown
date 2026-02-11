@@ -22,6 +22,10 @@ class SettingsProvider extends ChangeNotifier {
   bool _autoStartup = false; // 默认不开机启动
   bool _autoCheckUpdate = true; // 默认启动时自动检查更新
 
+  // 文件关联
+  bool _torrentAssocPrompted = false; // 是否已弹窗提示过文件关联
+  bool _torrentAssociated = false; // .torrent 文件是否已关联到 FluxDown
+
   // BT 设置
   bool _btEnableDht = true; // DHT 分布式哈希表
   bool _btEnableUpnp = true; // UPnP 端口映射
@@ -32,10 +36,19 @@ class SettingsProvider extends ChangeNotifier {
   /// 配置是否已从 Rust 端加载完成
   bool _loaded = false;
 
-  StreamSubscription<RustSignalPack<ConfigLoaded>>? _configSub;
+  /// 是否启用文件关联功能（查询/监听注册表状态）。
+  /// `_settingsForExternal`（main.dart）不需要此功能，设为 false 避免重复查询。
+  final bool _enableFileAssoc;
 
-  SettingsProvider() {
-    logInfo('Settings', 'constructor, setting globalInstance');
+  StreamSubscription<RustSignalPack<ConfigLoaded>>? _configSub;
+  StreamSubscription<RustSignalPack<FileAssociationStatus>>? _fileAssocSub;
+
+  SettingsProvider({bool enableFileAssoc = true})
+    : _enableFileAssoc = enableFileAssoc {
+    logInfo(
+      'Settings',
+      'constructor, enableFileAssoc=$enableFileAssoc, setting globalInstance',
+    );
     globalInstance = this;
     _startListening();
     _syncAutoStartupState();
@@ -45,6 +58,7 @@ class SettingsProvider extends ChangeNotifier {
   void dispose() {
     logInfo('Settings', 'dispose');
     _configSub?.cancel();
+    _fileAssocSub?.cancel();
     super.dispose();
   }
 
@@ -61,6 +75,10 @@ class SettingsProvider extends ChangeNotifier {
   bool get closeToTray => _closeToTray;
   bool get autoStartup => _autoStartup;
   bool get autoCheckUpdate => _autoCheckUpdate;
+
+  // 文件关联 Getters
+  bool get torrentAssocPrompted => _torrentAssocPrompted;
+  bool get torrentAssociated => _torrentAssociated;
 
   // BT 设置 Getters
   bool get btEnableDht => _btEnableDht;
@@ -159,6 +177,30 @@ class SettingsProvider extends ChangeNotifier {
     _saveToRust('bt_custom_trackers', value);
   }
 
+  // 文件关联操作
+
+  /// 标记已弹窗提示过文件关联（持久化到 Rust SQLite）
+  void markTorrentAssocPrompted() {
+    if (_torrentAssocPrompted) return;
+    _torrentAssocPrompted = true;
+    notifyListeners();
+    _saveToRust('torrent_assoc_prompted', 'true');
+  }
+
+  /// 请求 Rust 检查当前 .torrent 文件关联状态
+  void checkFileAssociation() {
+    const CheckFileAssociation().sendSignalToRust();
+  }
+
+  /// 设置或取消 .torrent 文件关联。
+  /// 乐观更新 UI，Rust 回传真实状态后会校正。
+  void setFileAssociation(bool enable) {
+    logInfo('Settings', 'setFileAssociation: enable=$enable');
+    _torrentAssociated = enable;
+    notifyListeners();
+    SetFileAssociation(enable: enable).sendSignalToRust();
+  }
+
   /// 设置开机自启动，返回是否成功。
   /// 操作后通过 [launchAtStartup.isEnabled] 验证注册表实际状态，
   /// 若与预期不符则回滚 UI 状态。
@@ -209,6 +251,20 @@ class SettingsProvider extends ChangeNotifier {
 
   void _startListening() {
     _configSub = ConfigLoaded.rustSignalStream.listen(_onConfigLoaded);
+    if (_enableFileAssoc) {
+      _fileAssocSub = FileAssociationStatus.rustSignalStream.listen(
+        _onFileAssocStatus,
+      );
+    }
+  }
+
+  void _onFileAssocStatus(RustSignalPack<FileAssociationStatus> pack) {
+    final associated = pack.message.isAssociated;
+    logInfo('Settings', 'file association status: $associated');
+    if (_torrentAssociated != associated) {
+      _torrentAssociated = associated;
+      notifyListeners();
+    }
   }
 
   void _onConfigLoaded(RustSignalPack<ConfigLoaded> pack) {
@@ -243,10 +299,16 @@ class SettingsProvider extends ChangeNotifier {
           _btPortEnd = int.tryParse(entry.value) ?? 6891;
         case 'bt_custom_trackers':
           _btCustomTrackers = entry.value;
+        case 'torrent_assoc_prompted':
+          _torrentAssocPrompted = entry.value == 'true';
       }
     }
     _loaded = true;
     notifyListeners();
+    // 配置加载后，立即查询文件关联的实际状态（仅启用了文件关联功能的实例）
+    if (_enableFileAssoc) {
+      checkFileAssociation();
+    }
   }
 
   void _saveToRust(String key, String value) {

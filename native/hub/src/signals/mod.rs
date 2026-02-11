@@ -12,6 +12,10 @@ pub struct CreateTask {
     pub segments: i32,     // 0 = auto (default 8)
     #[serde(default)]
     pub cookies: String, // browser cookies for authenticated downloads
+    /// Raw .torrent file bytes (base64-decoded by Dart before sending).
+    /// When non-empty, this takes priority over `url` for BT downloads.
+    #[serde(default)]
+    pub torrent_file_bytes: Vec<u8>,
 }
 
 /// Batch create multiple download tasks at once
@@ -205,4 +209,23 @@ pub struct UpdateDownloadProgress {
 #[derive(Deserialize, DartSignal)]
 pub struct InstallUpdate {
     pub installer_path: String,
+}
+
+// ========== File association signals ==========
+
+/// Set or remove .torrent file association (Dart → Rust).
+/// `enable = true` → register, `enable = false` → unregister.
+#[derive(Deserialize, DartSignal)]
+pub struct SetFileAssociation {
+    pub enable: bool,
+}
+
+/// Check current .torrent file association status (Dart → Rust).
+#[derive(Deserialize, DartSignal)]
+pub struct CheckFileAssociation {}
+
+/// Report .torrent file association status back to Dart (Rust → Dart).
+#[derive(Serialize, RustSignal)]
+pub struct FileAssociationStatus {
+    pub is_associated: bool,
 }

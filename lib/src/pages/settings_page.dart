@@ -82,6 +82,13 @@ List<SettingsSearchItem> get settingsSearchItems {
       icon: LucideIcons.panelBottomClose,
     ),
     SettingsSearchItem(
+      category: SettingsCategory.general,
+      label: s.torrentFileAssociation,
+      description: s.torrentFileAssociationDesc,
+      keywords: s.searchKeywordsFileAssoc,
+      icon: LucideIcons.fileType,
+    ),
+    SettingsSearchItem(
       category: SettingsCategory.appearance,
       label: s.language,
       description: s.languageDesc,
@@ -588,6 +595,19 @@ class _GeneralContent extends StatelessWidget {
               child: ShadSwitch(
                 value: settingsProvider.closeToTray,
                 onChanged: (v) => settingsProvider.setCloseToTray(v),
+              ),
+            ),
+            const SizedBox(height: 10),
+            _SettingCard(
+              label: LocaleScope.of(context).torrentFileAssociation,
+              description: LocaleScope.of(context).torrentFileAssociationDesc,
+              child: ShadSwitch(
+                value: settingsProvider.torrentAssociated,
+                onChanged: (v) {
+                  settingsProvider.setFileAssociation(v);
+                  // 用户手动操作过就标记为已提示
+                  settingsProvider.markTorrentAssocPrompted();
+                },
               ),
             ),
           ],

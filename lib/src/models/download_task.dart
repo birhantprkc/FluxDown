@@ -336,8 +336,10 @@ class DownloadTask {
 
   /// 协议类型标识
   String get protocolLabel {
-    if (url.toLowerCase().startsWith('magnet:')) return 'BT';
-    if (url.toLowerCase().startsWith('ftp://')) return 'FTP';
+    final lower = url.toLowerCase();
+    if (lower.startsWith('magnet:')) return 'BT';
+    if (lower.startsWith('torrent-file://')) return 'BT';
+    if (lower.startsWith('ftp://')) return 'FTP';
     return 'HTTP';
   }
 

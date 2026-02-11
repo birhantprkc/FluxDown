@@ -39,6 +39,14 @@ html.light {
   --color-dark-text-muted: #A1A1AA;
 }
 
+/* ===== FOUC Prevention ===== */
+/* Hide body until theme is applied by inline script in <head>.
+   The 'fluxdown-loading' class is set on <html> in the markup
+   and removed synchronously by the inline script before first paint. */
+html.fluxdown-loading body {
+  visibility: hidden;
+}
+
 /* ===== Base Styles ===== */
 html {
   scroll-behavior: smooth;

@@ -5,7 +5,8 @@ const zhCN: Messages = {
   "nav.features": "功能",
   "nav.extension": "浏览器扩展",
   "nav.download": "下载",
-  "nav.feedback": "反馈",
+  "nav.feedback": "\u53cd\u9988",
+  "nav.changelog": "\u66f4\u65b0\u65e5\u5fd7",
 
   // Hero
   "hero.badge": "由 Rust 驱动",
@@ -211,20 +212,119 @@ const zhCN: Messages = {
   "faq.items.7.a":
     "从下载区域下载扩展 zip 文件，解压后打开浏览器的扩展管理页面（chrome://extensions），开启开发者模式，点击「加载已解压的扩展程序」选择解压后的文件夹即可。",
 
+  // Changelog
+  "changelog.badge": "更新日志",
+  "changelog.title": "最新",
+  "changelog.titleHighlight": "变更",
+  "changelog.subtitle": "追踪 FluxDown 的每一次更新与改进。",
+  "changelog.error": "加载更新日志失败，请稍后重试。",
+  "changelog.empty": "暂无发布记录。",
+  "changelog.loadMore": "加载更多",
+  "changelog.loading": "加载中...",
+
+  // Privacy Policy
+  "privacy.title": "隐私政策",
+  "privacy.lastUpdated": "最后更新：2026 年 2 月",
+  "privacy.intro": "FluxDown（以下简称「我们」或「本软件」）致力于保护您的隐私。本隐私政策说明了当您使用 FluxDown 桌面应用、浏览器扩展和本网站时，我们收集哪些信息、不收集哪些信息以及如何处理您的数据。",
+
+  "privacy.s1.title": "1. 我们收集的信息",
+  "privacy.s1.desc": "我们仅收集提供和改进服务所必需的最少信息：",
+  "privacy.s1.item1": "网站分析：我们使用 Vercel Web Analytics，这是一项注重隐私的分析服务，仅收集匿名的、聚合的页面浏览数据。不使用 Cookie，不收集个人数据，不追踪个人用户。",
+  "privacy.s1.item2": "反馈提交：当您通过网站自愿提交反馈时，我们收集反馈类型、标题、描述以及可选的联系方式。这些数据以 GitHub Issue 的形式存储在我们的代码仓库中。",
+  "privacy.s1.item3": "邮件订阅：如果您订阅了平台可用性通知，我们会将您的邮箱地址存储在 GitHub Issue 中，仅用于在所请求的平台可用时通知您。",
+
+  "privacy.s2.title": "2. 我们不收集的信息",
+  "privacy.s2.desc": "FluxDown 采用本地优先架构设计。桌面应用程序：",
+  "privacy.s2.item1": "不会收集、传输或在任何远程服务器上存储您的下载链接、文件名或下载历史。所有下载数据均存储在您设备上的本地 SQLite 数据库中。",
+  "privacy.s2.item2": "桌面应用中不包含任何遥测、崩溃报告或使用分析功能。",
+  "privacy.s2.item3": "不需要任何形式的账户、登录或注册。",
+  "privacy.s2.item4": "不与任何外部服务器通信。安装后应用完全离线运行。",
+
+  "privacy.s3.title": "3. 浏览器扩展",
+  "privacy.s3.desc": "FluxDown 浏览器扩展仅通过本地 HTTP 端点 (localhost:19527) 与 FluxDown 桌面应用通信。具体而言：",
+  "privacy.s3.item1": "所有数据传输都在您的设备本地进行，发生在浏览器扩展和桌面应用之间。不会向任何外部服务器发送数据。",
+  "privacy.s3.item2": "扩展将您的偏好设置（自动拦截开关、文件类型过滤器、域名规则）存储在浏览器的本地存储中 (chrome.storage.sync/local)。这些数据仅通过浏览器自带的同步机制进行同步（如已启用）。",
+  "privacy.s3.item3": "扩展不会访问、读取或修改任何网页内容，仅拦截下载请求。",
+
+  "privacy.s4.title": "4. 网站分析",
+  "privacy.s4.desc": "本网站使用 Vercel Web Analytics，这是一项注重隐私的分析服务。它不使用 Cookie、不收集个人信息、不跨会话追踪用户，符合 GDPR、CCPA 等隐私法规，无需显示 Cookie 同意横幅。",
+
+  "privacy.s5.title": "5. 数据存储与安全",
+  "privacy.s5.desc": "所有下载数据（任务记录、文件路径、进度）均存储在您设备上由 FluxDown 应用管理的本地 SQLite 数据库中。我们无法访问这些数据。网站反馈和订阅数据存储在我们 GitHub 仓库的 Issue 中，受 GitHub 隐私政策约束。",
+
+  "privacy.s6.title": "6. 第三方服务",
+  "privacy.s6.desc": "本网站与以下第三方服务交互：",
+  "privacy.s6.item1": "GitHub API：在服务端用于获取发布信息和处理反馈提交。您的 IP 地址不会转发至 GitHub。",
+  "privacy.s6.item2": "Google Fonts：用于加载 Inter 字体。受 Google 隐私政策约束。",
+
+  "privacy.s7.title": "7. 儿童隐私",
+  "privacy.s7.desc": "FluxDown 不会故意收集 13 岁以下儿童的任何个人信息。由于桌面应用完全不收集个人数据，且网站数据收集仅限于自愿提交的反馈，我们认为本服务对所有年龄段的用户都是安全的。",
+
+  "privacy.s8.title": "8. 政策变更",
+  "privacy.s8.desc": "我们可能会不时更新本隐私政策。变更将发布在本页面，并更新修订日期。建议您定期查看本页面。",
+
+  "privacy.s9.title": "9. 联系我们",
+  "privacy.s9.desc": "如果您对本隐私政策有任何疑问，请通过我们网站的反馈页面与我们联系。",
+
+  // Terms of Service
+  "terms.title": "服务条款",
+  "terms.lastUpdated": "最后更新：2026 年 2 月",
+  "terms.intro": "请在使用 FluxDown 软件、浏览器扩展和网站（统称「服务」）前仔细阅读本服务条款（以下简称「条款」）。使用本服务即表示您同意受本条款约束。",
+
+  "terms.s1.title": "1. 条款接受",
+  "terms.s1.desc": "通过下载、安装或使用 FluxDown，您同意本条款。如果您不同意，请不要使用本服务。我们保留随时更新本条款的权利，继续使用即表示接受任何更改。",
+
+  "terms.s2.title": "2. 许可",
+  "terms.s2.desc": "FluxDown 作为免费软件提供。在遵守本条款的前提下，我们授予您一项非排他性、不可转让、可撤销的许可，允许您将本软件用于个人或商业目的。您可以：",
+  "terms.s2.item1": "在您拥有或控制的任意数量的设备上下载、安装和使用 FluxDown。",
+  "terms.s2.item2": "将浏览器扩展与桌面应用配合使用。",
+  "terms.s2.item3": "与他人分享官方下载链接。",
+
+  "terms.s3.title": "3. 合理使用",
+  "terms.s3.desc": "您同意仅将 FluxDown 用于合法目的。您不得使用本服务：",
+  "terms.s3.item1": "下载侵犯他人知识产权的内容，包括未经授权的受版权保护的材料。",
+  "terms.s3.item2": "违反任何适用的地方、国家或国际法律法规。",
+  "terms.s3.item3": "尝试对软件进行逆向工程、反编译或反汇编，除非适用法律允许。",
+  "terms.s3.item4": "未经明确许可，以 FluxDown 名义分发修改版本的软件。",
+
+  "terms.s4.title": "4. 知识产权",
+  "terms.s4.desc": "FluxDown 名称、标志及相关品牌形象是 FluxDown 项目的知识产权。软件源代码受其各自的许可条款约束。本网站上的所有内容，包括文字、图形和设计，除另有说明外，均归 FluxDown 所有。",
+
+  "terms.s5.title": "5. 免责声明",
+  "terms.s5.desc": "FluxDown 按「原样」和「可用」的基础提供，不提供任何明示或暗示的担保，包括但不限于对适销性、特定用途适用性和不侵权的暗示担保。我们不保证服务不会中断、无错误或不含有害成分。",
+
+  "terms.s6.title": "6. 责任限制",
+  "terms.s6.desc": "在适用法律允许的最大范围内，FluxDown 及其贡献者不对任何间接的、附带的、特殊的、后果性的或惩罚性的损害赔偿负责，也不对因您使用本服务而直接或间接产生的任何利润或收入损失、数据丢失、使用损失、商誉损失或其他无形损失负责。",
+
+  "terms.s7.title": "7. 用户内容与反馈",
+  "terms.s7.desc": "当您通过网站提交反馈、错误报告或功能请求时，您授予我们非排他性的、全球范围内的、免版税的许可，允许我们使用、复制和展示该内容，以改进 FluxDown。我们不会与第三方分享您的联系信息。",
+
+  "terms.s8.title": "8. 终止",
+  "terms.s8.desc": "您可以随时通过卸载软件和移除浏览器扩展来停止使用 FluxDown。我们保留随时修改或终止服务的权利，恕不另行通知。终止后，本条款中因其性质应当继续有效的所有条款将继续有效。",
+
+  "terms.s9.title": "9. 条款变更",
+  "terms.s9.desc": "我们保留随时修改本条款的权利。更新后的条款将发布在本页面，并注明修订日期。在任何更改之后继续使用本服务即表示您接受新条款。",
+
+  "terms.s10.title": "10. 联系我们",
+  "terms.s10.desc": "如果您对本服务条款有任何疑问，请通过我们网站的反馈页面与我们联系。",
+
   // Footer
-  "footer.desc": "由 Rust 驱动的现代多协议下载管理器。高速、可靠、完全免费。",
+  "footer.desc": "基于 Rust 构建的开源下载管理器，多线程加速、智能分段、浏览器无缝集成。极速、可靠，永久免费。",
   "footer.product": "产品",
   "footer.features": "功能特性",
   "footer.browserExtension": "浏览器扩展",
   "footer.download": "下载",
-  "footer.support": "支持",
+  "footer.support": "资源",
   "footer.documentation": "文档",
   "footer.faq": "常见问题",
   "footer.contact": "联系我们",
   "footer.feedback": "反馈建议",
+  "footer.changelog": "更新日志",
+  "footer.legal": "法律",
+  "footer.privacy": "隐私政策",
+  "footer.terms": "服务条款",
   "footer.copyright": "© {year} FluxDown. 保留所有权利。",
-  "footer.builtWith": "用",
-  "footer.using": "❤ 和 Astro + Rust 构建",
+  "footer.builtWith": "Astro + React + Rust",
 };
 
 export default zhCN;

@@ -4,28 +4,82 @@ import "../styles/global.css";
 interface Props {
   title?: string;
   description?: string;
+  canonicalUrl?: string;
 }
 
+const SITE_URL = "https://fluxdown.app";
 const {
   title = "FluxDown - Modern Multi-Protocol Download Manager",
   description = "A blazing fast, multi-protocol download manager with browser extension. Powered by Rust engine with HTTP/HTTPS/FTP support, intelligent segmentation, and speed optimization.",
+  canonicalUrl = Astro.url.pathname === "/" ? SITE_URL : `${SITE_URL}${Astro.url.pathname}`,
 } = Astro.props;
+
+const ogImageUrl = `${SITE_URL}/logo.png`;
 ---
 
 <!doctype html>
-<html lang="en">
+<html lang="en" class="fluxdown-loading">
   <head>
     <meta charset="utf-8" />
     <link rel="icon" type="image/svg+xml" href="/logo.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content={description} />
-    <meta name="theme-color" content="#0a0a0b" />
+    <meta name="theme-color" content="#0a0a0b" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#F8F9FA" media="(prefers-color-scheme: light)" />
+    <link rel="canonical" href={canonicalUrl} />
 
     <!-- Open Graph -->
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta property="og:type" content="website" />
-    <meta property="og:image" content="/logo.png" />
+    <meta property="og:url" content={canonicalUrl} />
+    <meta property="og:site_name" content="FluxDown" />
+    <meta property="og:image" content={ogImageUrl} />
+    <meta property="og:image:width" content="512" />
+    <meta property="og:image:height" content="512" />
+    <meta property="og:image:alt" content="FluxDown Logo" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:locale:alternate" content="zh_CN" />
+
+    <!-- Twitter Cards -->
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImageUrl} />
+    <meta name="twitter:image:alt" content="FluxDown Logo" />
+
+    <!-- JSON-LD Structured Data -->
+    <script type="application/ld+json" set:html={JSON.stringify({
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "FluxDown",
+      "applicationCategory": "UtilitiesApplication",
+      "operatingSystem": "Windows",
+      "description": "A modern multi-protocol download manager with multi-threaded acceleration, smart segmentation, and browser integration. Powered by Rust.",
+      "url": SITE_URL,
+      "image": ogImageUrl,
+      "author": {
+        "@type": "Organization",
+        "name": "FluxDown",
+        "url": SITE_URL
+      },
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "USD"
+      },
+      "softwareVersion": "latest",
+      "downloadUrl": `${SITE_URL}/#download`,
+      "featureList": [
+        "Multi-threaded download acceleration",
+        "HTTP/HTTPS/FTP protocol support",
+        "Smart file segmentation",
+        "Breakpoint resume",
+        "Browser extension integration",
+        "Global speed limiter"
+      ],
+      "license": "https://opensource.org/licenses/MIT"
+    })} />
 
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -36,25 +90,44 @@ const {
     />
 
     <title>{title}</title>
+
+    <!--
+      Critical: Prevent FOUC by applying theme + locale BEFORE first paint.
+      This script runs synchronously and blocks rendering to avoid any flash.
+    -->
     <script is:inline>
-      // Prevent FOUC: apply saved theme before first paint
-      if (localStorage.getItem('fluxdown-theme') === 'light') {
-        document.documentElement.classList.add('light');
-      }
-      // Apply saved locale to html lang attribute
       (function() {
-        var saved = localStorage.getItem('fluxdown-locale');
-        if (saved === 'zh') {
-          document.documentElement.lang = 'zh-CN';
-        } else if (saved === 'en') {
-          document.documentElement.lang = 'en';
+        var html = document.documentElement;
+
+        // 1. Theme: apply saved preference or respect system preference
+        var savedTheme = null;
+        try { savedTheme = localStorage.getItem('fluxdown-theme'); } catch(e) {}
+        if (savedTheme === 'light') {
+          html.classList.add('light');
+        } else if (!savedTheme) {
+          // No saved preference: respect OS preference
+          if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+            html.classList.add('light');
+          }
+        }
+
+        // 2. Locale: apply saved locale to html lang attribute
+        var savedLocale = null;
+        try { savedLocale = localStorage.getItem('fluxdown-locale'); } catch(e) {}
+        if (savedLocale === 'zh') {
+          html.lang = 'zh-CN';
+        } else if (savedLocale === 'en') {
+          html.lang = 'en';
         } else {
           var langs = navigator.languages || [navigator.language];
           for (var i = 0; i < langs.length; i++) {
-            if (langs[i].startsWith('zh')) { document.documentElement.lang = 'zh-CN'; break; }
-            if (langs[i].startsWith('en')) { document.documentElement.lang = 'en'; break; }
+            if (langs[i].startsWith('zh')) { html.lang = 'zh-CN'; break; }
+            if (langs[i].startsWith('en')) { html.lang = 'en'; break; }
           }
         }
+
+        // 3. Remove loading class to reveal content (prevents FOUC)
+        html.classList.remove('fluxdown-loading');
       })();
     </script>
   </head>
@@ -67,18 +140,15 @@ const {
     <script is:inline>
       // Theme persistence & toggle
       (function() {
-        const saved = localStorage.getItem('fluxdown-theme');
-        if (saved === 'light') document.documentElement.classList.add('light');
-
         window.__toggleTheme = function() {
-          const html = document.documentElement;
+          var html = document.documentElement;
           html.classList.add('theme-transitioning');
           html.classList.toggle('light');
-          const isLight = html.classList.contains('light');
+          var isLight = html.classList.contains('light');
           localStorage.setItem('fluxdown-theme', isLight ? 'light' : 'dark');
           window.dispatchEvent(new CustomEvent('theme-change', { detail: { light: isLight } }));
           // Remove transition class after animation completes
-          setTimeout(() => html.classList.remove('theme-transitioning'), 350);
+          setTimeout(function() { html.classList.remove('theme-transitioning'); }, 350);
         };
 
         window.__isLightTheme = function() {

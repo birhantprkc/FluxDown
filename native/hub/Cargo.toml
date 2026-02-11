@@ -31,8 +31,12 @@ thiserror = "2.0"
 suppaftp = { version = "6" }
 serde_json = "1"
 librqbit = { version = "8", default-features = false, features = ["rust-tls"] }
+bytes = "1"
 tracing = "0.1"
 url = "2"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
 
 # Uncomment below to target the web.
 # tokio_with_wasm = { version = "0.8.5", features = ["rt", "macros", "time"] }

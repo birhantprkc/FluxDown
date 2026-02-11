@@ -197,13 +197,13 @@ class DetailPanel extends StatelessWidget {
       segs = rawSegs;
     }
 
-    // 百分比：已完成任务直接 100%，有分片数据时用分片累加，否则 fallback
+    // 百分比：始终使用 task.progress（downloadedBytes / totalBytes），
+    // 这是 Rust 端传来的权威进度值。分片数据仅用于可视化分段进度条，
+    // 不用来反算总百分比（BT 虚拟分片的舍入误差 + 信号时序差异会导致
+    // 与任务列表显示不一致）。
     final double pctValue;
     if (task.status == TaskStatus.completed) {
       pctValue = 1.0;
-    } else if (hasSegs) {
-      final dlSum = segs!.fold<int>(0, (s, seg) => s + seg.downloadedBytes);
-      pctValue = (dlSum / task.totalBytes).clamp(0.0, 1.0);
     } else {
       pctValue = task.progress;
     }

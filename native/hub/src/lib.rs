@@ -3,6 +3,7 @@ mod bt_downloader;
 mod db;
 mod download_manager;
 mod downloader;
+mod file_association;
 mod ftp_downloader;
 mod native_messaging;
 mod segment_advisor;

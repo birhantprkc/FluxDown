@@ -231,6 +231,14 @@ class S {
   String get fromBrowserExtension =>
       _t('来自浏览器扩展的下载请求', 'Download request from browser extension');
 
+  // Torrent file
+  String get selectTorrentFile => _t('选择种子文件', 'Select torrent file');
+  String get openTorrentFile => _t('打开种子文件', 'Open .torrent file');
+  String get torrentFileSelected => _t('已选择种子文件', 'Torrent file selected');
+  String torrentFileCount(int count) =>
+      _t('已选择 $count 个种子文件', '$count torrent file(s) selected');
+  String get orSeparator => _t('或', 'or');
+
   // Batch download
   String get batchDownloadDesc => _t(
     '每行一个链接，支持 HTTP / FTP / 磁力链接',
@@ -281,6 +289,17 @@ class S {
   String get closeToTrayDesc => _t(
     '点击关闭按钮时隐藏到系统托盘，而非退出应用',
     'Hide to system tray instead of quitting when closing',
+  );
+  String get torrentFileAssociation =>
+      _t('关联 .torrent 文件', 'Associate .torrent Files');
+  String get torrentFileAssociationDesc => _t(
+    '将 FluxDown 设为 .torrent 文件的默认打开方式',
+    'Set FluxDown as the default app for .torrent files',
+  );
+  String get torrentAssocDialogTitle => _t('关联种子文件', 'Associate Torrent Files');
+  String get torrentAssocDialogDesc => _t(
+    '是否将 FluxDown 设为 .torrent 文件的默认打开方式？\n双击种子文件即可直接开始下载。',
+    'Set FluxDown as the default app for .torrent files?\nDouble-click a torrent file to start downloading directly.',
   );
   String get settingFailed => _t('设置失败', 'Setting Failed');
   String get autoStartupFailedDesc => _t(
@@ -449,6 +468,10 @@ class S {
   List<String> get searchKeywordsUpdate =>
       _t('更新,升级,版本', 'update,upgrade,version').split(',')
         ..addAll(['update', 'upgrade', 'version']);
+  List<String> get searchKeywordsFileAssoc => _t(
+    '文件关联,种子,torrent,关联,默认程序',
+    'file,association,torrent,default,open',
+  ).split(',')..addAll(['torrent', 'association', 'file']);
   List<String> get searchKeywordsBtSettings => _t(
     'BT,BitTorrent,种子,磁力,Tracker,DHT,UPnP,端口',
     'BT,BitTorrent,torrent,magnet,tracker,DHT,UPnP,port',
