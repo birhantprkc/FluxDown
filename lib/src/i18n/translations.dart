@@ -201,6 +201,15 @@ class S {
   String get infoUrl => _t('地址', 'URL');
   String get resumingClickPause =>
       _t('恢复中...（点击暂停）', 'Resuming... (click to pause)');
+  String get dynamicSplit => _t('拆分', 'Split');
+  String splitCount(int total, int reactive, int proactive) => _t(
+    '$total 次（主动 $proactive · 响应 $reactive）',
+    '$total ($proactive proactive · $reactive reactive)',
+  );
+  String splitLatest(int parentNum, int childNum, String childSize) => _t(
+    '最近: #$parentNum 拆分出 #$childNum ($childSize)',
+    'Latest: #$parentNum split into #$childNum ($childSize)',
+  );
 
   // ─────────────────────────────────────────────
   // NewDownloadDialog / QuickDownloadDialog
@@ -338,6 +347,50 @@ class S {
   String nTasks(int n) => _t('$n 个任务', '$n tasks');
 
   // ─────────────────────────────────────────────
+  // Settings — BT 下载
+  // ─────────────────────────────────────────────
+
+  String get btSettings => _t('BT 下载设置', 'BitTorrent Settings');
+  String get btSettingsDesc =>
+      _t('BitTorrent 协议相关配置', 'BitTorrent protocol settings');
+  String get btEnableDht => _t('启用 DHT', 'Enable DHT');
+  String get btEnableDhtDesc => _t(
+    '分布式哈希表，无需 Tracker 即可发现对等节点',
+    'Distributed Hash Table for trackerless peer discovery',
+  );
+  String get btEnableUpnp => _t('启用 UPnP 端口映射', 'Enable UPnP Port Mapping');
+  String get btEnableUpnpDesc => _t(
+    '自动配置路由器端口转发，提高连接性',
+    'Auto-configure router port forwarding for better connectivity',
+  );
+  String get btListenPort => _t('监听端口范围', 'Listen Port Range');
+  String get btListenPortDesc =>
+      _t('用于接收 BT 连接的端口范围', 'Port range for incoming BT connections');
+  String get btListenPortStart => _t('起始端口', 'Start Port');
+  String get btListenPortEnd => _t('结束端口', 'End Port');
+  String get btTrackerList => _t('Tracker 列表', 'Tracker List');
+  String get btTrackerListDesc => _t(
+    '用于发现对等节点的 Tracker 服务器，每行一个地址',
+    'Tracker servers for peer discovery, one URL per line',
+  );
+  String get btTrackerPlaceholder => _t(
+    '每行一个 Tracker 地址，例如：\nudp://tracker.opentrackr.org:1337/announce\nhttps://tracker.example.com/announce',
+    'One tracker URL per line, e.g.:\nudp://tracker.opentrackr.org:1337/announce\nhttps://tracker.example.com/announce',
+  );
+  String btTrackerCount(int n) => _t('$n 个 Tracker', '$n trackers');
+  String get btResetTrackers => _t('重置为默认', 'Reset to Default');
+  String get btResetTrackersConfirm =>
+      _t('确定要恢复默认的 Tracker 列表吗？', 'Reset tracker list to defaults?');
+  String get btPortInvalid => _t(
+    '端口范围无效（1024-65535，起始 ≤ 结束）',
+    'Invalid port range (1024-65535, start ≤ end)',
+  );
+  String get btSettingsRestartHint => _t(
+    '部分设置需要重启 BT 引擎后生效',
+    'Some settings require BT engine restart to take effect',
+  );
+
+  // ─────────────────────────────────────────────
   // Settings — 关于
   // ─────────────────────────────────────────────
 
@@ -396,6 +449,10 @@ class S {
   List<String> get searchKeywordsUpdate =>
       _t('更新,升级,版本', 'update,upgrade,version').split(',')
         ..addAll(['update', 'upgrade', 'version']);
+  List<String> get searchKeywordsBtSettings => _t(
+    'BT,BitTorrent,种子,磁力,Tracker,DHT,UPnP,端口',
+    'BT,BitTorrent,torrent,magnet,tracker,DHT,UPnP,port',
+  ).split(',')..addAll(['bt', 'torrent', 'tracker', 'dht', 'peer']);
 
   // ─────────────────────────────────────────────
   // TrayService

@@ -6,6 +6,7 @@ mod downloader;
 mod ftp_downloader;
 mod native_messaging;
 mod segment_advisor;
+mod segment_coordinator;
 mod signals;
 mod speed_limiter;
 mod updater;

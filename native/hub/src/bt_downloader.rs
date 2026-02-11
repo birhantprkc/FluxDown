@@ -186,6 +186,41 @@ const PUBLIC_TRACKERS: &[&str] = &[
     "http://tracker.bt4g.com:2095/announce",
 ];
 
+/// Return the built-in public tracker list as a newline-separated string.
+/// Used to populate the default config value on first launch so users can
+/// see and edit the full list in Settings.
+pub fn default_tracker_list() -> String {
+    PUBLIC_TRACKERS.join("\n")
+}
+
+// ---------------------------------------------------------------------------
+// BT configuration — user-settable via the Settings page
+// ---------------------------------------------------------------------------
+
+/// User-configurable BT session settings, loaded from the DB config table.
+#[derive(Debug, Clone)]
+pub struct BtConfig {
+    pub enable_dht: bool,
+    pub enable_upnp: bool,
+    pub port_start: u16,
+    pub port_end: u16,
+    /// User-supplied extra tracker URLs (newline-separated).
+    /// These are **merged** with the built-in `PUBLIC_TRACKERS` list.
+    pub custom_trackers: String,
+}
+
+impl Default for BtConfig {
+    fn default() -> Self {
+        Self {
+            enable_dht: true,
+            enable_upnp: true,
+            port_start: 6881,
+            port_end: 6891,
+            custom_trackers: String::new(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Shared BT Session — singleton owned by DownloadManager
 // ---------------------------------------------------------------------------
@@ -210,14 +245,21 @@ pub struct SharedBtSession {
 }
 
 impl SharedBtSession {
-    /// Create the shared session with the given initial speed limit.
+    /// Create the shared session with the given initial speed limit and config.
     ///
     /// `default_save_dir` is used as the Session's default output folder
     /// (individual torrents override this via `AddTorrentOptions::output_folder`).
     ///
     /// `speed_limit_bps` is the global download speed limit in bytes/sec
     /// (0 = unlimited).
-    pub fn new(default_save_dir: &str, speed_limit_bps: u64) -> Result<Self, DownloadError> {
+    ///
+    /// `bt_config` contains user-configurable BT settings (DHT, UPnP, ports,
+    /// custom trackers).
+    pub fn new(
+        default_save_dir: &str,
+        speed_limit_bps: u64,
+        bt_config: &BtConfig,
+    ) -> Result<Self, DownloadError> {
         // Scale worker threads with CPU cores for better throughput on
         // multi-core machines.  Minimum 4, maximum 16.
         let cpu_cores = std::thread::available_parallelism()
@@ -232,10 +274,24 @@ impl SharedBtSession {
             .build()
             .map_err(|e| DownloadError::Other(format!("failed to build BT runtime: {e}")))?;
 
-        let trackers: HashSet<url::Url> = PUBLIC_TRACKERS
-            .iter()
-            .filter_map(|s| s.parse().ok())
-            .collect();
+        // If the user has a non-empty tracker list in settings, use it directly.
+        // Otherwise fall back to the built-in PUBLIC_TRACKERS list.
+        let trackers: HashSet<url::Url> = if bt_config.custom_trackers.trim().is_empty() {
+            PUBLIC_TRACKERS
+                .iter()
+                .filter_map(|s| s.parse().ok())
+                .collect()
+        } else {
+            bt_config
+                .custom_trackers
+                .lines()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty())
+                .filter_map(|l| l.parse().ok())
+                .collect()
+        };
+
+        let total_tracker_count = trackers.len();
 
         let download_bps = NonZeroU32::new(speed_limit_bps.min(u32::MAX as u64) as u32);
 
@@ -243,13 +299,20 @@ impl SharedBtSession {
         // alongside the download database so everything is co-located.
         let persistence_folder = PathBuf::from(default_save_dir).join(".fluxdown_bt");
 
+        // Validate and clamp port range.
+        let port_start = bt_config.port_start.max(1024);
+        let port_end = bt_config.port_end.max(port_start);
+
+        let enable_dht = bt_config.enable_dht;
+        let enable_upnp = bt_config.enable_upnp;
+
         let save_dir = default_save_dir.to_owned();
         let session = rt.block_on(async {
             let opts = SessionOptions {
-                disable_dht: false,
-                disable_dht_persistence: false,
-                listen_port_range: Some(6881..6891),
-                enable_upnp_port_forwarding: true,
+                disable_dht: !enable_dht,
+                disable_dht_persistence: !enable_dht,
+                listen_port_range: Some(port_start..port_end.saturating_add(1)),
+                enable_upnp_port_forwarding: enable_upnp,
                 trackers,
                 ratelimits: librqbit::limits::LimitsConfig {
                     download_bps,
@@ -289,8 +352,12 @@ impl SharedBtSession {
         }).map_err(|e| DownloadError::Other(format!("BT session init failed: {e}")))?;
 
         rinf::debug_print!(
-            "[BT] shared session created (DHT + {} trackers, speed_limit={} B/s, worker_threads={}, persistence=on)",
-            PUBLIC_TRACKERS.len(),
+            "[BT] shared session created (DHT={}, UPnP={}, ports={}-{}, {} trackers, speed_limit={} B/s, worker_threads={}, persistence=on)",
+            enable_dht,
+            enable_upnp,
+            port_start,
+            port_end,
+            total_tracker_count,
             speed_limit_bps,
             worker_threads
         );
@@ -633,8 +700,12 @@ fn build_piece_scatter_segments(
     let chunk = total_bytes / n as i64;
     let mut segs = Vec::with_capacity(n as usize);
 
-    if total_pieces == 0 {
-        // Fallback: no piece info yet, distribute bytes evenly
+    if total_pieces == 0 || (downloaded_pieces == 0 && downloaded_bytes > 0) {
+        // Fallback: no piece info yet OR no pieces completed but we have
+        // fetched bytes (partial pieces in-flight).  Distribute bytes
+        // evenly across virtual segments with a scatter pattern so the
+        // user can see BT is actively downloading even before any piece
+        // has been fully hash-verified.
         let per_seg = if downloaded_bytes > 0 {
             downloaded_bytes / n as i64
         } else {
@@ -647,12 +718,35 @@ fn build_piece_scatter_segments(
             } else {
                 (i as i64 + 1) * chunk - 1
             };
+            // Scatter the bytes unevenly so segments don't all look identical.
+            // Use golden-ratio perturbation for a natural spread.
+            let perturbation = ((i as f64 + 1.0) * 0.618033988749895).fract();
+            let weight = 0.7 + perturbation * 0.6; // range [0.7, 1.3]
+            let seg_dl = (per_seg as f64 * weight).round() as i64;
             segs.push(SegmentProgressInfo {
                 index: i,
                 start_byte: start,
                 end_byte: end,
-                downloaded_bytes: per_seg.min(end - start + 1),
+                downloaded_bytes: seg_dl.clamp(0, end - start + 1),
             });
+        }
+        // Correction: ensure total visual bytes match actual downloaded_bytes
+        let visual_total: i64 = segs.iter().map(|s| s.downloaded_bytes).sum();
+        let diff = downloaded_bytes - visual_total;
+        if diff != 0 {
+            let abs_diff = diff.unsigned_abs() as f64;
+            let direction = if diff > 0 { 1i64 } else { -1i64 };
+            let mut remaining = diff.abs();
+            for seg in &mut segs {
+                let seg_size = seg.end_byte - seg.start_byte + 1;
+                let share = ((seg_size as f64 / total_bytes as f64) * abs_diff).round() as i64;
+                let adj = share.min(remaining);
+                seg.downloaded_bytes = (seg.downloaded_bytes + direction * adj).clamp(0, seg_size);
+                remaining -= adj;
+                if remaining <= 0 {
+                    break;
+                }
+            }
         }
         return segs;
     }
@@ -948,12 +1042,25 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
         }
 
         let stats = handle.stats();
-        let progress = stats.progress_bytes as i64;
+        let checked_progress = stats.progress_bytes as i64;
         let total = if stats.total_bytes > 0 {
             stats.total_bytes as i64
         } else {
             total_bytes
         };
+
+        // Use fetched_bytes (actual bytes received from network, including
+        // partial pieces) when checked progress is 0.  This lets the user
+        // see that BT is actively downloading even before any piece has been
+        // fully received and hash-verified.  Once pieces start completing,
+        // checked_progress is always >= fetched partial data, so we take
+        // the max to ensure monotonic progress.
+        let fetched = stats
+            .live
+            .as_ref()
+            .map(|l| l.snapshot.fetched_bytes as i64)
+            .unwrap_or(0);
+        let progress = checked_progress.max(fetched).min(total);
 
         // Check for error — keep the handle cached so user can retry.
         if let Some(ref err) = stats.error {
@@ -1052,8 +1159,9 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
             };
 
             rinf::debug_print!(
-                "[BT] task={} state={:?} progress={}/{} pieces={}/{} down={} B/s up={} B/s peers(live={} connecting={} queued={} seen={} dead={})",
+                "[BT] task={} state={:?} progress={}/{} (checked={}, fetched={}) pieces={}/{} down={} B/s up={} B/s peers(live={} connecting={} queued={} seen={} dead={})",
                 short_id(&task_id), stats.state, progress, total,
+                checked_progress, fetched,
                 downloaded_pieces, total_pieces, speed_bps, upload_speed_bps,
                 peers_live, peers_connecting, peers_queued, peers_seen, peers_dead
             );
@@ -1082,9 +1190,12 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
             last_report = Instant::now();
         }
 
-        // Periodic DB save (every 3s)
-        if progress > 0 && last_db_save.elapsed() >= Duration::from_secs(3) {
-            let _ = db.update_task_progress(&task_id, progress).await;
+        // Periodic DB save (every 3s).
+        // Use checked_progress for DB persistence (not fetched_bytes) to
+        // avoid inflating progress with partial pieces that would need
+        // re-download after restart.
+        if checked_progress > 0 && last_db_save.elapsed() >= Duration::from_secs(3) {
+            let _ = db.update_task_progress(&task_id, checked_progress).await;
             if total > 0 {
                 let _ = db.update_task_total_bytes(&task_id, total).await;
             }

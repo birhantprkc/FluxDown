@@ -8,7 +8,7 @@
 
 ```bash
 # 开发运行
-flutter run -d windows              # 运行桌面应用,禁止运行这个命令
+# flutter run -d windows            # ⚠️ 禁止运行此命令
 rinf gen                             # 修改 Rust 信号后必须执行，生成 Dart 绑定
 
 # 构建与检查
@@ -19,9 +19,10 @@ flutter build windows                # 构建 Windows 发行版
 
 # 测试
 flutter test                         # 全部 Dart 测试
-flutter test test/widget_test.dart   # 运行单个测试文件
-cargo test -p hub                    # 运行 Rust 单元测试（segment_advisor 模块有测试）
+flutter test test/widget_test.dart   # 运行单个 Dart 测试文件
+cargo test -p hub                    # 运行全部 Rust 单元测试
 cargo test -p hub -- segment_advisor # 运行特定 Rust 测试模块
+cargo test -p hub -- test_name       # 运行单个 Rust 测试函数
 
 # 依赖
 flutter pub get                      # Dart 依赖安装
@@ -29,65 +30,38 @@ cargo install rinf_cli               # Rinf CLI（首次安装）
 
 # 浏览器扩展（fluxDown/ 目录下）
 npm run dev                          # 开发模式（Chrome）
+npm run dev:firefox                  # 开发模式（Firefox）
 npm run build                        # 构建生产版
+npm run zip                          # 打包上架
 ```
 
 ## 项目结构
 
 ```
 x_down/
-├── lib/                               # Flutter 前端
+├── lib/                               # Flutter 前端（Dart SDK ^3.10.8）
 │   ├── main.dart                      # 应用入口（多窗口分发、初始化流程）
 │   └── src/
 │       ├── models/                    # 数据模型与状态管理
-│       │   ├── download_task.dart     # DownloadTask/TaskStatus/FileCategory/SegmentData
-│       │   ├── download_controller.dart # 核心状态枢纽（ChangeNotifier）
-│       │   └── settings_provider.dart # 全局配置状态
-│       ├── pages/                     # 页面
-│       │   ├── home_page.dart         # 主页面布局（Sidebar+Header+TaskList+DetailPanel）
-│       │   └── settings_page.dart     # 设置页面
-│       ├── services/                  # 服务层
-│       │   ├── external_download_service.dart  # 浏览器扩展下载请求处理
-│       │   └── tray_service.dart      # 系统托盘
-│       ├── theme/                     # 主题系统
-│       │   ├── app_theme.dart         # ShadThemeData 构建/缓存
-│       │   ├── app_colors.dart        # 主题感知色板 AppColors.of(context)
-│       │   └── theme_provider.dart    # 主题模式/配色持久化
+│       ├── pages/                     # 页面（home_page, settings_page）
+│       ├── services/                  # 服务层（external_download, tray）
+│       ├── theme/                     # 主题（app_theme, app_colors, theme_provider）
 │       ├── widgets/                   # UI 组件
-│       │   ├── header_bar.dart        # 顶部工具栏 + 窗口控制
-│       │   ├── sidebar.dart           # 左侧文件类型导航
-│       │   ├── task_tab_bar.dart      # 状态筛选 Tab
-│       │   ├── task_list.dart         # 任务列表容器
-│       │   ├── task_list_item.dart    # 单个任务行 + 右键菜单
-│       │   ├── detail_panel.dart      # 详情面板 + IDM 分片可视化（CustomPainter）
-│       │   ├── new_download_dialog.dart  # 新建下载对话框
-│       │   ├── context_menu.dart      # 通用 Overlay 右键菜单
-│       │   ├── status_bar.dart        # 底部状态栏
-│       │   └── title_drag_area.dart   # 自定义标题栏拖拽区域
-│       ├── windows/
-│       │   └── quick_download_window.dart  # 浏览器扩展快速下载确认子窗口
+│       ├── windows/                   # 子窗口（quick_download_window）
 │       └── bindings/                  # ⚠️ 自动生成 — 勿手动编辑
-├── native/hub/                        # Rust 下载引擎 crate
+├── native/hub/                        # Rust 下载引擎 crate（edition 2024）
 │   └── src/
 │       ├── lib.rs                     # 入口（tokio current_thread runtime）
-│       ├── signals/mod.rs             # 信号结构体定义（DartSignal/RustSignal）
-│       ├── actors/
-│       │   ├── mod.rs                 # create_actors() 入口
-│       │   └── download_actor.rs      # 核心事件循环（tokio::select!）
+│       ├── signals/mod.rs             # 信号结构体定义（DartSignal/RustSignal/SignalPiece）
+│       ├── actors/download_actor.rs   # 核心事件循环（tokio::select!）
 │       ├── download_manager.rs        # 并发管理/任务生命周期/进度报告
 │       ├── downloader.rs              # HTTP/HTTPS 下载引擎（分片/断点续传）
 │       ├── ftp_downloader.rs          # FTP 下载引擎（suppaftp 同步 API）
-│       ├── db.rs                      # SQLite 数据层（tasks/task_segments/config 三表）
+│       ├── bt_downloader.rs           # BitTorrent 引擎（librqbit）
+│       ├── db.rs                      # SQLite 数据层（tasks/task_segments/config）
 │       ├── speed_limiter.rs           # Token bucket 全局速度限制器
-│       ├── segment_advisor.rs         # 动态分段计算（文件大小+CPU+带宽）
-│       └── native_messaging.rs        # 本地 HTTP 服务器（localhost:19527）
-├── fluxDown/                          # WXT 浏览器扩展（Chrome MV3）
-│   ├── entrypoints/
-│   │   ├── background.ts             # Service Worker（下载拦截/右键菜单）
-│   │   └── popup/                     # Popup UI（状态/设置/统计）
-│   └── utils/
-│       ├── native-messaging.ts        # HTTP 通信（fetch → localhost:19527）
-│       └── settings.ts               # 扩展设置管理（拦截模式/扩展名/域名）
+│       └── segment_advisor.rs         # 动态分段计算（文件大小+CPU+带宽）
+├── fluxDown/                          # WXT 浏览器扩展（Chrome MV3, TypeScript）
 ├── Cargo.toml                         # Rust workspace（resolver = "3"）
 └── pubspec.yaml                       # Flutter 依赖
 ```
@@ -99,16 +73,16 @@ x_down/
                                           │
                           ┌───────────────┼──────────────────┐
                     [DownloadManager]    [Db]          [native_messaging]
-                     │          │      (SQLite)       (HTTP :19527)
-               [downloader]  [ftp_downloader]              ↑
-               (HTTP/HTTPS)     (FTP)              [WXT 浏览器扩展]
+                     │      │    │    (SQLite)       (HTTP :19527)
+              [downloader] [ftp] [bt]                      ↑
+              (HTTP/HTTPS) (FTP) (BT)             [WXT 浏览器扩展]
                      │
             [SpeedLimiter] + [segment_advisor]
 ```
 
-**信号协议**: `DartSignal`(Dart→Rust), `RustSignal`(Rust→Dart), `SignalPiece`(嵌套类型)
-**状态管理**: ChangeNotifier（DownloadController / SettingsProvider / ThemeProvider）
+**状态管理**: ChangeNotifier + ListenableBuilder（无 Provider/Riverpod/Bloc）
 **并发模型**: 每个下载 spawn 独立 tokio task，CancellationToken 控制生命周期
+**状态码**: 0=pending, 1=downloading, 2=paused, 3=completed, 4=error, 5=preparing
 
 ## 代码风格与规范
 
@@ -117,30 +91,37 @@ x_down/
 - **Edition**: 2024，Clippy deny 级别: `unwrap_used`, `expect_used`, `wildcard_imports`
 - **错误处理**: 必须用 `?` 或 `match`，禁止 `.unwrap()` / `.expect()`（编译失败）
 - **导入**: 禁止 `use foo::*`，必须显式导入每个符号
-- **异步**: 始终用 async 非阻塞；同步阻塞操作用 `tokio::task::spawn_blocking`
 - **错误类型**: 使用 `thiserror` 派生 `DownloadError` 枚举
+- **异步**: 始终用 async 非阻塞；同步阻塞操作用 `tokio::task::spawn_blocking`
 - **命名**: snake_case 函数/变量，PascalCase 类型，SCREAMING_SNAKE_CASE 常量
+- **日志**: `rinf::debug_print!("[module] message, key=value")` 输出到 Dart 控制台
+- **注释**: 公开 API 用 `///` 文档注释，内部用 `//`
 - **Crate 名**: `hub` 不可更改（Rinf 硬编码依赖）
-- **FTP**: 使用 `suppaftp` 同步 API + `spawn_blocking` + mpsc channel（因异步 FTP 与 tokio 冲突）
+- **FTP**: 使用 `suppaftp` 同步 API + `spawn_blocking` + mpsc channel
+- **BT**: 使用 `librqbit`，内含 `block_on`，必须在 `spawn_blocking` 中调用
+- **重试**: 指数退避，MAX_RETRIES=3, base=2s, `2^attempt` 倍增
+- **Panic 恢复**: `AssertUnwindSafe` + `catch_unwind()` 捕获 task panic
 
 ### Dart/Flutter 端
 
-- **Lint**: `flutter_lints` 推荐规则集（analysis_options.yaml）
-- **UI 框架**: 全程使用 **shadcn_ui**，禁止原生 Material/Cupertino 组件
+- **SDK**: `^3.10.8`，Lint: `flutter_lints ^6.0.0`
+- **UI 框架**: 全程使用 **shadcn_ui ^0.45.2**，禁止原生 Material/Cupertino 组件
 - **字体**: MiSans 自定义字体族
 - **统一导入**: `import 'package:shadcn_ui/shadcn_ui.dart';`（含 LucideIcons、flutter_animate）
-- **根组件**: 使用 `ShadApp`（或手动组合 `ShadTheme` + `WidgetsApp`），禁止 `MaterialApp`
+- **导入顺序**: dart: → package:flutter/ → 第三方包（字母序）→ 相对导入
+- **根组件**: 使用 `ShadApp`（或 `ShadTheme` + `WidgetsApp`），禁止 `MaterialApp`
 - **主题访问**: `ShadTheme.of(context)`，禁止 `Theme.of(context)`
 - **对话框**: `showShadDialog()`，禁止 `showDialog()`
 - **图标**: `LucideIcons.xxx`
 - **颜色**: 通过 `AppColors.of(context)` 获取主题感知色板
-- **配色方案**: Slate/Zinc/Blue/Gray/Green/Neutral/Orange/Red/Rose/Stone/Violet/Yellow
-- **状态管理**: ChangeNotifier + ListenableBuilder，无 Provider/Riverpod/Bloc
-- **文件命名**: snake_case.dart
+- **状态管理**: ChangeNotifier + ListenableBuilder，`_safeNotifyListeners()` 防已释放调用
+- **模型**: 不可变数据类 + `copyWith()` 模式，枚举扩展 getter
+- **命名**: PascalCase 类/枚举，camelCase 函数/变量，`_` 前缀私有成员，snake_case.dart 文件名
+- **日志**: `const _tag = 'ModuleName';` 用于日志标签
 
 ### 浏览器扩展（fluxDown/）
 
-- **框架**: WXT 0.20+，TypeScript
+- **框架**: WXT 0.20+，TypeScript（strict: true, target: ESNext）
 - **通信方式**: HTTP fetch → localhost:19527（非 Native Messaging 协议）
 - **存储**: chrome.storage.sync（设置）+ chrome.storage.local（统计/主题）
 
@@ -148,6 +129,7 @@ x_down/
 
 | 禁止 | 原因 |
 |------|------|
+| `flutter run -d windows` | 用户明确禁止执行此命令 |
 | 编辑 `lib/src/bindings/**` | 自动生成，`rinf gen` 会覆盖 |
 | Rust `.unwrap()` / `.expect()` | Clippy deny，编译失败 |
 | Rust `use foo::*` | Clippy deny，编译失败 |

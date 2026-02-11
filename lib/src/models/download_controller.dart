@@ -33,6 +33,7 @@ class DownloadController extends ChangeNotifier {
   StreamSubscription<RustSignalPack<TaskProgress>>? _progressSub;
   StreamSubscription<RustSignalPack<AllTasks>>? _allTasksSub;
   StreamSubscription<RustSignalPack<SegmentProgress>>? _segmentSub;
+  StreamSubscription<RustSignalPack<SegmentSplitEvent>>? _splitSub;
 
   bool _disposed = false;
 
@@ -50,6 +51,7 @@ class DownloadController extends ChangeNotifier {
     _progressSub?.cancel();
     _allTasksSub?.cancel();
     _segmentSub?.cancel();
+    _splitSub?.cancel();
     super.dispose();
     logInfo(_tag, 'dispose done');
   }
@@ -406,6 +408,7 @@ class DownloadController extends ChangeNotifier {
     _allTasksSub = AllTasks.rustSignalStream.listen(_onAllTasks);
     _progressSub = TaskProgress.rustSignalStream.listen(_onProgress);
     _segmentSub = SegmentProgress.rustSignalStream.listen(_onSegmentProgress);
+    _splitSub = SegmentSplitEvent.rustSignalStream.listen(_onSplitEvent);
   }
 
   void _onAllTasks(RustSignalPack<AllTasks> pack) {
@@ -430,6 +433,12 @@ class DownloadController extends ChangeNotifier {
     if (idx >= 0) {
       final oldStatus = _tasks[idx].status;
       _tasks[idx] = _tasks[idx].applyProgress(p);
+      // 任务离开 downloading 状态时清空 recentSplits，避免内存泄漏
+      if (oldStatus == TaskStatus.downloading &&
+          newStatus != TaskStatus.downloading &&
+          _tasks[idx].recentSplits.isNotEmpty) {
+        _tasks[idx] = _tasks[idx].copyWith(recentSplits: const []);
+      }
       // 检测下载完成：从非 completed 状态变为 completed
       if (oldStatus != TaskStatus.completed &&
           newStatus == TaskStatus.completed) {
@@ -478,6 +487,46 @@ class DownloadController extends ChangeNotifier {
         .toList();
 
     _tasks[idx] = _tasks[idx].copyWith(segments: segments);
+    _safeNotifyListeners();
+  }
+
+  /// Maximum number of split events to keep per task (ring buffer).
+  static const _maxSplitEvents = 20;
+
+  void _onSplitEvent(RustSignalPack<SegmentSplitEvent> pack) {
+    if (_disposed) return;
+    final evt = pack.message;
+    final idx = _tasks.indexWhere((t) => t.id == evt.taskId);
+    if (idx < 0) return;
+
+    // 仅在下载中状态时记录拆分事件
+    if (_tasks[idx].status != TaskStatus.downloading) return;
+
+    final splitData = SplitEventData(
+      parentIndex: evt.parentIndex,
+      parentNewEnd: evt.parentNewEnd,
+      childIndex: evt.childIndex,
+      childStart: evt.childStart,
+      childEnd: evt.childEnd,
+      isProactive: evt.isProactive,
+      totalSegments: evt.totalSegments,
+    );
+
+    // Keep only the most recent split events.
+    final current = List<SplitEventData>.from(_tasks[idx].recentSplits);
+    current.add(splitData);
+    if (current.length > _maxSplitEvents) {
+      current.removeRange(0, current.length - _maxSplitEvents);
+    }
+
+    _tasks[idx] = _tasks[idx].copyWith(recentSplits: current);
+    logInfo(
+      _tag,
+      'split event: task=${evt.taskId}, '
+      'parent=#${evt.parentIndex}→end=${evt.parentNewEnd}, '
+      'child=#${evt.childIndex} [${evt.childStart}, ${evt.childEnd}], '
+      'proactive=${evt.isProactive}, total=${evt.totalSegments}',
+    );
     _safeNotifyListeners();
   }
 }

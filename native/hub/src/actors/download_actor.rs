@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use rinf::{DartSignal, RustSignal};
 use tokio::sync::mpsc;
 
+use crate::bt_downloader::{self, BtConfig};
 use crate::db::Db;
 use crate::download_manager::{self, DownloadManager, TaskDone};
 use crate::native_messaging::{self};
@@ -31,7 +32,7 @@ fn default_save_dir() -> String {
 }
 
 /// Read initial config values from DB to pass to DownloadManager.
-async fn load_initial_config(db: &Db) -> (usize, u64, String) {
+async fn load_initial_config(db: &Db) -> (usize, u64, String, BtConfig) {
     let config = db.get_all_config().await.unwrap_or_default();
 
     let max_concurrent = config
@@ -49,7 +50,30 @@ async fn load_initial_config(db: &Db) -> (usize, u64, String) {
         .cloned()
         .unwrap_or_else(default_save_dir);
 
-    (max_concurrent, speed_limit_bytes, save_dir)
+    let bt_config = BtConfig {
+        enable_dht: config
+            .get("bt_enable_dht")
+            .map(|v| v == "true")
+            .unwrap_or(true),
+        enable_upnp: config
+            .get("bt_enable_upnp")
+            .map(|v| v == "true")
+            .unwrap_or(true),
+        port_start: config
+            .get("bt_port_start")
+            .and_then(|v| v.parse::<u16>().ok())
+            .unwrap_or(6881),
+        port_end: config
+            .get("bt_port_end")
+            .and_then(|v| v.parse::<u16>().ok())
+            .unwrap_or(6891),
+        custom_trackers: config
+            .get("bt_custom_trackers")
+            .cloned()
+            .unwrap_or_default(),
+    };
+
+    (max_concurrent, speed_limit_bytes, save_dir, bt_config)
 }
 
 pub async fn run(db_dir: PathBuf) {
@@ -67,15 +91,25 @@ pub async fn run(db_dir: PathBuf) {
     }
 
     // Load persisted config to initialize the manager with correct limits.
-    let (max_concurrent, speed_limit_bps, save_dir) = load_initial_config(&db).await;
+    let (max_concurrent, speed_limit_bps, save_dir, mut bt_config) = load_initial_config(&db).await;
+
+    // Populate default tracker list on first launch (when DB value is empty).
+    if bt_config.custom_trackers.trim().is_empty() {
+        let defaults = bt_downloader::default_tracker_list();
+        if let Err(e) = db.set_config("bt_custom_trackers", &defaults).await {
+            rinf::debug_print!("[actor] failed to save default trackers: {}", e);
+        }
+        bt_config.custom_trackers = defaults;
+    }
     rinf::debug_print!(
-        "[actor] init config: max_concurrent={}, speed_limit_bps={}, save_dir={}",
+        "[actor] init config: max_concurrent={}, speed_limit_bps={}, save_dir={}, bt_config={:?}",
         max_concurrent,
         speed_limit_bps,
         save_dir,
+        bt_config,
     );
 
-    let mut manager = match DownloadManager::new(db.clone(), max_concurrent, speed_limit_bps, save_dir) {
+    let mut manager = match DownloadManager::new(db.clone(), max_concurrent, speed_limit_bps, save_dir, bt_config) {
         Ok(m) => m,
         Err(e) => {
             rinf::debug_print!("Failed to create download manager: {}", e);
@@ -169,6 +203,40 @@ pub async fn run(db_dir: PathBuf) {
                     "default_save_dir" => {
                         rinf::debug_print!("[actor] updating default_save_dir to {}", msg.value);
                         manager.set_default_save_dir(msg.value);
+                    }
+                    // BT config keys — update in-memory BtConfig and invalidate
+                    // the current session so the next BT download picks up changes.
+                    "bt_enable_dht" | "bt_enable_upnp" | "bt_port_start"
+                    | "bt_port_end" | "bt_custom_trackers" => {
+                        rinf::debug_print!("[actor] BT config changed: {}={}", msg.key, msg.value);
+                        // Reload the full BT config from DB to stay consistent.
+                        let all_cfg = db.get_all_config().await.unwrap_or_default();
+                        let new_bt = BtConfig {
+                            enable_dht: all_cfg
+                                .get("bt_enable_dht")
+                                .map(|v| v == "true")
+                                .unwrap_or(true),
+                            enable_upnp: all_cfg
+                                .get("bt_enable_upnp")
+                                .map(|v| v == "true")
+                                .unwrap_or(true),
+                            port_start: all_cfg
+                                .get("bt_port_start")
+                                .and_then(|v| v.parse::<u16>().ok())
+                                .unwrap_or(6881),
+                            port_end: all_cfg
+                                .get("bt_port_end")
+                                .and_then(|v| v.parse::<u16>().ok())
+                                .unwrap_or(6891),
+                            custom_trackers: all_cfg
+                                .get("bt_custom_trackers")
+                                .cloned()
+                                .unwrap_or_default(),
+                        };
+                        manager.set_bt_config(new_bt);
+                        // Invalidate (destroy) the current BT session so it is
+                        // re-created with the new config on next BT download.
+                        manager.invalidate_bt_session().await;
                     }
                     _ => {} // other config keys — no runtime action needed
                 }

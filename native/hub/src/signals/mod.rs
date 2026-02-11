@@ -140,6 +140,27 @@ pub struct TaskInfo {
     pub created_at: String, // Unix seconds timestamp
 }
 
+/// Notification that a dynamic segment split occurred (IDM-style coordinator).
+/// Sent in real-time so the Dart UI can animate the split transition.
+#[derive(Serialize, RustSignal)]
+pub struct SegmentSplitEvent {
+    pub task_id: String,
+    /// Index of the parent segment that was shrunk.
+    pub parent_index: i32,
+    /// New end_byte of the parent after the split.
+    pub parent_new_end: i64,
+    /// Index of the newly created child segment.
+    pub child_index: i32,
+    /// Start byte of the new child segment (= split point).
+    pub child_start: i64,
+    /// End byte of the new child segment (= parent's old end).
+    pub child_end: i64,
+    /// Whether this was a proactive split (true) or reactive/on-demand (false).
+    pub is_proactive: bool,
+    /// Current total number of segments after the split.
+    pub total_segments: i32,
+}
+
 // ========== Auto-update signals ==========
 
 /// Check for application updates (Dart → Rust)

@@ -22,6 +22,13 @@ class SettingsProvider extends ChangeNotifier {
   bool _autoStartup = false; // 默认不开机启动
   bool _autoCheckUpdate = true; // 默认启动时自动检查更新
 
+  // BT 设置
+  bool _btEnableDht = true; // DHT 分布式哈希表
+  bool _btEnableUpnp = true; // UPnP 端口映射
+  int _btPortStart = 6881; // 监听端口起始
+  int _btPortEnd = 6891; // 监听端口结束
+  String _btCustomTrackers = ''; // 用户自定义 Tracker 列表（换行分隔）
+
   /// 配置是否已从 Rust 端加载完成
   bool _loaded = false;
 
@@ -54,6 +61,13 @@ class SettingsProvider extends ChangeNotifier {
   bool get closeToTray => _closeToTray;
   bool get autoStartup => _autoStartup;
   bool get autoCheckUpdate => _autoCheckUpdate;
+
+  // BT 设置 Getters
+  bool get btEnableDht => _btEnableDht;
+  bool get btEnableUpnp => _btEnableUpnp;
+  int get btPortStart => _btPortStart;
+  int get btPortEnd => _btPortEnd;
+  String get btCustomTrackers => _btCustomTrackers;
 
   // ---------------------------------------------------------------------------
   // Setters — 修改值 + 通知 Rust 持久化
@@ -106,6 +120,43 @@ class SettingsProvider extends ChangeNotifier {
     _autoCheckUpdate = value;
     notifyListeners();
     _saveToRust('auto_check_update', value.toString());
+  }
+
+  // BT 设置 Setters
+
+  void setBtEnableDht(bool value) {
+    if (_btEnableDht == value) return;
+    _btEnableDht = value;
+    notifyListeners();
+    _saveToRust('bt_enable_dht', value.toString());
+  }
+
+  void setBtEnableUpnp(bool value) {
+    if (_btEnableUpnp == value) return;
+    _btEnableUpnp = value;
+    notifyListeners();
+    _saveToRust('bt_enable_upnp', value.toString());
+  }
+
+  void setBtPortStart(int value) {
+    if (_btPortStart == value) return;
+    _btPortStart = value;
+    notifyListeners();
+    _saveToRust('bt_port_start', value.toString());
+  }
+
+  void setBtPortEnd(int value) {
+    if (_btPortEnd == value) return;
+    _btPortEnd = value;
+    notifyListeners();
+    _saveToRust('bt_port_end', value.toString());
+  }
+
+  void setBtCustomTrackers(String value) {
+    if (_btCustomTrackers == value) return;
+    _btCustomTrackers = value;
+    notifyListeners();
+    _saveToRust('bt_custom_trackers', value);
   }
 
   /// 设置开机自启动，返回是否成功。
@@ -182,6 +233,16 @@ class SettingsProvider extends ChangeNotifier {
           _autoStartup = entry.value == 'true';
         case 'auto_check_update':
           _autoCheckUpdate = entry.value == 'true';
+        case 'bt_enable_dht':
+          _btEnableDht = entry.value == 'true';
+        case 'bt_enable_upnp':
+          _btEnableUpnp = entry.value == 'true';
+        case 'bt_port_start':
+          _btPortStart = int.tryParse(entry.value) ?? 6881;
+        case 'bt_port_end':
+          _btPortEnd = int.tryParse(entry.value) ?? 6891;
+        case 'bt_custom_trackers':
+          _btCustomTrackers = entry.value;
       }
     }
     _loaded = true;

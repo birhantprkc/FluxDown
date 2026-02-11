@@ -1,6 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -409,7 +407,7 @@ fn mime_to_ext(content_type: &str) -> Option<&'static str> {
     }
 }
 
-fn extract_filename(headers: &reqwest::header::HeaderMap, url: &str) -> String {
+pub(crate) fn extract_filename(headers: &reqwest::header::HeaderMap, url: &str) -> String {
     // 1. Try Content-Disposition: attachment; filename="xxx"
     if let Some(name) = extract_from_content_disposition(headers) {
         return name;
@@ -570,13 +568,6 @@ pub async fn dedup_filename(dir: &Path, name: &str) -> String {
     }
     name.to_string()
 }
-
-// ---------------------------------------------------------------------------
-// Retry helper
-// ---------------------------------------------------------------------------
-
-const MAX_RETRIES: u32 = 3;
-const RETRY_BASE_DELAY: Duration = Duration::from_secs(2);
 
 /// Temporary file extension used during download (like Chrome's `.crdownload`).
 /// The file is renamed to the final name only after all data is verified.
@@ -1053,7 +1044,7 @@ async fn download_single(
 }
 
 // ---------------------------------------------------------------------------
-// Multi-segment download
+// Multi-segment download (delegates to SegmentCoordinator)
 // ---------------------------------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
@@ -1074,420 +1065,38 @@ async fn download_multi_segment(
         tokio::fs::create_dir_all(parent).await?;
     }
 
-    // Load existing segments from DB (for resume) or create new ones
-    let mut existing_segments = db.load_segments(task_id).await?;
-
-    // If we have saved segment progress, run integrity checks before reusing.
+    // Check if total_bytes changed since segments were created (server updated
+    // the file).  If so, discard old segments — the coordinator will recreate.
+    let existing_segments = db.load_segments(task_id).await?;
     if !existing_segments.is_empty() {
-        // Check 1: Verify the file on disk is intact.
-        // When the user deletes the file externally, the DB still holds stale
-        // progress — we must detect this and reset to avoid a corrupted result.
-        let db_downloaded: i64 = existing_segments.iter().map(|s| s.downloaded_bytes).sum();
-        let file_len = match tokio::fs::metadata(dest).await {
-            Ok(m) => m.len() as i64,
-            Err(_) => 0,
-        };
-
-        if db_downloaded > 0 && (file_len == 0 || file_len < db_downloaded) {
-            rinf::debug_print!(
-                "[download] task {} file integrity mismatch: file_len={}, db_downloaded={}. Resetting segments.",
-                task_id, file_len, db_downloaded
-            );
-            db.reset_segments_progress(task_id).await?;
-            existing_segments = db.load_segments(task_id).await?;
-        }
-
-        // Check 2: Verify total_bytes hasn't changed since segments were created.
-        // The server may have updated the file (different Content-Length).
-        // If so, the old byte ranges are invalid — we must discard and recreate.
-        if !existing_segments.is_empty() {
-            let last_seg = existing_segments.iter().max_by_key(|s| s.index);
-            if let Some(last) = last_seg {
-                let expected_end = total_bytes - 1;
-                if last.end_byte != expected_end {
-                    rinf::debug_print!(
-                        "[download] task {} total_bytes changed: segment end_byte={}, expected={}. Discarding old segments.",
-                        task_id, last.end_byte, expected_end
-                    );
-                    // Delete stale segment rows and let them be recreated below.
-                    db.delete_segments(task_id).await?;
-                    existing_segments = Vec::new();
-                }
+        let last_seg = existing_segments.iter().max_by_key(|s| s.index);
+        if let Some(last) = last_seg {
+            let expected_end = total_bytes - 1;
+            if last.end_byte != expected_end {
+                rinf::debug_print!(
+                    "[download] task {} total_bytes changed: segment end_byte={}, expected={}. Discarding old segments.",
+                    task_id, last.end_byte, expected_end
+                );
+                db.delete_segments(task_id).await?;
             }
         }
     }
 
-    let seg_defs: Vec<(i32, i64, i64, i64)> = if existing_segments.is_empty() {
-        let chunk_size = total_bytes / segment_count as i64;
-        let mut defs = Vec::new();
-        for i in 0..segment_count {
-            let start = i as i64 * chunk_size;
-            let end = if i == segment_count - 1 {
-                total_bytes - 1
-            } else {
-                (i as i64 + 1) * chunk_size - 1
-            };
-            defs.push((i, start, end, 0i64));
-        }
-        let db_segs: Vec<(i32, i64, i64)> = defs.iter().map(|(i, s, e, _)| (*i, *s, *e)).collect();
-        db.insert_segments(task_id, &db_segs).await?;
-        defs
-    } else {
-        existing_segments
-            .iter()
-            .map(|s| (s.index, s.start_byte, s.end_byte, s.downloaded_bytes))
-            .collect()
-    };
-
-    let total_downloaded = Arc::new(AtomicI64::new(
-        seg_defs.iter().map(|(_, _, _, d)| d).sum::<i64>(),
-    ));
-
-    // Shared segment progress state for IDM-style visualization.
-    // Each spawned segment task updates its own entry; when any segment
-    // sends a ProgressUpdate it snapshots the entire vector.
-    let seg_states: Arc<StdMutex<Vec<SegmentProgressInfo>>> = Arc::new(StdMutex::new(
-        seg_defs
-            .iter()
-            .map(|(idx, start, end, dl)| SegmentProgressInfo {
-                index: *idx,
-                start_byte: *start,
-                end_byte: *end,
-                downloaded_bytes: *dl,
-            })
-            .collect(),
-    ));
-
-    // Pre-allocate file to full size (Chrome-style).
-    // The .x_down extension tells the user the download is in progress.
-    // Each segment seeks to its byte range and writes directly.
-    {
-        let file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(false)
-            .open(dest)
-            .await?;
-        if file.metadata().await?.len() < total_bytes as u64 {
-            file.set_len(total_bytes as u64).await?;
-        }
-    }
-
-    let mut handles = Vec::new();
-
-    for (idx, start, end, already_downloaded) in &seg_defs {
-        let actual_start = start + already_downloaded;
-        if actual_start > *end {
-            // This segment is already complete
-            continue;
-        }
-        let client = client.clone();
-        let url = url.to_string();
-        let dest = dest.to_path_buf();
-        let cancel = cancel_token.clone();
-        let total_dl = total_downloaded.clone();
-        let seg_states = seg_states.clone();
-        let db = db.clone();
-        let task_id = task_id.to_string();
-        let seg_idx = *idx;
-        let seg_start = *start;
-        let seg_end = *end;
-        let progress_tx = progress_tx.clone();
-        let total = total_bytes;
-        let limiter = speed_limiter.clone();
-        let cookies = cookies.to_string();
-
-        let handle = tokio::spawn(async move {
-            do_segment_with_retry(
-                &task_id,
-                seg_idx,
-                &url,
-                &dest,
-                seg_start,
-                actual_start,
-                seg_end,
-                &client,
-                &cancel,
-                &total_dl,
-                total,
-                &db,
-                &progress_tx,
-                &seg_states,
-                &limiter,
-                &cookies,
-            )
-            .await
-        });
-        handles.push(handle);
-    }
-
-    let mut final_error = None;
-    for handle in handles {
-        match handle.await {
-            Ok(Ok(())) => {}
-            Ok(Err(DownloadError::Cancelled)) => {
-                if final_error.is_none() {
-                    final_error = Some(DownloadError::Cancelled);
-                }
-            }
-            Ok(Err(e)) => {
-                if final_error.is_none() {
-                    cancel_token.cancel();
-                    final_error = Some(e);
-                }
-            }
-            Err(e) => {
-                if final_error.is_none() {
-                    cancel_token.cancel();
-                    final_error = Some(DownloadError::Other(e.to_string()));
-                }
-            }
-        }
-    }
-
-    if let Some(err) = final_error {
-        return Err(err);
-    }
-
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Segment download with retry
-// ---------------------------------------------------------------------------
-
-#[allow(clippy::too_many_arguments)]
-async fn do_segment_with_retry(
-    task_id: &str,
-    seg_idx: i32,
-    url: &str,
-    dest: &Path,
-    seg_start: i64,
-    mut actual_start: i64,
-    seg_end: i64,
-    client: &Client,
-    cancel: &CancellationToken,
-    total_downloaded: &AtomicI64,
-    total_bytes: i64,
-    db: &Db,
-    progress_tx: &mpsc::Sender<ProgressUpdate>,
-    seg_states: &Arc<StdMutex<Vec<SegmentProgressInfo>>>,
-    speed_limiter: &SpeedLimiter,
-    cookies: &str,
-) -> Result<(), DownloadError> {
-    let mut attempts = 0u32;
-
-    loop {
-        match do_segment(
-            task_id,
-            seg_idx,
-            url,
-            dest,
-            seg_start,
-            actual_start,
-            seg_end,
-            client,
-            cancel,
-            total_downloaded,
-            total_bytes,
-            db,
-            progress_tx,
-            seg_states,
-            speed_limiter,
-            cookies,
-        )
-        .await
-        {
-            Ok(()) => return Ok(()),
-            Err(DownloadError::Cancelled) => return Err(DownloadError::Cancelled),
-            Err(e) => {
-                attempts += 1;
-                if attempts >= MAX_RETRIES {
-                    return Err(e);
-                }
-                // Update actual_start from DB for resume after partial failure
-                if let Ok(segs) = db.load_segments(task_id).await
-                    && let Some(seg) = segs.iter().find(|s| s.index == seg_idx)
-                {
-                    actual_start = seg_start + seg.downloaded_bytes;
-                    if actual_start > seg_end {
-                        return Ok(()); // completed during previous attempt
-                    }
-                }
-                // Exponential backoff before retry (respecting cancellation)
-                let delay = RETRY_BASE_DELAY * 2u32.saturating_pow(attempts - 1);
-                tokio::select! {
-                    _ = cancel.cancelled() => return Err(DownloadError::Cancelled),
-                    _ = tokio::time::sleep(delay) => {}
-                }
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Single segment download
-// ---------------------------------------------------------------------------
-
-#[allow(clippy::too_many_arguments)]
-async fn do_segment(
-    task_id: &str,
-    seg_idx: i32,
-    url: &str,
-    dest: &Path,
-    seg_start: i64,
-    actual_start: i64,
-    seg_end: i64,
-    client: &Client,
-    cancel: &CancellationToken,
-    total_downloaded: &AtomicI64,
-    total_bytes: i64,
-    db: &Db,
-    progress_tx: &mpsc::Sender<ProgressUpdate>,
-    seg_states: &Arc<StdMutex<Vec<SegmentProgressInfo>>>,
-    speed_limiter: &SpeedLimiter,
-    cookies: &str,
-) -> Result<(), DownloadError> {
-    let range = format!("bytes={}-{}", actual_start, seg_end);
-    let mut req = client
-        .get(url)
-        .header("Range", range);
-    if !cookies.is_empty() {
-        req = req.header("Cookie", cookies);
-    }
-    let resp = req
-        .send()
-        .await?
-        .error_for_status()?;
-
-    // For the first segment, try extracting a better filename from response.
-    if seg_idx == 0
-        && let Some(cd) = resp.headers().get(reqwest::header::CONTENT_DISPOSITION) {
-            let resp_name = extract_filename(resp.headers(), resp.url().as_str());
-            if !resp_name.is_empty() && resp_name != "download" {
-                rinf::debug_print!("[download-seg0] got better name from response: {} (cd={:?})", resp_name, cd);
-                let snapshot = seg_states.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                let _ = progress_tx
-                    .send(ProgressUpdate {
-                        task_id: task_id.to_string(),
-                        downloaded_bytes: total_downloaded.load(Ordering::Relaxed),
-                        total_bytes,
-                        status: 1,
-                        error_message: String::new(),
-                        file_name: resp_name,
-                        segment_details: Some(snapshot),
-                    })
-                    .await;
-            }
-        }
-
-    let mut stream = resp.bytes_stream();
-
-    // Open the shared pre-allocated file; seek to this segment's write position.
-    let file = OpenOptions::new().write(true).open(dest).await?;
-    let mut file = tokio::io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, file);
-    file.seek(std::io::SeekFrom::Start(actual_start as u64))
-        .await?;
-
-    let mut seg_downloaded = actual_start - seg_start;
-    let mut last_report = std::time::Instant::now();
-    let mut last_db_save = std::time::Instant::now();
-
-    loop {
-        tokio::select! {
-            _ = cancel.cancelled() => {
-                file.flush().await?;
-                // Update shared state before exiting
-                if let Ok(mut states) = seg_states.lock()
-                    && let Some(s) = states.iter_mut().find(|s| s.index == seg_idx) {
-                        s.downloaded_bytes = seg_downloaded;
-                    }
-                let _ = db.update_segment_progress(task_id, seg_idx, seg_downloaded).await;
-                return Err(DownloadError::Cancelled);
-            }
-            chunk = stream.next() => {
-                match chunk {
-                    Some(Ok(bytes)) => {
-                        // --- Speed limiter: write in sub-chunks as tokens allow ---
-                        let mut offset = 0usize;
-                        let chunk_len = bytes.len();
-                        while offset < chunk_len {
-                            let remaining = (chunk_len - offset) as u64;
-                            let allowed = speed_limiter.consume(remaining).await;
-                            let end = offset + allowed as usize;
-                            file.write_all(&bytes[offset..end]).await?;
-                            offset = end;
-                        }
-                        let len = chunk_len as i64;
-                        seg_downloaded += len;
-                        total_downloaded.fetch_add(len, Ordering::Relaxed);
-
-                        // Update shared segment state (cheap — std::sync::Mutex, no await)
-                        if let Ok(mut states) = seg_states.lock()
-                            && let Some(s) = states.iter_mut().find(|s| s.index == seg_idx) {
-                                s.downloaded_bytes = seg_downloaded;
-                            }
-
-                        // Progress report to Dart — every 200ms for smooth UI.
-                        if last_report.elapsed().as_millis() >= 200 {
-                            let current_total =
-                                total_downloaded.load(Ordering::Relaxed);
-                            let snapshot = seg_states.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                            let _ = progress_tx
-                                .send(ProgressUpdate {
-                                    task_id: task_id.to_string(),
-                                    downloaded_bytes: current_total,
-                                    total_bytes,
-                                    status: 1,
-                                    error_message: String::new(),
-                                    file_name: String::new(),
-                                    segment_details: Some(snapshot),
-                                })
-                                .await;
-                            last_report = std::time::Instant::now();
-                        }
-
-                        // DB persistence — every few seconds is sufficient
-                        // for resume.  With 16 segments this reduces DB
-                        // writes from ~80/s to ~5/s, cutting Mutex contention.
-                        if last_db_save.elapsed().as_secs() >= DB_SAVE_INTERVAL_SECS {
-                            let _ = db
-                                .update_segment_progress(
-                                    task_id,
-                                    seg_idx,
-                                    seg_downloaded,
-                                )
-                                .await;
-                            last_db_save = std::time::Instant::now();
-                        }
-                    }
-                    Some(Err(e)) => {
-                        file.flush().await?;
-                        if let Ok(mut states) = seg_states.lock()
-                            && let Some(s) = states.iter_mut().find(|s| s.index == seg_idx) {
-                                s.downloaded_bytes = seg_downloaded;
-                            }
-                        let _ = db
-                            .update_segment_progress(task_id, seg_idx, seg_downloaded)
-                            .await;
-                        return Err(DownloadError::Request(e));
-                    }
-                    None => break,
-                }
-            }
-        }
-    }
-
-    file.flush().await?;
-    // Update shared state for final progress
-    if let Ok(mut states) = seg_states.lock()
-        && let Some(s) = states.iter_mut().find(|s| s.index == seg_idx) {
-            s.downloaded_bytes = seg_downloaded;
-        }
-    let _ = db
-        .update_segment_progress(task_id, seg_idx, seg_downloaded)
-        .await;
-    Ok(())
+    // Delegate to the IDM-style dynamic segment coordinator.
+    crate::segment_coordinator::run_coordinated_download(
+        task_id,
+        url,
+        dest,
+        total_bytes,
+        segment_count,
+        client,
+        db,
+        progress_tx,
+        cancel_token,
+        speed_limiter,
+        cookies,
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------

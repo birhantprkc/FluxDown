@@ -137,6 +137,13 @@ List<SettingsSearchItem> get settingsSearchItems {
       keywords: s.searchKeywordsUpdate,
       icon: LucideIcons.refreshCw,
     ),
+    SettingsSearchItem(
+      category: SettingsCategory.download,
+      label: s.btSettings,
+      description: s.btSettingsDesc,
+      keywords: s.searchKeywordsBtSettings,
+      icon: LucideIcons.magnet,
+    ),
   ];
 }
 
@@ -668,6 +675,43 @@ class _DownloadContent extends StatelessWidget {
               vertical: true,
               child: _SpeedLimitInput(settingsProvider: settingsProvider),
             ),
+            const SizedBox(height: 24),
+            // BT 设置分区标题
+            _SubSectionHeader(
+              label: LocaleScope.of(context).btSettings,
+              description: LocaleScope.of(context).btSettingsDesc,
+            ),
+            const SizedBox(height: 10),
+            _SettingCard(
+              label: LocaleScope.of(context).btTrackerList,
+              description: LocaleScope.of(context).btTrackerListDesc,
+              vertical: true,
+              child: _BtTrackerEditor(settingsProvider: settingsProvider),
+            ),
+            const SizedBox(height: 6),
+            // 重启提示
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: Row(
+                children: [
+                  Icon(
+                    LucideIcons.info,
+                    size: 12,
+                    color: AppColors.of(context).textMuted,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      LocaleScope.of(context).btSettingsRestartHint,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: AppColors.of(context).textMuted,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ],
         );
       },
@@ -837,6 +881,296 @@ class _SpeedLimitInputState extends State<_SpeedLimitInput> {
           currentS.speedLimitUnit,
           style: TextStyle(fontSize: 12, color: c.textMuted),
         ),
+      ],
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+// BT 设置子组件
+// ─────────────────────────────────────────────
+
+/// BT 设置分区标题（带分割线）
+class _SubSectionHeader extends StatelessWidget {
+  final String label;
+  final String description;
+
+  const _SubSectionHeader({required this.label, required this.description});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Divider(height: 1, color: c.border.withValues(alpha: 0.5)),
+        const SizedBox(height: 14),
+        Row(
+          children: [
+            Icon(LucideIcons.magnet, size: 14, color: c.accent),
+            const SizedBox(width: 8),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: c.textPrimary,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text(description, style: TextStyle(fontSize: 11.5, color: c.textMuted)),
+      ],
+    );
+  }
+}
+
+/// BT Tracker 列表编辑器
+///
+/// 使用与 [new_download_dialog] 相同的 Localizations + Material + TextField
+/// 方案，确保鼠标选择、复制粘贴等功能正常。
+class _BtTrackerEditor extends StatefulWidget {
+  final SettingsProvider settingsProvider;
+
+  const _BtTrackerEditor({required this.settingsProvider});
+
+  @override
+  State<_BtTrackerEditor> createState() => _BtTrackerEditorState();
+}
+
+/// 内置默认 Tracker 列表（与 Rust 端 PUBLIC_TRACKERS 保持同步）。
+/// "重置为默认"时用此列表恢复。
+const _kDefaultTrackers = [
+  // CN / Asia
+  'udp://tracker.dler.com:6969/announce',
+  'udp://admin.52ywp.com:6969/announce',
+  'udp://tracker.dler.org:6969/announce',
+  'https://tracker.moeblog.cn:443/announce',
+  'http://nyaa.tracker.wf:7777/announce',
+  'https://tr.zukizuki.org:443/announce',
+  // International
+  'udp://tracker.opentrackr.org:1337/announce',
+  'udp://open.dstud.io:6969/announce',
+  'udp://tracker-udp.gbitt.info:80/announce',
+  'udp://open.stealth.si:80/announce',
+  'udp://tracker.torrent.eu.org:451/announce',
+  'udp://exodus.desync.com:6969/announce',
+  'udp://explodie.org:6969/announce',
+  'udp://tracker.srv00.com:6969/announce',
+  'udp://tracker.qu.ax:6969/announce',
+  'udp://opentracker.io:6969/announce',
+  'udp://tracker.bittor.pw:1337/announce',
+  'udp://tracker.theoks.net:6969/announce',
+  'udp://tracker.opentorrent.top:6969/announce',
+  'udp://open.demonoid.ch:6969/announce',
+  'udp://tracker.t-1.org:6969/announce',
+  // HTTPS fallbacks
+  'https://tracker.ghostchu-services.top:443/announce',
+  'https://tracker.bt4g.com:443/announce',
+  'https://1337.abcvg.info:443/announce',
+  'http://tracker.bt4g.com:2095/announce',
+];
+
+class _BtTrackerEditorState extends State<_BtTrackerEditor> {
+  late TextEditingController _controller;
+  bool _isExpanded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(
+      text: widget.settingsProvider.btCustomTrackers,
+    );
+  }
+
+  @override
+  void didUpdateWidget(_BtTrackerEditor oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 仅在外部值变化时同步（例如从 Rust 端加载初始值）
+    if (widget.settingsProvider.btCustomTrackers != _controller.text &&
+        !_isExpanded) {
+      _controller.text = widget.settingsProvider.btCustomTrackers;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    final lines = _controller.text
+        .split('\n')
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty)
+        .toList();
+    final cleaned = lines.join('\n');
+    _controller.text = cleaned;
+    widget.settingsProvider.setBtCustomTrackers(cleaned);
+  }
+
+  int get _trackerCount {
+    final text = _controller.text.trim();
+    if (text.isEmpty) return 0;
+    return text.split('\n').where((l) => l.trim().isNotEmpty).length;
+  }
+
+  void _resetToDefault() {
+    showShadDialog(
+      context: context,
+      barrierColor: const Color(0x1A000000),
+      animateIn: const [],
+      animateOut: const [],
+      builder: (ctx) => ShadDialog.alert(
+        title: Text(LocaleScope.of(ctx).btResetTrackers),
+        description: Text(LocaleScope.of(ctx).btResetTrackersConfirm),
+        actions: [
+          ShadButton.outline(
+            child: Text(LocaleScope.of(ctx).cancel),
+            onPressed: () => Navigator.of(ctx).pop(),
+          ),
+          ShadButton(
+            child: Text(LocaleScope.of(ctx).confirm),
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              final defaults = _kDefaultTrackers.join('\n');
+              _controller.text = defaults;
+              widget.settingsProvider.setBtCustomTrackers(defaults);
+              setState(() {});
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final s = LocaleScope.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // 统计行 + 按钮
+        Row(
+          children: [
+            Text(
+              s.btTrackerCount(_trackerCount),
+              style: TextStyle(fontSize: 12, color: c.textMuted),
+            ),
+            const Spacer(),
+            ShadButton.ghost(
+              size: ShadButtonSize.sm,
+              onPressed: _resetToDefault,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(LucideIcons.rotateCcw, size: 12, color: c.textSecondary),
+                  const SizedBox(width: 4),
+                  Text(
+                    s.btResetTrackers,
+                    style: TextStyle(fontSize: 11, color: c.textSecondary),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 4),
+            ShadButton.ghost(
+              size: ShadButtonSize.sm,
+              onPressed: () => setState(() => _isExpanded = !_isExpanded),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    _isExpanded
+                        ? LucideIcons.chevronUp
+                        : LucideIcons.chevronDown,
+                    size: 14,
+                    color: c.textSecondary,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    _isExpanded ? s.cancel : s.manage,
+                    style: TextStyle(fontSize: 11, color: c.textSecondary),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        // 展开时显示多行编辑区（与 new_download_dialog 一致的实现）
+        if (_isExpanded) ...[
+          const SizedBox(height: 8),
+          SizedBox(
+            height: 240,
+            child: Localizations(
+              locale: const Locale('en'),
+              delegates: const [
+                DefaultWidgetsLocalizations.delegate,
+                DefaultMaterialLocalizations.delegate,
+              ],
+              child: Material(
+                type: MaterialType.transparency,
+                child: TextSelectionTheme(
+                  data: TextSelectionThemeData(
+                    selectionColor: c.accent.withValues(alpha: 0.25),
+                    cursorColor: c.accent,
+                    selectionHandleColor: c.accent,
+                  ),
+                  child: TextField(
+                    controller: _controller,
+                    maxLines: null,
+                    expands: true,
+                    textAlignVertical: TextAlignVertical.top,
+                    cursorColor: c.accent,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: c.textPrimary,
+                      fontFamily: 'monospace',
+                      height: 1.5,
+                    ),
+                    decoration: InputDecoration(
+                      hintText: s.btTrackerPlaceholder,
+                      hintStyle: TextStyle(fontSize: 12, color: c.textMuted),
+                      hintMaxLines: 5,
+                      contentPadding: const EdgeInsets.all(10),
+                      filled: true,
+                      fillColor: c.surface1,
+                      hoverColor: Colors.transparent,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide(color: c.border),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide(color: c.border),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide(color: c.accent),
+                      ),
+                    ),
+                    onChanged: (_) => setState(() {}),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerRight,
+            child: ShadButton(
+              size: ShadButtonSize.sm,
+              onPressed: () {
+                _save();
+                setState(() => _isExpanded = false);
+              },
+              child: Text(s.confirm),
+            ),
+          ),
+        ],
       ],
     );
   }

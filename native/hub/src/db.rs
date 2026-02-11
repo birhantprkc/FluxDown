@@ -380,7 +380,12 @@ impl Db {
                     ('auto_resume_on_start', 'false'),
                     ('close_to_tray', 'true'),
                     ('auto_startup', 'false'),
-                    ('auto_check_update', 'true');",
+                    ('auto_check_update', 'true'),
+                    ('bt_enable_dht', 'true'),
+                    ('bt_enable_upnp', 'true'),
+                    ('bt_port_start', '6881'),
+                    ('bt_port_end', '6891'),
+                    ('bt_custom_trackers', '');",
                 default_save_dir.replace('\'', "''")
             ))?;
             Ok(())
@@ -437,6 +442,108 @@ impl Db {
                 "UPDATE tasks SET segments = ?1 WHERE id = ?2",
                 params![segments, id],
             )?;
+            Ok(())
+        })
+        .await?
+    }
+
+    /// Insert or replace a single segment row (used by dynamic segment coordinator).
+    ///
+    /// This is the upsert counterpart to `insert_segments` — it handles a single
+    /// segment that may or may not already exist in the DB.
+    pub async fn upsert_segment(
+        &self,
+        task_id: &str,
+        segment_index: i32,
+        start_byte: i64,
+        end_byte: i64,
+        downloaded_bytes: i64,
+    ) -> Result<(), DbError> {
+        let conn = self.conn.clone();
+        let task_id = task_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = conn.lock().map_err(|_| DbError::LockPoisoned)?;
+            // Atomic DELETE + INSERT inside a transaction.
+            let tx = conn.transaction()?;
+            tx.execute(
+                "DELETE FROM task_segments WHERE task_id = ?1 AND segment_index = ?2",
+                params![task_id, segment_index],
+            )?;
+            tx.execute(
+                "INSERT INTO task_segments (task_id, segment_index, start_byte, end_byte, downloaded_bytes)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![task_id, segment_index, start_byte, end_byte, downloaded_bytes],
+            )?;
+            tx.commit()?;
+            Ok(())
+        })
+        .await?
+    }
+
+    /// Update only the end_byte of a segment (used when a segment is shrunk by a split).
+    ///
+    /// NOTE: Currently unused — `persist_split` handles both child upsert and
+    /// parent shrink atomically. Kept for potential future use.
+    #[allow(dead_code)]
+    pub async fn update_segment_end_byte(
+        &self,
+        task_id: &str,
+        segment_index: i32,
+        end_byte: i64,
+    ) -> Result<(), DbError> {
+        let conn = self.conn.clone();
+        let task_id = task_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().map_err(|_| DbError::LockPoisoned)?;
+            conn.execute(
+                "UPDATE task_segments SET end_byte = ?1
+                 WHERE task_id = ?2 AND segment_index = ?3",
+                params![end_byte, task_id, segment_index],
+            )?;
+            Ok(())
+        })
+        .await?
+    }
+
+    /// Atomically persist a segment split: upsert the new child segment **and**
+    /// shrink the parent's `end_byte` in a single SQLite transaction.
+    ///
+    /// This prevents the scenario where the process crashes between the two
+    /// operations, leaving overlapping byte ranges that `validate_coverage`
+    /// would have to reset.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn persist_split(
+        &self,
+        task_id: &str,
+        child_index: i32,
+        child_start: i64,
+        child_end: i64,
+        child_downloaded: i64,
+        parent_index: i32,
+        parent_new_end: i64,
+    ) -> Result<(), DbError> {
+        let conn = self.conn.clone();
+        let task_id = task_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = conn.lock().map_err(|_| DbError::LockPoisoned)?;
+            let tx = conn.transaction()?;
+            // 1. Upsert child segment (DELETE + INSERT).
+            tx.execute(
+                "DELETE FROM task_segments WHERE task_id = ?1 AND segment_index = ?2",
+                params![task_id, child_index],
+            )?;
+            tx.execute(
+                "INSERT INTO task_segments (task_id, segment_index, start_byte, end_byte, downloaded_bytes)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![task_id, child_index, child_start, child_end, child_downloaded],
+            )?;
+            // 2. Shrink parent's end_byte.
+            tx.execute(
+                "UPDATE task_segments SET end_byte = ?1
+                 WHERE task_id = ?2 AND segment_index = ?3",
+                params![parent_new_end, task_id, parent_index],
+            )?;
+            tx.commit()?;
             Ok(())
         })
         .await?

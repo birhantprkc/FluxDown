@@ -10,7 +10,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::bt_downloader::{self, BtDownloadParams, SharedBtSession};
+use crate::bt_downloader::{self, BtConfig, BtDownloadParams, SharedBtSession};
 use crate::db::Db;
 use crate::downloader::{self, DownloadParams, ProgressUpdate, SegmentProgressInfo};
 use crate::ftp_downloader;
@@ -137,6 +137,8 @@ pub struct DownloadManager {
     bt_session: Option<Arc<SharedBtSession>>,
     /// Default save directory used to initialise the BT session.
     default_save_dir: String,
+    /// User-configurable BT settings (DHT, UPnP, ports, custom trackers).
+    bt_config: BtConfig,
 }
 
 impl DownloadManager {
@@ -145,6 +147,7 @@ impl DownloadManager {
         max_concurrent: usize,
         speed_limit_bps: u64,
         default_save_dir: String,
+        bt_config: BtConfig,
     ) -> Result<Self, downloader::DownloadError> {
         let client = downloader::build_client()?;
         let (tx, rx) = mpsc::channel(256);
@@ -167,6 +170,7 @@ impl DownloadManager {
             speed_limiter: limiter,
             bt_session: None,
             default_save_dir,
+            bt_config,
         })
     }
 
@@ -229,8 +233,9 @@ impl DownloadManager {
         if self.bt_session.is_none() {
             let speed_limit = self.speed_limiter.limit();
             let save_dir = self.default_save_dir.clone();
+            let config = self.bt_config.clone();
             let session = tokio::task::spawn_blocking(move || {
-                SharedBtSession::new(&save_dir, speed_limit)
+                SharedBtSession::new(&save_dir, speed_limit, &config)
             })
             .await
             .map_err(|e| downloader::DownloadError::Other(
@@ -239,6 +244,28 @@ impl DownloadManager {
             self.bt_session = Some(Arc::new(session));
         }
         Ok(())
+    }
+
+    /// Update BT configuration.  The new config will take effect when the
+    /// next BT session is created (either on first BT download or after
+    /// `invalidate_bt_session` is called).
+    pub fn set_bt_config(&mut self, config: BtConfig) {
+        self.bt_config = config;
+    }
+
+    /// Invalidate (destroy) the current BT session so it will be re-created
+    /// with the latest `bt_config` on the next BT download.  Active BT
+    /// downloads will be paused first.
+    pub async fn invalidate_bt_session(&mut self) {
+        if let Some(bt) = self.bt_session.take() {
+            rinf::debug_print!("[manager] invalidating BT session for config change");
+            let bt_clone = bt.clone();
+            // Shutdown on a blocking thread since it calls block_on internally.
+            let _ = tokio::task::spawn_blocking(move || {
+                bt_clone.shutdown();
+            })
+            .await;
+        }
     }
 
     /// Whether we have a free slot for a new HTTP/FTP download.
@@ -1073,20 +1100,30 @@ pub async fn progress_reporter(mut rx: mpsc::Receiver<ProgressUpdate>, db: Db) {
 
         // Persist progress to DB periodically (per-task timer, matches
         // segment persistence interval for crash-recovery consistency).
+        //
+        // DB writes are fire-and-forget (spawned, not awaited) so they don't
+        // block the progress consumption loop.  Under high throughput (many
+        // HTTP segments + BT) the channel would back-pressure and stall BT
+        // progress reporting if we awaited each DB write synchronously.
         if update.status == 1 {
             let task_last_save = last_db_save
                 .entry(update.task_id.clone())
                 .or_insert(now);
             if task_last_save.elapsed().as_secs() >= downloader::DB_SAVE_INTERVAL_SECS {
-                let _ = db
-                    .update_task_progress(&update.task_id, update.downloaded_bytes)
-                    .await;
+                let db_clone = db.clone();
+                let tid = update.task_id.clone();
+                let dl = update.downloaded_bytes;
+                tokio::spawn(async move {
+                    let _ = db_clone.update_task_progress(&tid, dl).await;
+                });
                 *task_last_save = now;
             }
         }
 
         // When a task completes, persist final downloaded_bytes to DB so that
         // subsequent app restarts load the correct 100% progress value.
+        // Completion writes are awaited (not fire-and-forget) to guarantee
+        // the final value is persisted before we clean up state.
         if update.status == 3 && update.total_bytes > 0 {
             let _ = db
                 .update_task_progress(&update.task_id, update.total_bytes)

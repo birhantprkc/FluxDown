@@ -389,6 +389,7 @@ class DetailPanel extends StatelessWidget {
   Widget _buildInfoTable(AppColors c, DownloadTask task) {
     final segs = task.segments;
     final segCount = segs != null && segs.isNotEmpty ? segs.length : null;
+    final splitCount = task.recentSplits.length;
 
     return Column(
       children: [
@@ -399,11 +400,78 @@ class DetailPanel extends StatelessWidget {
         _buildInfoRow(currentS.infoStatus, task.statusText, c),
         if (segCount != null)
           _buildInfoRow(currentS.threads, currentS.infoThreads(segCount), c),
+        if (splitCount > 0) _buildSplitInfoRow(c, task),
         _buildInfoRow(currentS.infoPath, task.saveDir, c),
         _buildUrlRow(c, task.url),
         if (task.errorMessage.isNotEmpty)
           _buildInfoRow(currentS.infoError, task.errorMessage, c),
       ],
+    );
+  }
+
+  /// 动态分段拆分信息行 — 显示拆分次数和最近拆分详情
+  Widget _buildSplitInfoRow(AppColors c, DownloadTask task) {
+    final splits = task.recentSplits;
+    if (splits.isEmpty) return const SizedBox.shrink();
+
+    final latest = splits.last;
+    final proactiveCount = splits.where((s) => s.isProactive).length;
+    final reactiveCount = splits.length - proactiveCount;
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 60,
+            child: Row(
+              children: [
+                Icon(LucideIcons.split, size: 11, color: c.accent),
+                const SizedBox(width: 3),
+                Text(
+                  currentS.dynamicSplit,
+                  style: TextStyle(fontSize: 11, color: c.textMuted),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  currentS.splitCount(
+                    splits.length,
+                    reactiveCount,
+                    proactiveCount,
+                  ),
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: c.textSecondary,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  currentS.splitLatest(
+                    latest.parentIndex + 1,
+                    latest.childIndex + 1,
+                    DownloadTask.formatBytes(
+                      latest.childEnd - latest.childStart + 1,
+                    ),
+                  ),
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: c.textMuted,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 

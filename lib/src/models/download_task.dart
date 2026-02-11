@@ -164,6 +164,28 @@ class SegmentData {
       size > 0 ? (downloadedBytes / size).clamp(0.0, 1.0) : 0;
 }
 
+/// Record of a dynamic segment split event from the coordinator.
+/// Used to trigger split animations in the detail panel.
+class SplitEventData {
+  final int parentIndex;
+  final int parentNewEnd;
+  final int childIndex;
+  final int childStart;
+  final int childEnd;
+  final bool isProactive;
+  final int totalSegments;
+
+  const SplitEventData({
+    required this.parentIndex,
+    required this.parentNewEnd,
+    required this.childIndex,
+    required this.childStart,
+    required this.childEnd,
+    required this.isProactive,
+    required this.totalSegments,
+  });
+}
+
 class DownloadTask {
   final String id;
   final String url;
@@ -180,6 +202,9 @@ class DownloadTask {
   /// Per-segment progress data (null if no segment info received yet)
   final List<SegmentData>? segments;
 
+  /// Recent split events (for animation). Kept for a short window then cleared.
+  final List<SplitEventData> recentSplits;
+
   DownloadTask({
     required this.id,
     required this.url,
@@ -192,6 +217,7 @@ class DownloadTask {
     this.errorMessage = '',
     this.isSelected = false,
     this.segments,
+    this.recentSplits = const [],
     DateTime? createdAt,
   }) : createdAt = createdAt ?? DateTime.now();
 
@@ -225,6 +251,7 @@ class DownloadTask {
     String? errorMessage,
     bool? isSelected,
     List<SegmentData>? segments,
+    List<SplitEventData>? recentSplits,
     DateTime? createdAt,
   }) {
     return DownloadTask(
@@ -239,6 +266,7 @@ class DownloadTask {
       errorMessage: errorMessage ?? this.errorMessage,
       isSelected: isSelected ?? this.isSelected,
       segments: segments ?? this.segments,
+      recentSplits: recentSplits ?? this.recentSplits,
       createdAt: createdAt ?? this.createdAt,
     );
   }
