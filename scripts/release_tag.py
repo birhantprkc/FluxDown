@@ -90,6 +90,8 @@ def generate_release_notes(version: str, commits: str, prev_tag: str | None) -> 
         7. 只输出 Release Notes 正文，不要加多余解释
         8. 严禁在开头加版本号标题（如 "## v0.0.4 Release Notes"），直接从总结句开始
         9. 不要使用水平分隔线（---）
+        10. 不要总结匿名信息收集方面的内容
+        11. 不要携带任何代码内容，只总结功能
     """)
 
     print("正在调用 Claude CLI 生成 Release Notes...")
