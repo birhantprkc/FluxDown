@@ -4,12 +4,14 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
+import 'package:window_manager/window_manager.dart';
 
 import '../i18n/locale_provider.dart';
 import '../models/download_task.dart';
 import '../theme/app_colors.dart';
 import 'open_folder.dart';
 import 'log_service.dart';
+import 'win32_toast/win32_toast_window.dart';
 import 'windows_toast_helper.dart';
 
 const _tag = 'NotifySvc';
@@ -92,6 +94,9 @@ class NotificationService {
     _shuttingDown = true;
     _batchTimer?.cancel();
     _dismissCurrent();
+    if (Platform.isWindows) {
+      Win32ToastWindow.instance.destroyAll();
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -100,8 +105,9 @@ class NotificationService {
 
   /// 显示下载完成的通知。
   ///
-  /// 不会立即显示，而是入队后等待 800ms 防抖窗口，
-  /// 以便合并短时间内密集完成的多个任务。
+  /// 所有平台统一走 800ms 防抖队列，合并短时间内密集完成的任务后一次性派发：
+  /// - 窗口前台：OverlayEntry 精美卡片
+  /// - 窗口不可见/最小化（Windows）：Win32 悬浮窗（绕过通知设置，100% 可靠）
   void showDownloadComplete(DownloadTask task) {
     _showSystemDownloadComplete(task);
     logInfo(
@@ -112,11 +118,15 @@ class NotificationService {
       logInfo(_tag, 'skipped (shuttingDown)');
       return;
     }
+    _enqueueTask(task);
+  }
 
+  /// 入队 + 启动防抖定时器（所有平台统一路径）。
+  void _enqueueTask(DownloadTask task) {
     _queue.add(task);
     logInfo(_tag, 'queued, queueSize=${_queue.length}');
 
-    // 如果已有通知在显示，仅入队，等关闭后再处理
+    // 如果 OverlayEntry 正在显示，仅入队等其关闭后再处理
     if (_currentEntry != null) {
       logInfo(_tag, 'notification active, queued for later');
       return;
@@ -137,15 +147,45 @@ class NotificationService {
   // Internal
   // ---------------------------------------------------------------------------
 
-  /// 冲刷队列 — 取出所有待处理任务，显示一个通知卡片。
+  /// 冲刷队列 — 取出所有待处理任务，整批派发给合适的通知路径。
   void _flushQueue() {
     if (_currentEntry != null || _queue.isEmpty || _shuttingDown) return;
 
     final batch = List<DownloadTask>.of(_queue);
     _queue.clear();
-
     logInfo(_tag, 'flushing ${batch.length} notifications');
-    _showOverlay(batch);
+
+    if (Platform.isWindows) {
+      _flushQueueWindows(batch);
+    } else {
+      _showOverlay(batch);
+    }
+  }
+
+  /// Windows：做一次窗口可见性检查，整批派发（前台→OverlayEntry，后台→Win32Toast）。
+  Future<void> _flushQueueWindows(List<DownloadTask> batch) async {
+    try {
+      final isVisible = await windowManager.isVisible();
+      final isMinimized = await windowManager.isMinimized();
+      if (_shuttingDown) return;
+
+      if (isVisible && !isMinimized) {
+        logInfo(_tag, 'window visible, using overlay (batch=${batch.length})');
+        _showOverlay(batch);
+      } else {
+        logInfo(
+          _tag,
+          'window hidden/minimized, using Win32 toast (batch=${batch.length})',
+        );
+        final brightness =
+            WidgetsBinding.instance.platformDispatcher.platformBrightness;
+        Win32ToastWindow.instance.isDarkMode = brightness == Brightness.dark;
+        Win32ToastWindow.instance.enqueueBatch(batch);
+      }
+    } catch (e, stack) {
+      logError(_tag, 'failed to check window visibility', e, stack);
+      _showOverlay(batch);
+    }
   }
 
   void _showOverlay(List<DownloadTask> batch) {
