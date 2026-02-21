@@ -10,14 +10,6 @@ class TaskTabBar extends StatelessWidget {
 
   const TaskTabBar({super.key, required this.controller});
 
-  static List<(StatusTab, String)> _tabs(S s) => [
-    (StatusTab.all, s.tabAll),
-    (StatusTab.downloading, s.tabDownloading),
-    (StatusTab.completed, s.tabCompleted),
-    (StatusTab.paused, s.tabPaused),
-    (StatusTab.error, s.tabError),
-  ];
-
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
@@ -27,34 +19,13 @@ class TaskTabBar extends StatelessWidget {
       builder: (context, _) {
         final ctrl = controller;
 
-        // 管理模式 → 显示操作栏
+        // 管理模式 → 显示批量操作栏
         if (ctrl.isManageMode) {
           return _buildManageBar(context, c, ctrl, s);
         }
 
-        // 普通模式 → 显示 Tab 栏
-        final selected = ctrl.statusTab;
-        final tabs = _tabs(s);
-        return Container(
-          height: 40,
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          decoration: BoxDecoration(
-            color: c.surface1,
-            border: Border(bottom: BorderSide(color: c.border, width: 1)),
-          ),
-          child: Row(
-            children: [
-              for (final (tab, label) in tabs) ...[
-                _Tab(
-                  label: '$label (${ctrl.filteredCountForStatus(tab)})',
-                  isSelected: selected == tab,
-                  onTap: () => ctrl.setStatusTab(tab),
-                ),
-                const SizedBox(width: 6),
-              ],
-            ],
-          ),
-        );
+        // 普通模式 → 状态过滤已移至侧边栏，此处不显示内容
+        return const SizedBox.shrink();
       },
     );
   }

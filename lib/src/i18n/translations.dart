@@ -94,6 +94,7 @@ class S {
   // Sidebar
   // ─────────────────────────────────────────────
 
+  String get sidebarStatus => _t('状态', 'STATUS');
   String get sidebarCategory => _t('分类', 'CATEGORY');
   String downloadUpdateVersion(String v) => _t('下载更新 v$v', 'Download v$v');
   String get installAndRestart => _t('立即安装并重启', 'Install & Restart');

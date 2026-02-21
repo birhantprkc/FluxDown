@@ -240,6 +240,28 @@ class DownloadController extends ChangeNotifier {
     return _tasks.where((t) => t.fileCategory == category).length;
   }
 
+  /// 各状态的任务数量（不受文件类型过滤影响，用于侧边栏全局计数）
+  int countForStatus(StatusTab tab) {
+    return switch (tab) {
+      StatusTab.all => _tasks.length,
+      StatusTab.downloading => _tasks
+          .where(
+            (t) =>
+                t.status == TaskStatus.downloading ||
+                t.status == TaskStatus.pending ||
+                t.status == TaskStatus.preparing ||
+                t.status == TaskStatus.resuming,
+          )
+          .length,
+      StatusTab.completed =>
+        _tasks.where((t) => t.status == TaskStatus.completed).length,
+      StatusTab.paused =>
+        _tasks.where((t) => t.status == TaskStatus.paused).length,
+      StatusTab.error =>
+        _tasks.where((t) => t.status == TaskStatus.error).length,
+    };
+  }
+
   // ---------------------------------------------------------------------------
   // 管理模式（多选批量操作）
   // ---------------------------------------------------------------------------

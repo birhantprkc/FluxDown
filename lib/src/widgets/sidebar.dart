@@ -7,32 +7,61 @@ import '../services/update_service.dart';
 import '../i18n/locale_provider.dart';
 import '../theme/app_colors.dart';
 
-class Sidebar extends StatelessWidget {
+class Sidebar extends StatefulWidget {
   final DownloadController controller;
 
   const Sidebar({super.key, required this.controller});
 
-  /// 文件类型 → 图标映射
-  static IconData _categoryIcon(FileCategory cat) {
-    return switch (cat) {
-      FileCategory.all => LucideIcons.layoutGrid,
-      FileCategory.video => LucideIcons.film,
-      FileCategory.audio => LucideIcons.music,
-      FileCategory.document => LucideIcons.fileText,
-      FileCategory.image => LucideIcons.image,
-      FileCategory.archive => LucideIcons.archive,
-      FileCategory.other => LucideIcons.file,
-    };
-  }
+  @override
+  State<Sidebar> createState() => _SidebarState();
+}
+
+class _SidebarState extends State<Sidebar> {
+  /// 分类区块是否展开（默认折叠，降低视觉噪音）
+  bool _categoryExpanded = false;
+
+  // ─────────────────────────────────────────────
+  // 图标映射
+  // ─────────────────────────────────────────────
+
+  static IconData _statusIcon(StatusTab tab) => switch (tab) {
+    StatusTab.all => LucideIcons.layoutGrid,
+    StatusTab.downloading => LucideIcons.download,
+    StatusTab.completed => LucideIcons.circleCheck,
+    StatusTab.paused => LucideIcons.circlePause,
+    StatusTab.error => LucideIcons.circleAlert,
+  };
+
+  static IconData _categoryIcon(FileCategory cat) => switch (cat) {
+    FileCategory.all => LucideIcons.folders,
+    FileCategory.video => LucideIcons.film,
+    FileCategory.audio => LucideIcons.music,
+    FileCategory.document => LucideIcons.fileText,
+    FileCategory.image => LucideIcons.image,
+    FileCategory.archive => LucideIcons.archive,
+    FileCategory.other => LucideIcons.file,
+  };
+
+  static String _statusLabel(S s, StatusTab tab) => switch (tab) {
+    StatusTab.all => s.tabAll,
+    StatusTab.downloading => s.tabDownloading,
+    StatusTab.completed => s.tabCompleted,
+    StatusTab.paused => s.tabPaused,
+    StatusTab.error => s.tabError,
+  };
+
+  // ─────────────────────────────────────────────
+  // Build
+  // ─────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
     return ListenableBuilder(
-      listenable: controller,
+      listenable: widget.controller,
       builder: (context, _) {
-        final ctrl = controller;
-        final selected = ctrl.categoryFilter;
+        final ctrl = widget.controller;
+        final s = LocaleScope.of(context);
         return Container(
           width: 224,
           color: c.surface1,
@@ -40,25 +69,22 @@ class Sidebar extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _buildLogo(c),
-              const SizedBox(height: 12),
-              _buildSection(LocaleScope.of(context).sidebarCategory, c, [
-                for (final cat in FileCategory.values)
-                  _NavItem(
-                    icon: _categoryIcon(cat),
-                    label: cat.label,
-                    count: ctrl.countForCategory(cat),
-                    isSelected: selected == cat,
-                    onTap: () => ctrl.setCategoryFilter(cat),
-                  ),
-              ]),
+              const SizedBox(height: 10),
+              _buildStatusSection(ctrl, s, c),
+              const SizedBox(height: 6),
+              _buildCategorySection(ctrl, s, c),
               const Spacer(),
-              _buildFooter(c),
+              const _UpdateFooter(),
             ],
           ),
         );
       },
     );
   }
+
+  // ─────────────────────────────────────────────
+  // Logo
+  // ─────────────────────────────────────────────
 
   Widget _buildLogo(AppColors c) {
     return DragToMoveArea(
@@ -109,38 +135,161 @@ class Sidebar extends StatelessWidget {
     );
   }
 
-  Widget _buildSection(String title, AppColors c, List<Widget> items) {
+  // ─────────────────────────────────────────────
+  // 状态区块（主导航）
+  // ─────────────────────────────────────────────
+
+  Widget _buildStatusSection(DownloadController ctrl, S s, AppColors c) {
+    final selectedStatus = ctrl.statusTab;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-          child: Text(
-            title,
-            style: TextStyle(
-              fontSize: 10.5,
-              fontWeight: FontWeight.w500,
-              color: c.textMuted,
-              letterSpacing: 0.5,
-            ),
-          ),
-        ),
+        _SectionHeader(title: s.sidebarStatus, c: c),
         const SizedBox(height: 4),
-        ...items,
+        for (final tab in StatusTab.values)
+          _NavItem(
+            icon: _statusIcon(tab),
+            label: _statusLabel(s, tab),
+            count: ctrl.countForStatus(tab),
+            isSelected: selectedStatus == tab,
+            showActivityDot:
+                tab == StatusTab.downloading && ctrl.downloadingCount > 0,
+            onTap: () => ctrl.setStatusTab(tab),
+          ),
       ],
     );
   }
 
-  Widget _buildFooter(AppColors c) {
-    return const _UpdateFooter();
+  // ─────────────────────────────────────────────
+  // 分类区块（可折叠）
+  // ─────────────────────────────────────────────
+
+  Widget _buildCategorySection(DownloadController ctrl, S s, AppColors c) {
+    final selectedCategory = ctrl.categoryFilter;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _CollapsibleSectionHeader(
+          title: s.sidebarCategory,
+          expanded: _categoryExpanded,
+          c: c,
+          onToggle: () =>
+              setState(() => _categoryExpanded = !_categoryExpanded),
+        ),
+        if (_categoryExpanded) ...[
+          const SizedBox(height: 4),
+          for (final cat in FileCategory.values)
+            _NavItem(
+              icon: _categoryIcon(cat),
+              label: cat.label,
+              count: ctrl.countForCategory(cat),
+              isSelected: selectedCategory == cat,
+              onTap: () => ctrl.setCategoryFilter(cat),
+            ),
+        ],
+      ],
+    );
   }
 }
+
+// =============================================================================
+// Section Headers
+// =============================================================================
+
+class _SectionHeader extends StatelessWidget {
+  final String title;
+  final AppColors c;
+
+  const _SectionHeader({required this.title, required this.c});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      child: Text(
+        title,
+        style: TextStyle(
+          fontSize: 10.5,
+          fontWeight: FontWeight.w500,
+          color: c.textMuted,
+          letterSpacing: 0.5,
+        ),
+      ),
+    );
+  }
+}
+
+class _CollapsibleSectionHeader extends StatefulWidget {
+  final String title;
+  final bool expanded;
+  final AppColors c;
+  final VoidCallback onToggle;
+
+  const _CollapsibleSectionHeader({
+    required this.title,
+    required this.expanded,
+    required this.c,
+    required this.onToggle,
+  });
+
+  @override
+  State<_CollapsibleSectionHeader> createState() =>
+      _CollapsibleSectionHeaderState();
+}
+
+class _CollapsibleSectionHeaderState
+    extends State<_CollapsibleSectionHeader> {
+  bool _isHovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = widget.c;
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _isHovered = true),
+      onExit: (_) => setState(() => _isHovered = false),
+      child: GestureDetector(
+        onTap: widget.onToggle,
+        child: Container(
+          color: Colors.transparent,
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
+          child: Row(
+            children: [
+              Text(
+                widget.title,
+                style: TextStyle(
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w500,
+                  color: _isHovered ? c.textSecondary : c.textMuted,
+                  letterSpacing: 0.5,
+                ),
+              ),
+              const Spacer(),
+              Icon(
+                widget.expanded
+                    ? LucideIcons.chevronDown
+                    : LucideIcons.chevronRight,
+                size: 11,
+                color: _isHovered ? c.textSecondary : c.textMuted,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// =============================================================================
+// Nav Item
+// =============================================================================
 
 class _NavItem extends StatefulWidget {
   final IconData icon;
   final String label;
   final int? count;
   final bool isSelected;
+  final bool showActivityDot;
   final VoidCallback onTap;
 
   const _NavItem({
@@ -148,6 +297,7 @@ class _NavItem extends StatefulWidget {
     required this.label,
     this.count,
     required this.isSelected,
+    this.showActivityDot = false,
     required this.onTap,
   });
 
@@ -183,10 +333,30 @@ class _NavItemState extends State<_NavItem> {
           ),
           child: Row(
             children: [
-              Icon(
-                widget.icon,
-                size: 14,
-                color: selected ? c.accent : c.textSecondary,
+              // 活跃下载点 or 图标
+              Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  Icon(
+                    widget.icon,
+                    size: 14,
+                    color: selected ? c.accent : c.textSecondary,
+                  ),
+                  if (widget.showActivityDot)
+                    Positioned(
+                      top: -2,
+                      right: -3,
+                      child: Container(
+                        width: 6,
+                        height: 6,
+                        decoration: BoxDecoration(
+                          color: AppColors.green,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: c.surface1, width: 1),
+                        ),
+                      ),
+                    ),
+                ],
               ),
               const SizedBox(width: 8),
               Text(
@@ -216,9 +386,9 @@ class _NavItemState extends State<_NavItem> {
   }
 }
 
-// ─────────────────────────────────────────────
+// =============================================================================
 // Sidebar footer: version display + update UI
-// ─────────────────────────────────────────────
+// =============================================================================
 
 class _UpdateFooter extends StatelessWidget {
   const _UpdateFooter();
@@ -235,9 +405,7 @@ class _UpdateFooter extends StatelessWidget {
         return Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Progress bar — shown during download, spans full sidebar width
             if (status == UpdateStatus.downloading) _buildProgressBar(svc, c),
-            // Footer row
             Container(
               height: 32,
               padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -246,13 +414,11 @@ class _UpdateFooter extends StatelessWidget {
               ),
               child: Row(
                 children: [
-                  // Version text
                   Text(
                     _versionText(svc),
                     style: TextStyle(fontSize: 10.5, color: c.textMuted),
                   ),
                   const Spacer(),
-                  // Action button based on state
                   _buildAction(context, svc, c, status),
                 ],
               ),
