@@ -359,6 +359,7 @@ class DownloadController extends ChangeNotifier {
     String cookies = '',
     Uint8List? torrentFileBytes,
     String proxyUrl = '',
+    String userAgent = '',
   }) {
     logInfo(
       _tag,
@@ -372,6 +373,7 @@ class DownloadController extends ChangeNotifier {
       cookies: cookies,
       torrentFileBytes: torrentFileBytes ?? Uint8List(0),
       proxyUrl: proxyUrl,
+      userAgent: userAgent,
     ).sendSignalToRust();
     // 分析埋点
     final protocol = (torrentFileBytes != null && torrentFileBytes.isNotEmpty)
@@ -424,6 +426,7 @@ class DownloadController extends ChangeNotifier {
         cookies: '',
         torrentFileBytes: bytes,
         proxyUrl: proxyUrl,
+        userAgent: '',
       ).sendSignalToRust();
       AnalyticsService.instance.trackDownloadCreated('bt');
     } catch (e) {
@@ -437,6 +440,7 @@ class DownloadController extends ChangeNotifier {
     required String saveDir,
     int segments = 0,
     String proxyUrl = '',
+    String userAgent = '',
   }) {
     logInfo(
       _tag,
@@ -447,6 +451,7 @@ class DownloadController extends ChangeNotifier {
       saveDir: saveDir,
       segments: segments,
       proxyUrl: proxyUrl,
+      userAgent: userAgent,
     ).sendSignalToRust();
     for (final url in urls) {
       final protocol = url.toLowerCase().startsWith('ftp') ? 'ftp' : 'http';

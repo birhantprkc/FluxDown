@@ -38,7 +38,7 @@ fn default_save_dir() -> String {
 }
 
 /// Read initial config values from DB to pass to DownloadManager.
-async fn load_initial_config(db: &Db) -> (usize, u64, String, BtConfig, ProxyConfig) {
+async fn load_initial_config(db: &Db) -> (usize, u64, String, BtConfig, ProxyConfig, String) {
     let config = db.get_all_config().await.unwrap_or_default();
 
     let max_concurrent = config
@@ -80,8 +80,9 @@ async fn load_initial_config(db: &Db) -> (usize, u64, String, BtConfig, ProxyCon
     };
 
     let proxy_config = ProxyConfig::from_config_map(&config);
+    let user_agent = config.get("global_user_agent").cloned().unwrap_or_default();
 
-    (max_concurrent, speed_limit_bytes, save_dir, bt_config, proxy_config)
+    (max_concurrent, speed_limit_bytes, save_dir, bt_config, proxy_config, user_agent)
 }
 
 pub async fn run(db_dir: PathBuf) {
@@ -99,7 +100,7 @@ pub async fn run(db_dir: PathBuf) {
     }
 
     // Load persisted config to initialize the manager with correct limits.
-    let (max_concurrent, speed_limit_bps, save_dir, mut bt_config, proxy_config) = load_initial_config(&db).await;
+    let (max_concurrent, speed_limit_bps, save_dir, mut bt_config, proxy_config, user_agent) = load_initial_config(&db).await;
     rinf::debug_print!(
         "[actor] proxy config: mode={}, type={}, host={}, port={}",
         proxy_config.mode.as_str(),
@@ -125,7 +126,7 @@ pub async fn run(db_dir: PathBuf) {
     );
 
     let app_data_dir = db_dir.to_string_lossy().into_owned();
-    let mut manager = match DownloadManager::new(db.clone(), max_concurrent, speed_limit_bps, save_dir, app_data_dir, bt_config, proxy_config) {
+    let mut manager = match DownloadManager::new(db.clone(), max_concurrent, speed_limit_bps, save_dir, app_data_dir, bt_config, proxy_config, user_agent) {
         Ok(m) => m,
         Err(e) => {
             rinf::debug_print!("Failed to create download manager: {}", e);
@@ -185,7 +186,7 @@ pub async fn run(db_dir: PathBuf) {
             Some(signal) = create_recv.recv() => {
                 let msg = signal.message;
                 manager
-                    .create_task(msg.url, msg.save_dir, msg.file_name, msg.segments, msg.cookies, msg.torrent_file_bytes, msg.proxy_url)
+                    .create_task(msg.url, msg.save_dir, msg.file_name, msg.segments, msg.cookies, msg.torrent_file_bytes, msg.proxy_url, msg.user_agent)
                     .await;
             }
             Some(signal) = batch_create_recv.recv() => {
@@ -196,7 +197,7 @@ pub async fn run(db_dir: PathBuf) {
                 );
                 for url in msg.urls {
                     manager
-                        .create_task(url, msg.save_dir.clone(), String::new(), msg.segments, String::new(), Vec::new(), msg.proxy_url.clone())
+                        .create_task(url, msg.save_dir.clone(), String::new(), msg.segments, String::new(), Vec::new(), msg.proxy_url.clone(), msg.user_agent.clone())
                         .await;
                 }
             }
@@ -283,6 +284,12 @@ pub async fn run(db_dir: PathBuf) {
                             rinf::debug_print!("[actor] failed to apply proxy config: {}", e);
                         }
                     }
+                    "global_user_agent" => {
+                        rinf::debug_print!("[actor] user_agent changed: {}", msg.value);
+                        if let Err(e) = manager.set_user_agent(msg.value) {
+                            rinf::debug_print!("[actor] failed to apply user_agent: {}", e);
+                        }
+                    }
                     _ => {} // other config keys — no runtime action needed
                 }
             }
@@ -327,7 +334,7 @@ pub async fn run(db_dir: PathBuf) {
                     msg.cookies.len()
                 );
                 manager
-                    .create_task(msg.url, msg.save_dir, msg.file_name, msg.segments, msg.cookies, Vec::new(), msg.proxy_url)
+                    .create_task(msg.url, msg.save_dir, msg.file_name, msg.segments, msg.cookies, Vec::new(), msg.proxy_url, msg.user_agent)
                     .await;
             }
             Some(done) = done_rx.recv() => {

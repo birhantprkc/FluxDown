@@ -301,6 +301,9 @@ const en = {
   "changelog.empty": "No releases found.",
   "changelog.loadMore": "Load more",
   "changelog.loading": "Loading...",
+  "changelog.copyMd": "MD",
+  "changelog.copyPlain": "Text",
+  "changelog.copied": "Copied!",
 
   // Privacy Policy
   "privacy.title": "Privacy Policy",

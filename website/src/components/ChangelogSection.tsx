@@ -1,6 +1,15 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { motion } from "framer-motion";
-import { History, Tag, Calendar, Loader2, ChevronDown } from "lucide-react";
+import {
+  History,
+  Tag,
+  Calendar,
+  Loader2,
+  ChevronDown,
+  FileCode,
+  FileText,
+  Check,
+} from "lucide-react";
 import { useLocale } from "@/lib/i18n";
 
 interface Release {
@@ -55,6 +64,61 @@ function formatDate(dateStr: string, locale: string): string {
   });
 }
 
+/** 去除内联 Markdown 语法，返回纯文本；反引号内容用方括号包裹 */
+function cleanInline(text: string): string {
+  return text
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/\*(.+?)\*/g, "$1")
+    .replace(/`([^`]+)`/g, "[$1]");
+}
+
+/** 将 release body 转为适合 QQ群公告粘贴的纯文本 */
+function toPlainText(release: Release, locale: string): string {
+  const date = formatDate(release.published_at, locale);
+  const result: string[] = [
+    `【FluxDown ${release.tag} 更新日志】`,
+    `📅 ${date}`,
+    "",
+  ];
+
+  let counter = 0;
+  let lastWasBlank = true;
+
+  for (const raw of release.body.split("\n")) {
+    const line = raw.trimEnd();
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      if (!lastWasBlank) {
+        result.push("");
+        lastWasBlank = true;
+      }
+      continue;
+    }
+    lastWasBlank = false;
+
+    if (trimmed.startsWith("## ")) {
+      counter = 0;
+      result.push(`▌ ${trimmed.slice(3).trim()}`);
+    } else if (trimmed.startsWith("### ")) {
+      counter = 0;
+      result.push(`  ◆ ${trimmed.slice(4).trim()}`);
+    } else if (trimmed.startsWith("- ")) {
+      counter += 1;
+      result.push(`${counter}. ${cleanInline(trimmed.slice(2).trim())}`);
+    } else {
+      result.push(cleanInline(trimmed));
+    }
+  }
+
+  // 去掉末尾多余空行
+  while (result.length > 0 && result[result.length - 1] === "") {
+    result.pop();
+  }
+
+  return result.join("\n");
+}
+
 function timeAgo(dateStr: string, locale: string): string {
   const now = Date.now();
   const then = new Date(dateStr).getTime();
@@ -73,6 +137,80 @@ function timeAgo(dateStr: string, locale: string): string {
   return `${Math.floor(days / 365)} years ago`;
 }
 
+function CopyButtons({
+  release,
+  locale,
+  t,
+}: {
+  release: Release;
+  locale: string;
+  t: (key: string) => string;
+}) {
+  const [mdState, setMdState] = useState<"idle" | "copied">("idle");
+  const [textState, setTextState] = useState<"idle" | "copied">("idle");
+
+  const copy = async (content: string, which: "md" | "text") => {
+    try {
+      await navigator.clipboard.writeText(content);
+    } catch {
+      // fallback for older browsers
+      const el = document.createElement("textarea");
+      el.value = content;
+      el.style.position = "fixed";
+      el.style.opacity = "0";
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand("copy");
+      document.body.removeChild(el);
+    }
+    if (which === "md") {
+      setMdState("copied");
+      setTimeout(() => setMdState("idle"), 2000);
+    } else {
+      setTextState("copied");
+      setTimeout(() => setTextState("idle"), 2000);
+    }
+  };
+
+  return (
+    <div className="ml-auto flex items-center gap-0.5 shrink-0">
+      {/* Copy Markdown */}
+      <button
+        onClick={() => copy(release.body, "md")}
+        title={t("changelog.copyMd") + " (Markdown)"}
+        className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-dark-text-muted hover:text-dark-text hover:bg-dark-surface2 transition-all duration-150 cursor-pointer select-none"
+      >
+        {mdState === "copied" ? (
+          <Check className="w-3 h-3 text-brand-sky shrink-0" />
+        ) : (
+          <FileCode className="w-3 h-3 shrink-0" />
+        )}
+        <span className={mdState === "copied" ? "text-brand-sky" : ""}>
+          {mdState === "copied" ? t("changelog.copied") : t("changelog.copyMd")}
+        </span>
+      </button>
+
+      {/* Copy plain text */}
+      <button
+        onClick={() => copy(toPlainText(release, locale), "text")}
+        title={t("changelog.copyPlain") + " (QQ群公告)"}
+        className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-dark-text-muted hover:text-dark-text hover:bg-dark-surface2 transition-all duration-150 cursor-pointer select-none"
+      >
+        {textState === "copied" ? (
+          <Check className="w-3 h-3 text-brand-sky shrink-0" />
+        ) : (
+          <FileText className="w-3 h-3 shrink-0" />
+        )}
+        <span className={textState === "copied" ? "text-brand-sky" : ""}>
+          {textState === "copied"
+            ? t("changelog.copied")
+            : t("changelog.copyPlain")}
+        </span>
+      </button>
+    </div>
+  );
+}
+
 export default function ChangelogSection() {
   const { locale, t } = useLocale();
   const [releases, setReleases] = useState<Release[]>([]);
@@ -84,35 +222,30 @@ export default function ChangelogSection() {
   const initialFetched = useRef(false);
 
   // 请求某一页数据
-  const fetchPage = useCallback(
-    async (p: number, append: boolean) => {
-      if (append) {
-        setLoadingMore(true);
-      } else {
-        setLoading(true);
-      }
-      setError("");
+  const fetchPage = useCallback(async (p: number, append: boolean) => {
+    if (append) {
+      setLoadingMore(true);
+    } else {
+      setLoading(true);
+    }
+    setError("");
 
-      try {
-        const res = await fetch(
-          `/api/changelog?page=${p}&per_page=${PER_PAGE}`,
-        );
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
+    try {
+      const res = await fetch(`/api/changelog?page=${p}&per_page=${PER_PAGE}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
 
-        const incoming: Release[] = data.releases || [];
-        setReleases((prev) => (append ? [...prev, ...incoming] : incoming));
-        setHasMore(data.has_more ?? false);
-        setPage(p);
-      } catch (err) {
-        setError(String(err));
-      } finally {
-        setLoading(false);
-        setLoadingMore(false);
-      }
-    },
-    [],
-  );
+      const incoming: Release[] = data.releases || [];
+      setReleases((prev) => (append ? [...prev, ...incoming] : incoming));
+      setHasMore(data.has_more ?? false);
+      setPage(p);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setLoading(false);
+      setLoadingMore(false);
+    }
+  }, []);
 
   // 首次加载
   useEffect(() => {
@@ -169,7 +302,9 @@ export default function ChangelogSection() {
         {/* Empty */}
         {!loading && !error && releases.length === 0 && (
           <div className="text-center py-12">
-            <p className="text-sm text-dark-text-muted">{t("changelog.empty")}</p>
+            <p className="text-sm text-dark-text-muted">
+              {t("changelog.empty")}
+            </p>
           </div>
         )}
 
@@ -210,6 +345,7 @@ export default function ChangelogSection() {
                       <span className="text-xs text-dark-text-muted">
                         {timeAgo(release.published_at, locale)}
                       </span>
+                      <CopyButtons release={release} locale={locale} t={t} />
                     </div>
 
                     {/* Card body */}

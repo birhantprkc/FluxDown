@@ -19,6 +19,17 @@ import '../i18n/locale_provider.dart';
 import '../theme/app_colors.dart';
 import 'dir_picker_field.dart';
 
+/// UA 预设映射（key → UA 字符串）
+const _kUaPresets = {
+  'chrome':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  'firefox':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0',
+  'edge':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0',
+  'netdisk': 'netdisk',
+};
+
 /// 浏览器扩展下载请求的快速确认对话框。
 ///
 /// 在主窗口内以 Dialog 形式弹出，无需创建独立子窗口，
@@ -80,7 +91,9 @@ class _QuickDownloadDialogContentState
   final _saveDirController = TextEditingController();
   final _renameController = TextEditingController();
   final _proxyUrlController = TextEditingController();
+  final _userAgentController = TextEditingController();
   String? selectedThreads;
+  String _selectedUaPreset = 'custom';
 
   /// 是否展开高级选项（含任务代理）
   bool _showAdvanced = false;
@@ -142,6 +155,7 @@ class _QuickDownloadDialogContentState
     _saveDirController.dispose();
     _renameController.dispose();
     _proxyUrlController.dispose();
+    _userAgentController.dispose();
     super.dispose();
   }
 
@@ -174,6 +188,7 @@ class _QuickDownloadDialogContentState
     if (urls.isEmpty) return;
 
     final proxyUrl = _proxyUrlController.text.trim();
+    final userAgent = _userAgentController.text.trim();
 
     final segments = switch (selectedThreads) {
       'auto' => 0,
@@ -195,6 +210,7 @@ class _QuickDownloadDialogContentState
         segments: segments,
         cookies: widget.cookies,
         proxyUrl: proxyUrl,
+        userAgent: userAgent,
       ).sendSignalToRust();
     } else {
       // 多条 — 使用 BatchCreateTask
@@ -203,6 +219,7 @@ class _QuickDownloadDialogContentState
         saveDir: saveDir,
         segments: segments,
         proxyUrl: proxyUrl,
+        userAgent: userAgent,
       ).sendSignalToRust();
     }
 
@@ -470,6 +487,81 @@ class _QuickDownloadDialogContentState
               ShadInput(
                 controller: _proxyUrlController,
                 placeholder: Text(s.taskProxyPlaceholder),
+              ),
+              const SizedBox(height: 10),
+              _SectionLabel(text: s.userAgent, c: c),
+              const SizedBox(height: 4),
+              Text(
+                s.userAgentTaskPlaceholder,
+                style: TextStyle(fontSize: 11, color: c.textMuted),
+              ),
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  SizedBox(
+                    width: 150,
+                    child: ShadSelect<String>(
+                      initialValue: _selectedUaPreset,
+                      placeholder: Text(s.userAgentPresetCustom),
+                      options: [
+                        ShadOption(
+                          value: 'chrome',
+                          child: Text(s.userAgentPresetChrome),
+                        ),
+                        ShadOption(
+                          value: 'firefox',
+                          child: Text(s.userAgentPresetFirefox),
+                        ),
+                        ShadOption(
+                          value: 'edge',
+                          child: Text(s.userAgentPresetEdge),
+                        ),
+                        ShadOption(
+                          value: 'netdisk',
+                          child: Text(s.userAgentPresetNetdisk),
+                        ),
+                        ShadOption(
+                          value: 'custom',
+                          child: Text(s.userAgentPresetCustom),
+                        ),
+                      ],
+                      selectedOptionBuilder: (context, value) {
+                        final label = switch (value) {
+                          'chrome' => 'Chrome',
+                          'firefox' => 'Firefox',
+                          'edge' => 'Edge',
+                          'netdisk' => 'netdisk',
+                          _ => s.userAgentPresetCustom,
+                        };
+                        return Text(
+                          label,
+                          overflow: TextOverflow.ellipsis,
+                          maxLines: 1,
+                        );
+                      },
+                      onChanged: (v) {
+                        if (v == null) return;
+                        setState(() => _selectedUaPreset = v);
+                        final preset = _kUaPresets[v];
+                        if (preset != null) {
+                          _userAgentController.text = preset;
+                        }
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: ShadInput(
+                      controller: _userAgentController,
+                      placeholder: Text(s.userAgentPlaceholder),
+                      onChanged: (_) {
+                        if (_selectedUaPreset != 'custom') {
+                          setState(() => _selectedUaPreset = 'custom');
+                        }
+                      },
+                    ),
+                  ),
+                ],
               ),
             ],
           ],

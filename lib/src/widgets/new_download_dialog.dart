@@ -59,7 +59,9 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
   final _saveDirController = TextEditingController();
   final _renameController = TextEditingController();
   final _proxyUrlController = TextEditingController();
+  final _userAgentController = TextEditingController();
   String? selectedThreads;
+  String _selectedUaPreset = 'custom';
 
   /// 是否展开高级选项（含任务代理）
   bool _showAdvanced = false;
@@ -157,6 +159,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     _saveDirController.dispose();
     _renameController.dispose();
     _proxyUrlController.dispose();
+    _userAgentController.dispose();
     super.dispose();
   }
 
@@ -265,6 +268,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
     if (saveDir.isEmpty) return;
 
     final proxyUrl = _proxyUrlController.text.trim();
+    final userAgent = _userAgentController.text.trim();
 
     // Handle .torrent file downloads
     if (_hasTorrentFiles) {
@@ -301,6 +305,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
         fileName: rename,
         segments: segments,
         proxyUrl: proxyUrl,
+        userAgent: userAgent,
       );
     } else {
       // 多条 — 使用 BatchCreateTask
@@ -309,6 +314,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
         saveDir: saveDir,
         segments: segments,
         proxyUrl: proxyUrl,
+        userAgent: userAgent,
       );
     }
 
@@ -704,6 +710,89 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
               ShadInput(
                 controller: _proxyUrlController,
                 placeholder: Text(s.taskProxyPlaceholder),
+              ),
+              const SizedBox(height: 10),
+              _SectionLabel(text: s.userAgent, c: c),
+              const SizedBox(height: 4),
+              Text(
+                s.userAgentTaskPlaceholder,
+                style: TextStyle(fontSize: 11, color: c.textMuted),
+              ),
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  SizedBox(
+                    width: 150,
+                    child: ShadSelect<String>(
+                      initialValue: _selectedUaPreset,
+                      options: [
+                        ShadOption(
+                          value: 'chrome',
+                          child: Text(s.userAgentPresetChrome),
+                        ),
+                        ShadOption(
+                          value: 'firefox',
+                          child: Text(s.userAgentPresetFirefox),
+                        ),
+                        ShadOption(
+                          value: 'edge',
+                          child: Text(s.userAgentPresetEdge),
+                        ),
+                        ShadOption(
+                          value: 'netdisk',
+                          child: Text(s.userAgentPresetNetdisk),
+                        ),
+                        ShadOption(
+                          value: 'custom',
+                          child: Text(s.userAgentPresetCustom),
+                        ),
+                      ],
+                      selectedOptionBuilder: (context, value) {
+                        final label = switch (value) {
+                          'chrome' => 'Chrome',
+                          'firefox' => 'Firefox',
+                          'edge' => 'Edge',
+                          'netdisk' => 'netdisk',
+                          _ => s.userAgentPresetCustom,
+                        };
+                        return Text(
+                          label,
+                          overflow: TextOverflow.ellipsis,
+                          maxLines: 1,
+                        );
+                      },
+                      onChanged: (preset) {
+                        if (preset == null) return;
+                        setState(() => _selectedUaPreset = preset);
+                        const presets = {
+                          'chrome':
+                              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                                  '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                          'firefox':
+                              'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) '
+                                  'Gecko/20100101 Firefox/133.0',
+                          'edge':
+                              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                                  '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0',
+                          'netdisk': 'netdisk',
+                        };
+                        if (preset != 'custom') {
+                          _userAgentController.text = presets[preset] ?? '';
+                        }
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: ShadInput(
+                      controller: _userAgentController,
+                      placeholder: Text(s.userAgentTaskPlaceholder),
+                      onChanged: (_) {
+                        setState(() => _selectedUaPreset = 'custom');
+                      },
+                    ),
+                  ),
+                ],
               ),
             ],
           ],

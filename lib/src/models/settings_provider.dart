@@ -44,6 +44,9 @@ class SettingsProvider extends ChangeNotifier {
   int _btPortEnd = 6891; // 监听端口结束
   String _btCustomTrackers = ''; // 用户自定义 Tracker 列表（换行分隔）
 
+  // UA 设置
+  String _globalUserAgent = ''; // 空字符串 = 使用内置 Chrome UA
+
   /// 配置是否已从 Rust 端加载完成
   bool _loaded = false;
 
@@ -110,6 +113,9 @@ class SettingsProvider extends ChangeNotifier {
   int get btPortStart => _btPortStart;
   int get btPortEnd => _btPortEnd;
   String get btCustomTrackers => _btCustomTrackers;
+
+  // UA 设置 Getter
+  String get globalUserAgent => _globalUserAgent;
 
   // ---------------------------------------------------------------------------
   // Setters — 修改值 + 通知 Rust 持久化
@@ -260,6 +266,15 @@ class SettingsProvider extends ChangeNotifier {
     _saveToRust('bt_custom_trackers', value);
   }
 
+  // UA 设置 Setter
+
+  void setGlobalUserAgent(String value) {
+    if (_globalUserAgent == value) return;
+    _globalUserAgent = value;
+    notifyListeners();
+    _saveToRust('global_user_agent', value);
+  }
+
   // 文件关联操作
 
   /// 标记已弹窗提示过文件关联（持久化到 Rust SQLite）
@@ -400,6 +415,8 @@ class SettingsProvider extends ChangeNotifier {
           _proxyPassword = entry.value;
         case 'proxy_no_list':
           _proxyNoList = entry.value;
+        case 'global_user_agent':
+          _globalUserAgent = entry.value;
       }
     }
     _loaded = true;

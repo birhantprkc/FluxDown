@@ -418,6 +418,26 @@ class S {
   String proxyTestFailed(String error) =>
       _t('连接失败: $error', 'Connection failed: $error');
 
+  // User-Agent 设置
+  String get userAgent => _t('用户代理 (User-Agent)', 'User-Agent');
+  String get userAgentDesc => _t(
+    '下载请求时使用的浏览器标识。百度网盘直链下载需设为 netdisk',
+    'Browser identity used in download requests. Set to "netdisk" for Baidu Pan.',
+  );
+  String get userAgentPlaceholder =>
+      _t('留空使用内置 Chrome UA', 'Leave empty to use built-in Chrome UA');
+  String get userAgentTaskPlaceholder =>
+      _t('留空使用全局设置', 'Leave empty to use global setting');
+  String get userAgentPresetChrome => _t('Chrome（默认）', 'Chrome (default)');
+  String get userAgentPresetFirefox => _t('Firefox', 'Firefox');
+  String get userAgentPresetEdge => _t('Edge', 'Edge');
+  String get userAgentPresetNetdisk => _t('netdisk（百度网盘）', 'netdisk (Baidu Pan)');
+  String get userAgentPresetCustom => _t('自定义', 'Custom');
+  List<String> get searchKeywordsUserAgent => _t(
+    'UA,用户代理,浏览器标识,netdisk,百度网盘',
+    'UA,user agent,browser,netdisk,baidu',
+  ).split(',')..addAll(['ua', 'user-agent', 'netdisk']);
+
   // Per-task proxy (新建下载对话框)
   String get taskProxy => _t('任务代理', 'Task Proxy');
   String get taskProxyDesc => _t(

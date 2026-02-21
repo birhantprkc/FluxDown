@@ -1,6 +1,9 @@
 import { defineConfig } from "wxt";
 
 export default defineConfig({
+  zip: {
+    excludeSources: ["*.zip", "*.html", "stats.html"],
+  },
   manifest: {
     name: "__MSG_extensionName__",
     description: "__MSG_extensionDescription__",

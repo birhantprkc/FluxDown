@@ -157,6 +157,13 @@ List<SettingsSearchItem> get settingsSearchItems {
       icon: LucideIcons.gauge,
     ),
     SettingsSearchItem(
+      category: SettingsCategory.download,
+      label: s.userAgent,
+      description: s.userAgentDesc,
+      keywords: s.searchKeywordsUserAgent,
+      icon: LucideIcons.userCheck,
+    ),
+    SettingsSearchItem(
       category: SettingsCategory.about,
       label: s.checkUpdate,
       description: s.checkUpdateDesc,
@@ -738,6 +745,13 @@ class _DownloadContent extends StatelessWidget {
               vertical: true,
               child: _SpeedLimitInput(settingsProvider: settingsProvider),
             ),
+            const SizedBox(height: 10),
+            _SettingCard(
+              label: LocaleScope.of(context).userAgent,
+              description: LocaleScope.of(context).userAgentDesc,
+              vertical: true,
+              child: _UserAgentEditor(settingsProvider: settingsProvider),
+            ),
           ],
         );
       },
@@ -973,6 +987,132 @@ class _SpeedLimitInputState extends State<_SpeedLimitInput> {
         Text(
           currentS.speedLimitUnit,
           style: TextStyle(fontSize: 12, color: c.textMuted),
+        ),
+      ],
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+// UA 编辑器
+// ─────────────────────────────────────────────
+
+/// 预设 UA 映射（key → UA 字符串，'custom' 留空让用户自行输入）
+const _kUaPresets = {
+  'chrome': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  'firefox': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) '
+      'Gecko/20100101 Firefox/133.0',
+  'edge': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0',
+  'netdisk': 'netdisk',
+};
+
+String _detectPreset(String ua) {
+  if (ua.isEmpty) return 'chrome'; // 空 = 内置 Chrome UA
+  for (final entry in _kUaPresets.entries) {
+    if (entry.value == ua) return entry.key;
+  }
+  return 'custom';
+}
+
+class _UserAgentEditor extends StatefulWidget {
+  final SettingsProvider settingsProvider;
+
+  const _UserAgentEditor({required this.settingsProvider});
+
+  @override
+  State<_UserAgentEditor> createState() => _UserAgentEditorState();
+}
+
+class _UserAgentEditorState extends State<_UserAgentEditor> {
+  late TextEditingController _controller;
+  late String _selectedPreset;
+
+  @override
+  void initState() {
+    super.initState();
+    final ua = widget.settingsProvider.globalUserAgent;
+    _controller = TextEditingController(text: ua);
+    _selectedPreset = _detectPreset(ua);
+  }
+
+  @override
+  void didUpdateWidget(_UserAgentEditor oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final ua = widget.settingsProvider.globalUserAgent;
+    if (ua != _controller.text) {
+      _controller.text = ua;
+      _selectedPreset = _detectPreset(ua);
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _onPresetChanged(String? preset) {
+    if (preset == null) return;
+    setState(() => _selectedPreset = preset);
+    if (preset != 'custom') {
+      final ua = _kUaPresets[preset] ?? '';
+      _controller.text = ua;
+      // 空字符串 = 使用内置 Chrome UA，与 'chrome' 预设语义等价
+      widget.settingsProvider.setGlobalUserAgent(ua);
+    }
+  }
+
+  void _onTextChanged(String value) {
+    // 手动编辑时切换到 custom
+    final detected = _detectPreset(value);
+    if (detected != _selectedPreset) {
+      setState(() => _selectedPreset = detected);
+    }
+  }
+
+  void _onSubmit(String value) {
+    widget.settingsProvider.setGlobalUserAgent(value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = LocaleScope.of(context);
+    return Row(
+      children: [
+        SizedBox(
+          width: 150,
+          child: ShadSelect<String>(
+            initialValue: _selectedPreset,
+            options: [
+              ShadOption(value: 'chrome', child: Text(s.userAgentPresetChrome)),
+              ShadOption(value: 'firefox', child: Text(s.userAgentPresetFirefox)),
+              ShadOption(value: 'edge', child: Text(s.userAgentPresetEdge)),
+              ShadOption(value: 'netdisk', child: Text(s.userAgentPresetNetdisk)),
+              ShadOption(value: 'custom', child: Text(s.userAgentPresetCustom)),
+            ],
+            selectedOptionBuilder: (context, value) {
+              final label = switch (value) {
+                'chrome' => 'Chrome',
+                'firefox' => 'Firefox',
+                'edge' => 'Edge',
+                'netdisk' => 'netdisk',
+                _ => s.userAgentPresetCustom,
+              };
+              return Text(label, overflow: TextOverflow.ellipsis, maxLines: 1);
+            },
+            onChanged: _onPresetChanged,
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: ShadInput(
+            controller: _controller,
+            placeholder: Text(s.userAgentPlaceholder),
+            onChanged: _onTextChanged,
+            onSubmitted: _onSubmit,
+          ),
         ),
       ],
     );

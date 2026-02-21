@@ -20,6 +20,9 @@ pub struct CreateTask {
     /// Empty = use global proxy setting.
     #[serde(default)]
     pub proxy_url: String,
+    /// Per-task user-agent override. Empty = use global UA setting.
+    #[serde(default)]
+    pub user_agent: String,
 }
 
 /// Batch create multiple download tasks at once
@@ -32,6 +35,10 @@ pub struct BatchCreateTask {
     /// Empty = use global proxy setting.
     #[serde(default)]
     pub proxy_url: String,
+    /// Per-task user-agent override (shared for all tasks in batch).
+    /// Empty = use global UA setting.
+    #[serde(default)]
+    pub user_agent: String,
 }
 
 /// Control an existing task (pause/resume/cancel/delete)
@@ -114,6 +121,9 @@ pub struct ConfirmExternalDownload {
     /// Empty = use global proxy setting.
     #[serde(default)]
     pub proxy_url: String,
+    /// Per-task user-agent override. Empty = use global UA setting.
+    #[serde(default)]
+    pub user_agent: String,
 }
 
 // ========== Config signals ==========

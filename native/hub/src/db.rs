@@ -484,7 +484,8 @@ impl Db {
                     ('proxy_port', ''),
                     ('proxy_username', ''),
                     ('proxy_password', ''),
-                    ('proxy_no_list', '');",
+                    ('proxy_no_list', ''),
+                    ('global_user_agent', '');",
                 default_save_dir.replace('\'', "''")
             ))?;
             Ok(())

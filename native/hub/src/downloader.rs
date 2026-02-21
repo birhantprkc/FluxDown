@@ -95,21 +95,25 @@ pub struct DownloadParams {
 // HTTP client builder (shared config)
 // ---------------------------------------------------------------------------
 
+/// Default Chrome UA used when no user-agent override is provided.
+const DEFAULT_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
+    AppleWebKit/537.36 (KHTML, like Gecko) \
+    Chrome/131.0.0.0 Safari/537.36";
+
 /// Build a properly configured HTTP client that mirrors Chrome's capabilities.
 ///
 /// When `proxy_config` specifies a proxy, it is injected into the client builder.
 /// - `ProxyMode::None`   → explicit `no_proxy()` to disable env-var proxies
 /// - `ProxyMode::System`  → auto-detect from Windows registry / environment
 /// - `ProxyMode::Manual`  → user-specified proxy URL (HTTP/HTTPS/SOCKS4/SOCKS5)
-pub fn build_client(proxy_config: &crate::proxy_config::ProxyConfig) -> Result<Client, DownloadError> {
+///
+/// When `user_agent` is non-empty, it overrides the built-in Chrome UA.
+pub fn build_client(proxy_config: &crate::proxy_config::ProxyConfig, user_agent: &str) -> Result<Client, DownloadError> {
     use crate::proxy_config::{ProxyMode, detect_system_proxy};
 
+    let ua = if user_agent.is_empty() { DEFAULT_UA } else { user_agent };
     let mut builder = Client::builder()
-        .user_agent(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
-             AppleWebKit/537.36 (KHTML, like Gecko) \
-             Chrome/131.0.0.0 Safari/537.36",
-        )
+        .user_agent(ua)
         // TLS — native-tls uses Windows Schannel (system cert store + AIA chain building)
         // HTTP version — force HTTP/1.1 for download manager use cases:
         //  1. Range requests are reliable and well-tested on HTTP/1.1.

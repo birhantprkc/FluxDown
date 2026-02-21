@@ -329,6 +329,9 @@ const zhCN: Messages = {
   "changelog.empty": "暂无发布记录。",
   "changelog.loadMore": "加载更多",
   "changelog.loading": "加载中...",
+  "changelog.copyMd": "MD",
+  "changelog.copyPlain": "文本",
+  "changelog.copied": "已复制",
 
   // Privacy Policy
   "privacy.title": "隐私政策",

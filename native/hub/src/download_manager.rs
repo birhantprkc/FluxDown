@@ -123,6 +123,8 @@ struct QueuedTask {
     /// Per-task proxy URL override (e.g. "socks5://user:pass@host:port").
     /// Empty = use global proxy setting.
     proxy_url: String,
+    /// Per-task user-agent override. Empty = use global UA setting.
+    user_agent: String,
 }
 
 pub struct DownloadManager {
@@ -171,6 +173,8 @@ pub struct DownloadManager {
     /// Populated when an HLS download starts; consumed when Dart sends
     /// `SelectHlsQuality`.
     hls_quality_senders: HashMap<String, oneshot::Sender<i32>>,
+    /// Globally configured user-agent string. Empty = use built-in Chrome UA.
+    global_user_agent: String,
 }
 
 impl DownloadManager {
@@ -182,8 +186,9 @@ impl DownloadManager {
         app_data_dir: String,
         bt_config: BtConfig,
         proxy_config: ProxyConfig,
+        user_agent: String,
     ) -> Result<Self, downloader::DownloadError> {
-        let client = downloader::build_client(&proxy_config)?;
+        let client = downloader::build_client(&proxy_config, &user_agent)?;
         let (tx, rx) = mpsc::channel(256);
         let (done_tx, done_rx) = mpsc::channel(64);
         let limiter = SpeedLimiter::new(speed_limit_bps);
@@ -206,9 +211,9 @@ impl DownloadManager {
             bt_session: None,
             hls_quality_senders: HashMap::new(),
             default_save_dir,
-
             app_data_dir,
             bt_config,
+            global_user_agent: user_agent,
         })
     }
 
@@ -266,7 +271,7 @@ impl DownloadManager {
             config.host,
             config.port,
         );
-        let new_client = downloader::build_client(&config)?;
+        let new_client = downloader::build_client(&config, &self.global_user_agent)?;
         self.client = new_client;
         self.proxy_config = config;
         Ok(())
@@ -276,6 +281,19 @@ impl DownloadManager {
     #[allow(dead_code)]
     pub fn proxy_config(&self) -> &ProxyConfig {
         &self.proxy_config
+    }
+
+    /// Update global user-agent string.  Rebuilds the shared HTTP client so
+    /// that all **new** downloads use the updated UA.  Already-running
+    /// downloads keep their existing client and are unaffected.
+    ///
+    /// Empty string = revert to built-in Chrome UA.
+    pub fn set_user_agent(&mut self, ua: String) -> Result<(), downloader::DownloadError> {
+        rinf::debug_print!("[manager] updating global_user_agent: {}", ua);
+        let new_client = downloader::build_client(&self.proxy_config, &ua)?;
+        self.client = new_client;
+        self.global_user_agent = ua;
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -493,6 +511,7 @@ impl DownloadManager {
         cookies: String,
         torrent_file_bytes: Vec<u8>,
         proxy_url: String,
+        user_agent: String,
     ) {
         let task_id = Uuid::new_v4().to_string();
         // When segments <= 0 ("auto"), store 0 in DB and let the downloader
@@ -550,6 +569,7 @@ impl DownloadManager {
             cookies,
             torrent_file_bytes,
             proxy_url,
+            user_agent,
         };
         if is_bt || self.has_capacity() {
             self.do_start_task(queued).await;
@@ -604,6 +624,7 @@ impl DownloadManager {
             cookies,
             torrent_file_bytes,
             proxy_url,
+            user_agent,
         } = queued;
         self.generation += 1;
         let spawn_gen = self.generation;
@@ -686,24 +707,34 @@ impl DownloadManager {
                 let _ = done_tx.send(TaskDone { task_id: panic_task_id, generation: spawn_gen }).await;
             })
         } else {
-            // Resolve proxy: per-task proxy_url overrides global config.
+            // Resolve proxy and UA: per-task values override global config.
             // `.resolve()` expands System mode into a concrete Manual config
             // so that FTP downloader (which reads host/port directly) works.
-            let (task_client, task_proxy) = if proxy_url.is_empty() {
-                (self.client.clone(), self.proxy_config.resolve())
+            let resolved_ua = if user_agent.is_empty() {
+                self.global_user_agent.as_str()
             } else {
-                let pc = ProxyConfig::from_proxy_url(&proxy_url);
-                match downloader::build_client(&pc) {
+                user_agent.as_str()
+            };
+            let needs_rebuild = !proxy_url.is_empty() || !user_agent.is_empty();
+            let (task_client, task_proxy) = if needs_rebuild {
+                let pc = if proxy_url.is_empty() {
+                    self.proxy_config.resolve()
+                } else {
+                    ProxyConfig::from_proxy_url(&proxy_url)
+                };
+                match downloader::build_client(&pc, resolved_ua) {
                     Ok(c) => (c, pc),
                     Err(e) => {
                         rinf::debug_print!(
-                            "[manager] failed to build per-task proxy client: {}",
+                            "[manager] failed to build per-task client: {}",
                             e
                         );
                         // Fallback to global
                         (self.client.clone(), self.proxy_config.resolve())
                     }
                 }
+            } else {
+                (self.client.clone(), self.proxy_config.resolve())
             };
 
             let hls_quality_rx = if use_hls || use_dash {
@@ -892,6 +923,7 @@ impl DownloadManager {
                     cookies: String::new(), // cookies not available for resume from DB
                     torrent_file_bytes: Vec::new(), // loaded from DB in do_resume_task
                     proxy_url: t.proxy_url,
+                    user_agent: String::new(), // use global UA on resume
                 });
             }
         }
@@ -1036,23 +1068,27 @@ impl DownloadManager {
                 let _ = done_tx.send(TaskDone { task_id: panic_task_id, generation: spawn_gen }).await;
             })
         } else {
-            // Resolve proxy: per-task proxy_url overrides global config.
-            // `.resolve()` expands System mode into a concrete Manual config
-            // so that FTP downloader (which reads host/port directly) works.
-            let (task_client, task_proxy) = if task.proxy_url.is_empty() {
-                (self.client.clone(), self.proxy_config.resolve())
-            } else {
-                let pc = ProxyConfig::from_proxy_url(&task.proxy_url);
-                match downloader::build_client(&pc) {
+            // Resolve proxy and UA for resume: use global UA (cookies not
+            // persisted in DB, so only proxy_url is available from task row).
+            let needs_rebuild = !task.proxy_url.is_empty() || !self.global_user_agent.is_empty();
+            let (task_client, task_proxy) = if needs_rebuild {
+                let pc = if task.proxy_url.is_empty() {
+                    self.proxy_config.resolve()
+                } else {
+                    ProxyConfig::from_proxy_url(&task.proxy_url)
+                };
+                match downloader::build_client(&pc, &self.global_user_agent) {
                     Ok(c) => (c, pc),
                     Err(e) => {
                         rinf::debug_print!(
-                            "[manager] failed to build per-task proxy client on resume: {}",
+                            "[manager] failed to build per-task client on resume: {}",
                             e
                         );
                         (self.client.clone(), self.proxy_config.resolve())
                     }
                 }
+            } else {
+                (self.client.clone(), self.proxy_config.resolve())
             };
 
             let hls_quality_rx = if use_hls || use_dash {
