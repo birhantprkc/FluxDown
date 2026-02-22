@@ -33,6 +33,7 @@ class S {
   String get settings => _t('设置', 'Settings');
   String get browse => _t('浏览', 'Browse');
   String get manage => _t('管理', 'Manage');
+  String get manageTooltip => 'Ctrl+A';
   String get auto => _t('自动', 'Auto');
 
   // ─────────────────────────────────────────────
@@ -106,7 +107,8 @@ class S {
   String get queueSpeedLimit => _t('速度限制 (KB/s)', 'Speed Limit (KB/s)');
   String get queueSpeedLimitHint => _t('0 = 不限制', '0 = Unlimited');
   String get queueMaxConcurrent => _t('最大同时下载数', 'Max Concurrent Downloads');
-  String get queueMaxConcurrentHint => _t('0 = 使用全局设置', '0 = Use global setting');
+  String get queueMaxConcurrentHint =>
+      _t('0 = 使用全局设置', '0 = Use global setting');
   String get queueDefaultSegments => _t('线程数量', 'Threads');
   String get queueDefaultSegmentsHint => _t('0 = 自动', '0 = Auto');
   String get queueSaveDir => _t('默认保存目录', 'Default Save Directory');
@@ -472,7 +474,8 @@ class S {
   String get userAgentPresetFirefox => _t('Firefox', 'Firefox');
   String get userAgentPresetEdge => _t('Edge', 'Edge');
   String get userAgentPresetSafari => _t('Safari（macOS）', 'Safari (macOS)');
-  String get userAgentPresetNetdisk => _t('netdisk（百度网盘）', 'netdisk (Baidu Pan)');
+  String get userAgentPresetNetdisk =>
+      _t('netdisk（百度网盘）', 'netdisk (Baidu Pan)');
   String get userAgentPresetCustom => _t('自定义', 'Custom');
   List<String> get searchKeywordsUserAgent => _t(
     'UA,用户代理,浏览器标识,netdisk,百度网盘',

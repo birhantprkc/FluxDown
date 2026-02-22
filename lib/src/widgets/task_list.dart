@@ -106,8 +106,9 @@ class TaskList extends StatelessWidget {
             child: group.isActiveGroup
                 ? _ActiveGroupHeader(
                     taskCount: group.tasks.length,
-                    hasDownloading: group.tasks
-                        .any((t) => t.status == TaskStatus.downloading),
+                    hasDownloading: group.tasks.any(
+                      (t) => t.status == TaskStatus.downloading,
+                    ),
                     onPauseAll: () => controller.pauseAll(),
                   )
                 : _GroupHeader(
@@ -119,8 +120,7 @@ class TaskList extends StatelessWidget {
                   ),
           ),
           // 活跃组永不折叠；时间分组支持折叠
-          if (group.isActiveGroup ||
-              !controller.isGroupCollapsed(group.group))
+          if (group.isActiveGroup || !controller.isGroupCollapsed(group.group))
             SliverList(
               delegate: SliverChildBuilderDelegate((context, index) {
                 final task = group.tasks[index];
@@ -333,17 +333,25 @@ class _ManageToggleButtonState extends State<_ManageToggleButton> {
     final c = AppColors.of(context);
     final s = LocaleScope.of(context);
 
-    return MouseRegion(
-      onEnter: (_) => setState(() => _isHovered = true),
-      onExit: (_) => setState(() => _isHovered = false),
-      cursor: SystemMouseCursors.click,
-      child: GestureDetector(
+    return ShadTooltip(
+      waitDuration: const Duration(milliseconds: 500),
+      showDuration: Duration.zero,
+      effects: const [],
+      anchor: const ShadAnchor(
+        childAlignment: Alignment.topCenter,
+        overlayAlignment: Alignment.bottomCenter,
+        offset: Offset(0, 4),
+      ),
+      builder: (_) => Text(s.manageTooltip),
+      child: ShadGestureDetector(
+        cursor: SystemMouseCursors.click,
         onTap: widget.onTap,
+        onHoverChange: (v) => setState(() => _isHovered = v),
         child: Container(
           height: 24,
           padding: const EdgeInsets.symmetric(horizontal: 6),
           decoration: BoxDecoration(
-            color: _isHovered ? c.hoverBg : Colors.transparent,
+            color: _isHovered ? c.surface3 : c.surface2,
             borderRadius: BorderRadius.circular(4),
           ),
           child: Row(
@@ -352,14 +360,14 @@ class _ManageToggleButtonState extends State<_ManageToggleButton> {
               Icon(
                 LucideIcons.listChecks,
                 size: 13,
-                color: _isHovered ? c.textPrimary : c.textMuted,
+                color: _isHovered ? c.textPrimary : c.textSecondary,
               ),
               const SizedBox(width: 3),
               Text(
                 s.manage,
                 style: TextStyle(
                   fontSize: 11,
-                  color: _isHovered ? c.textPrimary : c.textMuted,
+                  color: _isHovered ? c.textPrimary : c.textSecondary,
                 ),
               ),
             ],

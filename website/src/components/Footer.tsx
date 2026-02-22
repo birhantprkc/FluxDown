@@ -1,8 +1,13 @@
+import { useState, useEffect } from "react";
 import { useLocale } from "@/lib/i18n";
 
 export default function Footer() {
   const { t } = useLocale();
-  const year = new Date().getFullYear();
+  // SSR 安全：初始值固定，useEffect 中更新为实际年份，避免 hydration mismatch
+  const [year, setYear] = useState(2025);
+  useEffect(() => {
+    setYear(new Date().getFullYear());
+  }, []);
 
   return (
     <footer className="relative overflow-hidden bg-dark-bg">

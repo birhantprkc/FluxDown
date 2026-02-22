@@ -73,10 +73,21 @@ export function t(messages: Messages, key: keyof Messages, params?: Record<strin
 /**
  * 独立 i18n hook — 适用于 Astro island 架构
  * 每个 React island 独立管理 locale 状态，通过 CustomEvent 同步切换
+ *
+ * SSR 安全：初始值固定为 "en"（与服务端一致），useEffect 中再更新为实际语言。
+ * 这样避免 React hydration mismatch（error #418）。
  */
 export function useLocale() {
-  const [locale, setLocaleState] = useState<Locale>(() => loadLocale());
-  const [messages, setMessages] = useState<Messages>(() => getMessages(loadLocale()));
+  // 始终以 "en" 作为初始值，保持 SSR/CSR 初始渲染一致
+  const [locale, setLocaleState] = useState<Locale>("en");
+  const [messages, setMessages] = useState<Messages>(en);
+
+  // 客户端挂载后更新为实际语言（读取 localStorage / navigator.languages）
+  useEffect(() => {
+    const actual = loadLocale();
+    setLocaleState(actual);
+    setMessages(getMessages(actual));
+  }, []);
 
   // 监听其他 island 的语言切换事件
   useEffect(() => {
