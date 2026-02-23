@@ -13,13 +13,12 @@ Release Tag Script
     python scripts/release_tag.py v0.1.7 --model opus       # 使用 Opus 模型（更高质量）
     python scripts/release_tag.py v0.1.7 --lang en          # 生成英文 Release Notes
     python scripts/release_tag.py v0.1.7 --lang both        # 中英双语
-    python scripts/release_tag.py v0.1.7 --sync-versions    # 自动同步版本文件
     python scripts/release_tag.py v0.1.7 --update-changelog # 更新 CHANGELOG.md
 
-新特性（相比原版）:
+特性:
+    - 代码感知：AI 主动调用 git diff/show 查看真实代码变更（只读，不编辑）
     - 流式输出：AI 生成时实时打印，无需等待完整响应
     - 调用费用：每次 AI 调用后显示成本
-    - 版本同步：检查并可选更新 pubspec.yaml / fluxDown/package.json
     - 发布类型：AI 自动建议 major/minor/patch（使用 haiku 模型，速度快）
     - 模型选择：--model haiku/sonnet/opus，按质量/成本权衡
     - 多语言：--lang zh/en/both，支持双语发布说明
@@ -30,7 +29,6 @@ Release Tag Script
 import argparse
 import json
 import os
-import re
 import subprocess
 import sys
 import textwrap
@@ -79,65 +77,6 @@ def get_commits(from_tag: str | None, to_ref: str = "HEAD") -> str:
     return run(["git", "log", range_spec, "--pretty=format:COMMIT %h %s", "--name-only"])
 
 
-# ─── 版本文件同步 ────────────────────────────────────────────────────────────
-
-def check_version_files(version: str) -> dict[str, tuple[str, str]]:
-    """
-    检查版本文件是否与目标 tag 同步。
-    返回 {相对文件路径: (当前版本, 期望版本)} 的不同步项。
-    """
-    bare = version.lstrip("v")
-    mismatches: dict[str, tuple[str, str]] = {}
-
-    # pubspec.yaml: "version: X.Y.Z+build"
-    pubspec = PROJECT_DIR / "pubspec.yaml"
-    if pubspec.exists():
-        text = pubspec.read_text(encoding="utf-8")
-        m = re.search(r"^version:\s*(\d[\d.]*)", text, re.MULTILINE)
-        if m:
-            current = m.group(1)
-            if current != bare:
-                mismatches["pubspec.yaml"] = (current, bare)
-
-    # fluxDown/package.json: "version": "X.Y.Z"
-    pkg_json = PROJECT_DIR / "fluxDown" / "package.json"
-    if pkg_json.exists():
-        try:
-            data = json.loads(pkg_json.read_text(encoding="utf-8"))
-            current = data.get("version", "")
-            if current != bare:
-                mismatches["fluxDown/package.json"] = (current, bare)
-        except json.JSONDecodeError:
-            pass
-
-    return mismatches
-
-
-def update_version_files(version: str, mismatches: dict[str, tuple[str, str]]) -> None:
-    """将版本文件更新到目标版本"""
-    bare = version.lstrip("v")
-
-    for filename, (old, _) in mismatches.items():
-        if filename == "pubspec.yaml":
-            pubspec = PROJECT_DIR / "pubspec.yaml"
-            text = pubspec.read_text(encoding="utf-8")
-            text = re.sub(
-                r"^(version:\s*)\d[\d.]*(\+\d+)?",
-                f"\\g<1>{bare}+1",
-                text,
-                flags=re.MULTILINE,
-            )
-            pubspec.write_text(text, encoding="utf-8")
-            print(f"  ✓ pubspec.yaml: {old} → {bare}+1")
-
-        elif filename == "fluxDown/package.json":
-            pkg_json = PROJECT_DIR / "fluxDown" / "package.json"
-            text = pkg_json.read_text(encoding="utf-8")
-            text = re.sub(r'"version":\s*"[^"]*"', f'"version": "{bare}"', text, count=1)
-            pkg_json.write_text(text, encoding="utf-8")
-            print(f"  ✓ fluxDown/package.json: {old} → {bare}")
-
-
 # ─── Claude CLI 调用 ─────────────────────────────────────────────────────────
 
 def _call_claude_streaming(prompt: str, model: str = "sonnet") -> str:
@@ -154,8 +93,8 @@ def _call_claude_streaming(prompt: str, model: str = "sonnet") -> str:
             "--output-format", "stream-json",
             "--include-partial-messages",
             "--model", model,
-            "--max-turns", "1",
-            "--dangerously-skip-permissions",
+            "--max-turns", "10",
+            "--allowedTools", "Bash", "Read", "Glob", "Grep",
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -229,7 +168,7 @@ def _call_claude_simple(prompt: str, model: str = "haiku") -> str:
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
     result = subprocess.run(
-        ["claude", "-p", prompt, "--model", model, "--max-turns", "1", "--dangerously-skip-permissions"],
+        ["claude", "-p", prompt, "--model", model, "--max-turns", "1"],
         capture_output=True,
         encoding="utf-8",
         errors="replace",
@@ -269,6 +208,7 @@ def suggest_release_type(commits: str, prev_tag: str | None) -> str:
 def _build_notes_prompt(version: str, commits: str, prev_tag: str | None, lang: str) -> str:
     """构建生成 Release Notes 的完整 prompt"""
     range_desc = f"{prev_tag}..{version}" if prev_tag else f"初始版本到 {version}"
+    range_spec = f"{prev_tag}..HEAD" if prev_tag else "HEAD"
 
     if lang == "en":
         lang_note = "Write entirely in English."
@@ -307,23 +247,47 @@ def _build_notes_prompt(version: str, commits: str, prev_tag: str | None, lang: 
 
         跨模块 commit 需拆分到各自模块下分别描述。
 
+        ## 可用工具（请主动调用以理解实际代码变更）
+
+        你有权调用 Bash / Read / Glob / Grep 工具查看代码，**但不得编辑任何文件**。
+        仅凭 commit 消息往往不足以准确描述功能改动，请通过以下命令查看真实变更：
+
+        ```bash
+        # 查看本次发布的整体变更统计（先从这里入手）
+        git diff --stat {range_spec}
+
+        # 按模块查看完整 diff
+        git diff {range_spec} -- lib/
+        git diff {range_spec} -- native/hub/src/
+        git diff {range_spec} -- fluxDown/
+
+        # 查看单个 commit 的详细变更
+        git show <hash>
+
+        # 搜索关键实现（如某功能的具体逻辑）
+        git log {range_spec} --follow -p -- <具体文件路径>
+        ```
+
+        **分析步骤**：
+        1. 先运行 `git diff --stat {range_spec}` 了解变更范围
+        2. 对各模块分别运行 `git diff` 查看代码细节
+        3. 对重要 commit 运行 `git show <hash>` 深入理解改动意图
+        4. 基于**实际代码内容**撰写 Release Notes，commit 消息仅作辅助参考
+
         ## 任务
 
         {lang_note}
-        请根据以下 Git commit 记录生成一份面向用户的 Release Notes。
+        通过查看实际代码变更，生成一份面向用户的 Release Notes。
 
-        每条 commit 格式为：
-        ```
-        COMMIT <hash> <subject>
-        <修改的文件1>
-        ...
-        ```
+        以下是 commit 概要（含变更文件列表），供初步定位用：
 
         版本: {version}
         变更范围: {range_desc}
 
-        Commit 记录:
+        Commit 概要:
+        ```
         {commits}
+        ```
 
         ## 输出要求
 
@@ -535,11 +499,6 @@ def main() -> None:
         help="Release Notes 语言 (默认: zh 中文)",
     )
     parser.add_argument(
-        "--sync-versions",
-        action="store_true",
-        help="自动同步 pubspec.yaml 和 fluxDown/package.json 的版本号（不会自动 commit）",
-    )
-    parser.add_argument(
         "--update-changelog",
         action="store_true",
         help="将 Release Notes 追加到 CHANGELOG.md 顶部",
@@ -578,25 +537,6 @@ def main() -> None:
     print(f"  新增 commit: {commit_count} 个")
     print(f"  AI 模型    : {args.model}")
     print(f"  输出语言   : {args.lang}")
-
-    # ── 版本文件同步检查 ──
-    mismatches = check_version_files(version)
-    if mismatches:
-        print(f"\n⚠  版本文件不同步:")
-        for fname, (cur, expected) in mismatches.items():
-            print(f"    {fname}: {cur} → {expected}")
-
-        if args.sync_versions:
-            print("\n正在同步版本文件...")
-            update_version_files(version, mismatches)
-            print("  注意：版本文件已修改，请在创建 tag 前手动 commit 这些改动。")
-        elif not args.dry_run:
-            answer = input("\n  是否立即同步这些版本文件？[y/N]: ").strip().lower()
-            if answer == "y":
-                update_version_files(version, mismatches)
-                print("  注意：版本文件已修改，请在创建 tag 前手动 commit 这些改动。")
-    else:
-        print(f"  版本文件   : ✓ 已同步")
 
     print(f"{'─' * 50}\n")
 
