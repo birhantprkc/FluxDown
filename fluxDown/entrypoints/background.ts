@@ -678,9 +678,9 @@ export default defineBackground(() => {
     (downloadItem, suggest) => {
       const url = downloadItem.url;
 
-      // 跳过 blob 和 data URL（Bug R4-8: filename 不传空字符串）
+      // 跳过 blob 和 data URL（filename 为空时传 undefined，避免 Chrome 抛出非空校验错误）
       if (url.startsWith('blob:') || url.startsWith('data:')) {
-        suggest(downloadItem.filename ? { filename: downloadItem.filename } : ({} as any));
+        suggest(downloadItem.filename ? { filename: downloadItem.filename } : (undefined as any));
         return;
       }
 
@@ -696,7 +696,71 @@ export default defineBackground(() => {
       // 若最终判断不需拦截，在放行时删除此标记。
       handledDownloads.set(downloadItem.id, 'primary');
 
-      // 异步判断
+      // ===== 同步快速路径（修复 Linux 下载栏闪现问题） =====
+      // Linux Chrome 在 onCreated 触发时（即 suggest() 异步等待期间）就立即显示下载栏。
+      // 若设置缓存已热身，可同步调用 suggest({ cancel: true })，
+      // 在 onCreated 触发前完成取消，从而彻底避免下载栏出现。
+      // 注：同步调用 suggest 后无需 return true，Chrome 不会再等待异步 suggest。
+      const _syncSettings = _settingsCache;
+      if (_syncSettings !== null) {
+        const _syncBypass = bypassTokens.get(url);
+        if (_syncBypass && _syncBypass > Date.now()) {
+          bypassTokens.delete(url);
+          handledDownloads.delete(downloadItem.id);
+          suggest(downloadItem.filename ? { filename: downloadItem.filename } : (undefined as any));
+          downloadItemCache.delete(downloadItem.id);
+          return;
+        }
+        if (!_syncSettings.enabled) {
+          handledDownloads.delete(downloadItem.id);
+          suggest(downloadItem.filename ? { filename: downloadItem.filename } : (undefined as any));
+          downloadItemCache.delete(downloadItem.id);
+          return;
+        }
+        const _syncCached = downloadItemCache.get(downloadItem.id);
+        const _syncMime = downloadItem.mime || _syncCached?.mime || undefined;
+        const _syncFileSize = (downloadItem.fileSize > 0 ? downloadItem.fileSize : undefined)
+          ?? (_syncCached && _syncCached.fileSize > 0 ? _syncCached.fileSize : undefined);
+        const _syncFilename = downloadItem.filename || _syncCached?.filename || undefined;
+        const _syncReferrer = _syncCached?.referrer || undefined;
+        const _syncItemInfo: DownloadItemInfo = {
+          url, fileSize: _syncFileSize, mime: _syncMime, filename: _syncFilename,
+        };
+        if (shouldIntercept(_syncItemInfo, _syncSettings)) {
+          // 同步取消——在 onCreated 触发前完成，Linux 不会显示下载栏
+          suggest({ cancel: true });
+          console.log('[FluxDown] Intercepting download (sync-path):', {
+            url, mime: _syncMime, filename: _syncFilename,
+            fileSize: _syncFileSize, mode: _syncSettings.interceptMode,
+          });
+          (async () => {
+            try {
+              try {
+                await browser.downloads.erase({ id: downloadItem.id });
+              } catch {
+                console.debug('[FluxDown] sync-path: erase after cancel (expected)');
+              }
+              const _syncClean = extractCleanFilename(_syncFilename, url);
+              await sendToFluxDown(url, _syncReferrer, _syncClean, _syncFileSize, _syncMime);
+            } catch (e) {
+              console.error('[FluxDown] sync-path: sendToFluxDown error:', e);
+            } finally {
+              downloadItemCache.delete(downloadItem.id);
+            }
+          })();
+          return; // 同步 suggest 已调用，无需 return true
+        }
+        // shouldIntercept=false：若已有足够信息可以确定，同步放行
+        if (_syncMime || _syncFilename) {
+          handledDownloads.delete(downloadItem.id);
+          suggest(downloadItem.filename ? { filename: downloadItem.filename } : (undefined as any));
+          downloadItemCache.delete(downloadItem.id);
+          return;
+        }
+        // mime 和 filename 均为空（极少见）→ 降级到下方异步路径
+      }
+
+      // 异步判断（缓存未热身 或 metadata 暂缺时的兜底路径）
       (async () => {
         // Bug 2+5 修复：用 suggestCalled 保证 suggest 全局只调用一次。
         // catch 块 + 正常路径都可能调用 suggest，两次调用会导致浏览器行为异常。

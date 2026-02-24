@@ -462,6 +462,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 
 [[package]]
+name = "commoncrypto"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d056a8586ba25a1e4d61cb090900e495952c7886786fc55f909ab2f819b69007"
+dependencies = [
+ "commoncrypto-sys",
+]
+
+[[package]]
+name = "commoncrypto-sys"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fed34f46747aa73dfaa578069fd8279d2818ade2b55f38f22a9401c7f4083e2"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "compression-codecs"
 version = "0.4.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -593,6 +611,18 @@ checksum = "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a"
 dependencies = [
  "generic-array 0.14.7",
  "typenum",
+]
+
+[[package]]
+name = "crypto-hash"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a77162240fd97248d19a564a565eb563a3f592b386e4136fb300909e67dddca"
+dependencies = [
+ "commoncrypto",
+ "hex 0.3.2",
+ "openssl",
+ "winapi",
 ]
 
 [[package]]
@@ -1168,6 +1198,12 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hex"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "805026a5d0141ffc30abb3be3173848ad46a1b1664fe632428479619a3644d77"
+
+[[package]]
+name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
@@ -1221,7 +1257,7 @@ dependencies = [
  "cbc",
  "dash-mpd",
  "futures-util",
- "hex",
+ "hex 0.4.3",
  "librqbit",
  "m3u8-rs",
  "md-5",
@@ -1656,7 +1692,7 @@ dependencies = [
  "dashmap",
  "futures",
  "governor",
- "hex",
+ "hex 0.4.3",
  "http",
  "intervaltree",
  "itertools",
@@ -1737,7 +1773,7 @@ dependencies = [
  "bytes",
  "data-encoding",
  "directories",
- "hex",
+ "hex 0.4.3",
  "itertools",
  "librqbit-bencode",
  "librqbit-buffers",
@@ -1764,7 +1800,7 @@ dependencies = [
  "chrono",
  "dashmap",
  "futures",
- "hex",
+ "hex 0.4.3",
  "indexmap 2.13.0",
  "leaky-bucket",
  "librqbit-bencode",
@@ -1807,6 +1843,7 @@ checksum = "79373a02db73159e4de7ca5d27b6eeae2d540df66c6801db2b01c5513d087524"
 dependencies = [
  "assert_cfg",
  "aws-lc-rs",
+ "crypto-hash",
 ]
 
 [[package]]
@@ -2902,7 +2939,7 @@ checksum = "4fa237f2807440d238e0364a218270b98f767a00d3dada77b1c53ae88940e2e7"
 dependencies = [
  "base64",
  "chrono",
- "hex",
+ "hex 0.4.3",
  "indexmap 1.9.3",
  "indexmap 2.13.0",
  "schemars 0.9.0",
