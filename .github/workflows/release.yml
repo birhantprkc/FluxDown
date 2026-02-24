@@ -95,6 +95,11 @@ jobs:
 
       # ── Build ──
       - name: Build Flutter Windows app
+        # AWS_LC_SYS_C_STD=11: 强制 MSVC 以 /std:c11 编译 aws-lc-sys（由 librqbit/rust-tls → sha1-ring 引入），
+        # 跳过 C11 feature detection。ARM64 runner 上 HostArm64\x64\cl.exe 默认不支持 alignas/alignof，
+        # 导致 -WX 将 warning 提升为 error，feature detection 失败，整个 cargo build 退出 -1。
+        env:
+          AWS_LC_SYS_C_STD: "11"
         run: flutter build windows --release --build-name=${{ steps.version.outputs.VERSION }} --build-number=1 --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }}
 
       # ── ARM64: Flutter 在 ARM64 runner 上以 x64 仿真运行，输出到 build\windows\x64
