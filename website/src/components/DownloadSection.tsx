@@ -56,6 +56,7 @@ export default function DownloadSection() {
   const [release, setRelease] = useState<ReleaseInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [showPortable, setShowPortable] = useState<string | null>(null);
+  const [selectedArch, setSelectedArch] = useState<Record<string, string>>({});
 
   useEffect(() => {
     fetch("/api/release")
@@ -114,12 +115,24 @@ export default function DownloadSection() {
     portableLabel?: string;
     /** Linux 等平台的多格式下载列表，存在时替代单一 portable 按钮 */
     packages?: Array<{ label: string; asset: ReleaseAsset | null }>;
+    /** 多架构变体，存在时在卡片内显示架构切换 tabs */
+    archVariants?: Array<{ label: string; setup: ReleaseAsset | null; portable: ReleaseAsset | null }>;
   }[] = [
-    { key: "windows-x64", name: t("dl.windows"), icon: WindowsLogo, arch: "x64", available: true, primary: true, badge: t("dl.availableNow"), setup: release?.assets.setup ?? null, portable: release?.assets.portable ?? null },
-    ...(hasArm64Assets ? [{
-      key: "windows-arm64", name: t("dl.windows"), icon: WindowsLogo, arch: "ARM64", available: true, primary: false, badge: t("dl.availableNow"),
-      setup: release?.assets.setup_arm64 ?? null, portable: release?.assets.portable_arm64 ?? null,
-    }] : []),
+    {
+      key: "windows",
+      name: t("dl.windows"),
+      icon: WindowsLogo,
+      arch: hasArm64Assets ? "x64 / ARM64" : "x64",
+      available: true,
+      primary: true,
+      badge: t("dl.availableNow"),
+      setup: release?.assets.setup ?? null,
+      portable: release?.assets.portable ?? null,
+      archVariants: hasArm64Assets ? [
+        { label: "x64", setup: release?.assets.setup ?? null, portable: release?.assets.portable ?? null },
+        { label: "ARM64", setup: release?.assets.setup_arm64 ?? null, portable: release?.assets.portable_arm64 ?? null },
+      ] : undefined,
+    },
     { key: "macos", name: t("dl.macos"), icon: SiApple, arch: "Apple Silicon", available: false, primary: false, badge: t("dl.comingSoon"), setup: null, portable: null },
     {
       key: "linux", name: t("dl.linux"), icon: SiLinux, arch: "x64",
@@ -171,9 +184,13 @@ export default function DownloadSection() {
           >
             {platforms.map((p, i) => {
               const Icon = p.icon;
+              const currentArchLabel = selectedArch[p.key] ?? p.archVariants?.[0]?.label;
+              const activeVariant = p.archVariants?.find(v => v.label === currentArchLabel);
+              const effectiveSetup = activeVariant?.setup ?? p.setup;
+              const effectivePortable = activeVariant?.portable ?? p.portable;
               return (
                 <motion.div
-                  key={p.name}
+                  key={p.key}
                   initial={{ opacity: 0, y: 20 }}
                   whileInView={{ opacity: 1, y: 0 }}
                   viewport={{ once: true }}
@@ -209,14 +226,38 @@ export default function DownloadSection() {
                     />
                   </div>
                   <h3 className="text-base font-semibold text-dark-text">{p.name}</h3>
-                  <p className="text-xs text-dark-text-muted mt-1">{p.arch}</p>
+
+                  {/* Arch display: segmented toggle for multi-arch, plain text for single */}
+                  {p.archVariants && p.archVariants.length > 1 ? (
+                    <div className="flex items-center justify-center gap-1 mt-2">
+                      {p.archVariants.map(v => (
+                        <button
+                          key={v.label}
+                          type="button"
+                          onClick={() => {
+                            setSelectedArch(prev => ({ ...prev, [p.key]: v.label }));
+                            setShowPortable(null);
+                          }}
+                          className={`px-2.5 py-0.5 rounded text-[10px] font-semibold transition-colors ${
+                            currentArchLabel === v.label
+                              ? "bg-brand-blue/20 text-brand-blue border border-brand-blue/30"
+                              : "text-dark-text-muted hover:text-dark-text-secondary border border-dark-border/60"
+                          }`}
+                        >
+                          {v.label}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-dark-text-muted mt-1">{p.arch}</p>
+                  )}
 
                   {/* 版本号 */}
                   {p.available && release && (
                     <p className="text-[10px] text-dark-text-muted mt-1">
                       {t("dl.version", { version: release.version })}
-                      {p.setup && (
-                        <span className="ml-1.5">({formatSize(p.setup.size)})</span>
+                      {effectiveSetup && (
+                        <span className="ml-1.5">({formatSize(effectiveSetup.size)})</span>
                       )}
                     </p>
                   )}
@@ -229,9 +270,9 @@ export default function DownloadSection() {
                           <Loader2 className="w-3.5 h-3.5 animate-spin" />
                           {t("dl.loading")}
                         </div>
-                      ) : p.setup ? (
+                      ) : effectiveSetup ? (
                         <a
-                          href={p.setup.download_url}
+                          href={effectiveSetup.download_url}
                           className="inline-flex items-center justify-center gap-2 w-full rounded-lg bg-brand-blue px-5 py-2.5 text-xs font-semibold text-white hover:bg-brand-blue/90 transition-colors shadow-lg shadow-brand-blue/20"
                         >
                           <Download className="w-3.5 h-3.5" />
@@ -276,7 +317,7 @@ export default function DownloadSection() {
                       )}
 
                       {/* 便携版下载折叠（Windows 等单一便携格式平台） */}
-                      {!p.packages && p.portable && (
+                      {!p.packages && effectivePortable && (
                         <>
                           <button
                             type="button"
@@ -288,11 +329,11 @@ export default function DownloadSection() {
                           </button>
                           {showPortable === p.key && (
                             <a
-                              href={p.portable.download_url}
+                              href={effectivePortable.download_url}
                               className="inline-flex items-center justify-center gap-2 w-full rounded-lg border border-dark-border px-5 py-2 text-[10px] font-medium text-dark-text-secondary hover:bg-dark-surface3 transition-colors"
                             >
                               <Download className="w-3 h-3" />
-                              {p.portableLabel ?? t("dl.portablePkg")} ({formatSize(p.portable.size)})
+                              {p.portableLabel ?? t("dl.portablePkg")} ({formatSize(effectivePortable.size)})
                             </a>
                           )}
                         </>

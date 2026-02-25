@@ -596,6 +596,7 @@ mod inner {
         Ok(())
     }
 
+    #[allow(dead_code)] // reserved public API for future uninstall/disable flow
     pub fn unregister() -> Result<(), io::Error> {
         for dir in chromium_nmh_dirs() {
             let _ = std::fs::remove_file(dir.join(MANIFEST_FILENAME_CHROMIUM));
@@ -621,6 +622,7 @@ mod inner {
         Ok(())
     }
 
+    #[allow(dead_code)] // reserved public API for future uninstall/disable flow
     pub fn unregister() -> Result<(), io::Error> {
         Ok(())
     }

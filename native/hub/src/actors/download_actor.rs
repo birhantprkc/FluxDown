@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 
 use crate::bt_downloader::{self, BtConfig};
 use crate::db::Db;
-use crate::download_manager::{self, DownloadManager, TaskDone};
+use crate::download_manager::{self, DownloadManager, DownloadManagerConfig, TaskDone};
 use crate::native_messaging::{self};
 use crate::file_association;
 use crate::protocol_registry;
@@ -131,7 +131,15 @@ pub async fn run(db_dir: PathBuf) {
     );
 
     let app_data_dir = db_dir.to_string_lossy().into_owned();
-    let mut manager = match DownloadManager::new(db.clone(), max_concurrent, speed_limit_bps, save_dir, app_data_dir, bt_config, proxy_config, user_agent) {
+    let mut manager = match DownloadManager::new(db.clone(), DownloadManagerConfig {
+        max_concurrent,
+        speed_limit_bps,
+        default_save_dir: save_dir,
+        app_data_dir,
+        bt_config,
+        proxy_config,
+        user_agent,
+    }) {
         Ok(m) => m,
         Err(e) => {
             rinf::debug_print!("Failed to create download manager: {}", e);

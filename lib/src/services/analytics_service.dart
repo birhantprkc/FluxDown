@@ -67,6 +67,9 @@ class AnalyticsService {
   /// 60 秒定时器：session 心跳 + 定时 flush 事件队列 + 重试失败请求
   Timer? _heartbeatTimer;
 
+  /// 上次心跳以来是否有过 trackEvent 调用，用于跳过纯空闲心跳的 HTTP 请求。
+  bool _hadEventSinceLastHeartbeat = false;
+
   /// 延迟 flush 去重 timer
   Timer? _delayedFlushTimer;
 
@@ -188,6 +191,7 @@ class AnalyticsService {
   }) {
     if (!_enabled || !_initialized) return;
     try {
+      _hadEventSinceLastHeartbeat = true;
       _recordEvent(key, segmentation: segmentation, count: count, sum: sum);
     } catch (e, stack) {
       logError(_tag, 'trackEvent($key) failed', e, stack);
@@ -319,6 +323,10 @@ class AnalyticsService {
     if (!_sessionActive) return;
     final duration = _sessionDurationSinceLastUpdate;
     if (duration <= 0) return;
+    // 完全空闲（无 trackEvent 调用、无待重试请求）时跳过本次 session_duration 上报，
+    // 避免无意义 HTTP 请求。下次有活动或 _endSession 时仍会正确上报累计时长。
+    if (!_hadEventSinceLastHeartbeat && _retryQueue.isEmpty) return;
+    _hadEventSinceLastHeartbeat = false;
     _sendRequest({'session_duration': '$duration'});
   }
 

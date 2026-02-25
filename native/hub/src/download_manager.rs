@@ -211,17 +211,32 @@ pub struct DownloadManager {
     auto_paused_ids: HashSet<String>,
 }
 
+/// Configuration parameters for [`DownloadManager::new`].
+/// Grouping avoids the `clippy::too_many_arguments` limit and makes
+/// call sites self-documenting.
+pub struct DownloadManagerConfig {
+    pub max_concurrent: usize,
+    pub speed_limit_bps: u64,
+    pub default_save_dir: String,
+    pub app_data_dir: String,
+    pub bt_config: BtConfig,
+    pub proxy_config: ProxyConfig,
+    pub user_agent: String,
+}
 impl DownloadManager {
     pub fn new(
         db: Db,
-        max_concurrent: usize,
-        speed_limit_bps: u64,
-        default_save_dir: String,
-        app_data_dir: String,
-        bt_config: BtConfig,
-        proxy_config: ProxyConfig,
-        user_agent: String,
+        config: DownloadManagerConfig,
     ) -> Result<Self, downloader::DownloadError> {
+        let DownloadManagerConfig {
+            max_concurrent,
+            speed_limit_bps,
+            default_save_dir,
+            app_data_dir,
+            bt_config,
+            proxy_config,
+            user_agent,
+        } = config;
         let client = downloader::build_client(&proxy_config, &user_agent)?;
         let (tx, rx) = mpsc::channel(256);
         let (done_tx, done_rx) = mpsc::channel(64);
@@ -562,6 +577,7 @@ impl DownloadManager {
         // A slot freed up — try to start queued tasks.
         self.drain_queue().await;
         self.maybe_wal_checkpoint().await;
+        self.maybe_release_bt_session().await;
     }
 
     /// Run a WAL checkpoint when all tasks are idle (no active downloads and
@@ -573,6 +589,38 @@ impl DownloadManager {
             && let Err(e) = self.db.wal_checkpoint().await
         {
             rinf::debug_print!("[manager] wal_checkpoint error: {e}");
+        }
+    }
+
+    /// Release the BT session if no BT tasks are currently active or queued.
+    ///
+    /// Called after a task completes, is paused, cancelled, or deleted.
+    /// Shuts down the multi-threaded librqbit runtime (DHT, UPnP, tracker
+    /// connections) to eliminate idle CPU overhead.  The session is re-created
+    /// transparently on the next BT download via `ensure_bt_session`.
+    async fn maybe_release_bt_session(&mut self) {
+        if self.bt_session.is_none() {
+            return;
+        }
+        // Keep the session alive if any BT tasks are actively downloading.
+        if !self.bt_task_ids.is_empty() {
+            return;
+        }
+        // BT tasks bypass the pending queue, so this guard is purely
+        // defensive in case the invariant changes in the future.
+        if self.pending_queue.iter().any(|q| is_bt_url(&q.url)) {
+            return;
+        }
+        rinf::debug_print!("[manager] all BT tasks finished/paused — releasing BT session");
+        // Shut down on a background thread (same pattern as Drop) to avoid
+        // blocking the actor loop while the librqbit runtime winds down.
+        if let Some(bt) = self.bt_session.take() {
+            std::thread::spawn(move || {
+                match Arc::try_unwrap(bt) {
+                    Ok(owned) => owned.shutdown(),
+                    Err(shared) => shared.shutdown(),
+                }
+            });
         }
     }
 
@@ -1058,6 +1106,7 @@ impl DownloadManager {
             if self.priority_task_id.as_deref() == Some(task_id) {
                 self.clear_priority().await;
             }
+            self.maybe_release_bt_session().await;
         }
     }
 
@@ -1428,6 +1477,7 @@ impl DownloadManager {
 
         // A slot freed up — try to start queued tasks.
         self.drain_queue().await;
+        self.maybe_release_bt_session().await;
     }
 
     /// Delete task record and optionally its files on disk.
@@ -1535,6 +1585,7 @@ impl DownloadManager {
         // A slot freed up — try to start queued tasks.
         self.drain_queue().await;
         self.maybe_wal_checkpoint().await;
+        self.maybe_release_bt_session().await;
     }
 }
 

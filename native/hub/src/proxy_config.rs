@@ -347,6 +347,7 @@ pub fn detect_system_proxy() -> Result<Option<ProxyConfig>, DownloadError> {
 /// Handles both formats:
 /// - Simple: `host:port` → (Http, host, port)
 /// - Multi-protocol: `http=host:port;https=host:port;socks=host:port` → prefer https > socks > http
+#[allow(dead_code)] // only called from #[cfg(windows)] detect_system_proxy; kept for cross-platform test coverage
 pub fn parse_windows_proxy_server(server: &str) -> (ProxyType, String, u16) {
     // Check if it's multi-protocol format (contains '=')
     if server.contains('=') {
@@ -374,6 +375,7 @@ pub fn parse_windows_proxy_server(server: &str) -> (ProxyType, String, u16) {
 }
 
 /// Parse multi-protocol proxy string like `http=host:port;https=host2:port2;socks=host3:port3`.
+#[allow(dead_code)] // only called from #[cfg(windows)] detect_system_proxy; kept for cross-platform test coverage
 fn parse_multi_protocol_proxy(server: &str) -> HashMap<String, (String, u16)> {
     let mut result = HashMap::new();
     for entry in server.split(';') {

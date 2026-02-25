@@ -288,9 +288,9 @@ class NotificationService {
 
       final details = NotificationDetails(
         windows: WindowsNotificationDetails(
-          actions: const [
-            WindowsAction(content: 'Open File', arguments: 'open_file'),
-            WindowsAction(content: 'Open Folder', arguments: 'open_folder'),
+          actions: [
+            WindowsAction(content: s.openFileFolder, arguments: 'open_folder'),
+            WindowsAction(content: s.openFile, arguments: 'open_file'),
           ],
         ),
         linux: const LinuxNotificationDetails(defaultActionName: 'open'),
