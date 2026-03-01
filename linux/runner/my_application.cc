@@ -10,6 +10,10 @@
 struct _MyApplication {
   GtkApplication parent_instance;
   char** dart_entrypoint_arguments;
+  // Stored after the FlView is created; used in my_application_open() to reach
+  // the MethodChannel when a second instance opens files.  Not owned here —
+  // the GTK widget tree owns the FlView.
+  FlView* view;
 };
 
 G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
@@ -83,6 +87,10 @@ static void my_application_activate(GApplication* application) {
       project, self->dart_entrypoint_arguments);
 
   FlView* view = fl_view_new(project);
+  // Keep a weak reference for use in my_application_open() — the GTK widget
+  // tree owns the actual object lifetime.
+  self->view = view;
+
   GdkRGBA background_color;
   // Background defaults to black, override it here if necessary, e.g. #00000000
   // for transparent.
@@ -102,6 +110,52 @@ static void my_application_activate(GApplication* application) {
   gtk_widget_grab_focus(GTK_WIDGET(view));
 }
 
+// Implements GApplication::open.
+//
+// Called when the app is asked to open files/URIs.  Two scenarios:
+//
+// A) First launch with files (no existing window):
+//    The file URIs are already in dart_entrypoint_arguments (set by
+//    local_command_line before g_application_open was called).  We just need
+//    to create the window via activate(); Dart will pick up the args normally.
+//
+// B) Second instance forwarded to existing primary (window already running):
+//    Send the file URIs to Dart via the com.fluxdown/single_instance
+//    MethodChannel (same channel Windows uses via WM_COPYDATA).
+static void my_application_open(GApplication* application,
+                                 GFile** files,
+                                 gint n_files,
+                                 const gchar* /*hint*/) {
+  MyApplication* self = MY_APPLICATION(application);
+
+  GList* windows = gtk_application_get_windows(GTK_APPLICATION(application));
+
+  if (windows != nullptr && self->view != nullptr) {
+    // Scenario B: existing window — forward URIs to Dart via MethodChannel.
+    g_autoptr(FlStandardMethodCodec) codec = fl_standard_method_codec_new();
+    g_autoptr(FlMethodChannel) channel = fl_method_channel_new(
+        fl_engine_get_binary_messenger(fl_view_get_engine(self->view)),
+        "com.fluxdown/single_instance",
+        FL_METHOD_CODEC(codec));
+
+    g_autoptr(FlValue) args_list = fl_value_new_list();
+    for (gint i = 0; i < n_files; i++) {
+      // Prefer the URI form (file:///…) so Dart's _decodeFilePath() can handle
+      // it uniformly on all platforms.
+      gchar* uri = g_file_get_uri(files[i]);
+      fl_value_append_take(args_list, fl_value_new_string(uri));
+      g_free(uri);
+    }
+    fl_method_channel_invoke_method(channel, "onSecondInstance", args_list,
+                                    nullptr, nullptr, nullptr);
+    gtk_window_present(GTK_WINDOW(windows->data));
+  } else {
+    // Scenario A: first launch with files.
+    // File URIs are already in dart_entrypoint_arguments; just activate.
+    my_application_activate(application);
+  }
+}
+
 // Implements GApplication::local_command_line.
 static gboolean my_application_local_command_line(GApplication* application,
                                                   gchar*** arguments,
@@ -117,7 +171,26 @@ static gboolean my_application_local_command_line(GApplication* application,
     return TRUE;
   }
 
-  g_application_activate(application);
+  // Collect non-option arguments as GFiles to route through
+  // g_application_open().  This triggers GApplication's single-instance D-Bus
+  // mechanism: on an existing primary instance our my_application_open() vfunc
+  // is called with the files, enabling the MethodChannel forwarding path.
+  GPtrArray* file_args =
+      g_ptr_array_new_with_free_func((GDestroyNotify)g_object_unref);
+  for (gchar** arg = *arguments + 1; *arg != nullptr; arg++) {
+    // Skip option arguments (start with '-').
+    if ((*arg)[0] == '-') continue;
+    g_ptr_array_add(file_args, g_file_new_for_commandline_arg(*arg));
+  }
+
+  if (file_args->len > 0) {
+    g_application_open(application, (GFile**)file_args->pdata,
+                       (gint)file_args->len, "");
+  } else {
+    g_application_activate(application);
+  }
+
+  g_ptr_array_free(file_args, TRUE);
   *exit_status = 0;
 
   return TRUE;
@@ -145,11 +218,13 @@ static void my_application_shutdown(GApplication* application) {
 static void my_application_dispose(GObject* object) {
   MyApplication* self = MY_APPLICATION(object);
   g_clear_pointer(&self->dart_entrypoint_arguments, g_strfreev);
+  // self->view is owned by the GTK widget tree — do not unref here.
   G_OBJECT_CLASS(my_application_parent_class)->dispose(object);
 }
 
 static void my_application_class_init(MyApplicationClass* klass) {
   G_APPLICATION_CLASS(klass)->activate = my_application_activate;
+  G_APPLICATION_CLASS(klass)->open = my_application_open;
   G_APPLICATION_CLASS(klass)->local_command_line =
       my_application_local_command_line;
   G_APPLICATION_CLASS(klass)->startup = my_application_startup;
@@ -168,5 +243,5 @@ MyApplication* my_application_new() {
 
   return MY_APPLICATION(g_object_new(my_application_get_type(),
                                      "application-id", APPLICATION_ID, "flags",
-                                     G_APPLICATION_DEFAULT_FLAGS, nullptr));
+                                     G_APPLICATION_HANDLES_OPEN, nullptr));
 }

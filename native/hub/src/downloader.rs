@@ -918,24 +918,39 @@ async fn compute_segments_with_advisor(p: &DownloadParams, info: &FileInfo) -> i
 
     let result = if static_advice.segments > 1 {
         // Phase 2: bandwidth probe to refine the recommendation.
-        match probe_bandwidth(&p.client, &p.url, info.supports_range, &p.cancel_token, &p.cookies).await {
-            Some(bw) => {
-                let bw_advice = advise_with_bandwidth(&advisor_input, bw);
-                rinf::debug_print!(
-                    "[download] task {} bandwidth probe: {:.1} KB/s → segments={}, reason={}",
-                    p.task_id,
-                    bw / 1024.0,
-                    bw_advice.segments,
-                    bw_advice.reason
-                );
-                bw_advice.segments
-            }
-            None => {
-                rinf::debug_print!(
-                    "[download] task {} bandwidth probe failed/cancelled, using static advice",
-                    p.task_id
-                );
+        //
+        // Skip the probe when the task was started via a browser-extension
+        // hint (hint_file_size > 0).  Those URLs may be one-time signed CDN
+        // tokens; an extra Range request would consume the token and break the
+        // actual download.  Static advice (file size + CPU cores) is a good
+        // enough estimate in this case.
+        if p.hint_file_size > 0 {
+            rinf::debug_print!(
+                "[download] task {} hint mode: skipping bandwidth probe, using static advice (segments={})",
+                p.task_id,
                 static_advice.segments
+            );
+            static_advice.segments
+        } else {
+            match probe_bandwidth(&p.client, &p.url, info.supports_range, &p.cancel_token, &p.cookies).await {
+                Some(bw) => {
+                    let bw_advice = advise_with_bandwidth(&advisor_input, bw);
+                    rinf::debug_print!(
+                        "[download] task {} bandwidth probe: {:.1} KB/s → segments={}, reason={}",
+                        p.task_id,
+                        bw / 1024.0,
+                        bw_advice.segments,
+                        bw_advice.reason
+                    );
+                    bw_advice.segments
+                }
+                None => {
+                    rinf::debug_print!(
+                        "[download] task {} bandwidth probe failed/cancelled, using static advice",
+                        p.task_id
+                    );
+                    static_advice.segments
+                }
             }
         }
     } else {
@@ -992,12 +1007,13 @@ async fn run_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
         FileInfo {
             file_name: name,
             total_bytes: p.hint_file_size,
-            // When a specific segment count was requested (> 1), optimistically
-            // assume Range support so multi-segment can be attempted.  Most
-            // servers that advertise Content-Length also support Range requests.
-            // For auto mode (segment_count <= 1) remain conservative to avoid
-            // corrupting one-time CDN download tokens (e.g. Lanzou cloud).
-            supports_range: p.segment_count > 1,
+            // Optimistically assume Range support for auto (0) and explicit
+            // multi-segment (> 1) requests.  Most servers that expose a
+            // Content-Length also honour Range headers.  The bandwidth probe
+            // is intentionally skipped for hint-mode tasks (see below) so no
+            // extra HTTP request is made that could consume a one-time CDN
+            // token (e.g. Lanzou cloud signed URLs).
+            supports_range: p.segment_count != 1,
             content_type: String::new(),
         }
     } else {

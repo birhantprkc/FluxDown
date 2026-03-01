@@ -140,8 +140,88 @@ mod inner {
     }
 }
 
-// Non-Windows stubs — file association is Windows-only.
-#[cfg(not(target_os = "windows"))]
+// Linux implementation — uses xdg-mime to query / set the default handler.
+#[cfg(target_os = "linux")]
+mod inner {
+    use std::io;
+
+    /// Check whether `.torrent` files are currently associated with FluxDown.
+    ///
+    /// Queries `xdg-mime query default application/x-bittorrent` and checks
+    /// whether the returned .desktop name contains "fluxdown".
+    pub fn is_associated() -> bool {
+        let Ok(output) = std::process::Command::new("xdg-mime")
+            .args(["query", "default", "application/x-bittorrent"])
+            .output()
+        else {
+            return false;
+        };
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout.to_lowercase().contains("fluxdown")
+    }
+
+    /// Register FluxDown as the default handler for `.torrent` files.
+    ///
+    /// Requires that `com.fluxdown.app.desktop` is already installed in an
+    /// XDG applications directory (handled by the package installer).
+    pub fn associate() -> Result<(), io::Error> {
+        std::process::Command::new("xdg-mime")
+            .args([
+                "default",
+                "com.fluxdown.app.desktop",
+                "application/x-bittorrent",
+            ])
+            .status()
+            .map(|_| ())
+    }
+
+    /// Remove FluxDown as the default handler for `.torrent` files by
+    /// delegating back to the system default (empty the user override).
+    ///
+    /// xdg-mime has no "unset" command, so we edit `mimeapps.list` directly:
+    /// remove the `application/x-bittorrent=com.fluxdown.app.desktop` line
+    /// from the `[Default Applications]` section.
+    pub fn disassociate() -> Result<(), io::Error> {
+        use std::io::{BufRead, Write};
+
+        // Locate ~/.config/mimeapps.list (XDG spec default).
+        let config_dir = std::env::var("XDG_CONFIG_HOME")
+            .unwrap_or_else(|_| {
+                let home = std::env::var("HOME").unwrap_or_default();
+                format!("{home}/.config")
+            });
+        let path = std::path::PathBuf::from(&config_dir).join("mimeapps.list");
+
+        if !path.exists() {
+            return Ok(());
+        }
+
+        let file = std::fs::File::open(&path)?;
+        let lines: Vec<String> = std::io::BufReader::new(file)
+            .lines()
+            .collect::<Result<_, _>>()?;
+
+        // Remove lines that set application/x-bittorrent to us.
+        let filtered: Vec<&str> = lines
+            .iter()
+            .filter(|l| {
+                let lower = l.to_lowercase();
+                !(lower.starts_with("application/x-bittorrent=")
+                    && lower.contains("fluxdown"))
+            })
+            .map(|l| l.as_str())
+            .collect();
+
+        let mut out = std::fs::File::create(&path)?;
+        for line in filtered {
+            writeln!(out, "{line}")?;
+        }
+        Ok(())
+    }
+}
+
+// Non-Linux, non-Windows stubs.
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 mod inner {
     use std::io;
 

@@ -40,9 +40,12 @@ Future<void> main(List<String> args) async {
   // 检测是否为免打扰启动（开机自启时带 --silentStart 参数）
   final isSilentStart = args.contains('--silentStart');
 
-  // 提取启动参数中的 .torrent 文件路径（Windows 文件关联双击打开）
+  // 提取启动参数中的 .torrent 文件路径（文件关联双击打开）。
+  // Linux 文件管理器通过 %U 传入 file:// URI，需解码为本地路径。
   final torrentFilePaths = args
-      .where((a) => a.toLowerCase().endsWith('.torrent') && !a.startsWith('-'))
+      .where((a) => !a.startsWith('-'))
+      .map(_decodeFilePath)
+      .where((a) => a.toLowerCase().endsWith('.torrent'))
       .toList();
 
   // 初始化日志服务 — 最先初始化，以捕获后续所有日志
@@ -167,6 +170,18 @@ Future<void> main(List<String> args) async {
       initialTorrentFiles: torrentFilePaths,
     ),
   );
+}
+
+/// Normalize a file argument to a plain filesystem path.
+/// Linux file managers pass file URIs via `%U` (e.g. `file:///home/user/foo.torrent`).
+/// Returns the decoded local path for `file://` URIs, or the original string otherwise.
+String _decodeFilePath(String arg) {
+  if (arg.startsWith('file://')) {
+    try {
+      return Uri.parse(arg).toFilePath();
+    } catch (_) {}
+  }
+  return arg;
 }
 
 class FluxDownApp extends StatefulWidget {
@@ -430,10 +445,11 @@ class _FluxDownAppState extends State<FluxDownApp> with WindowListener {
       await windowManager.focus();
 
       // Extract .torrent file paths from the args.
+      // Linux forwards file:// URIs via GApplication open signal — decode them.
       final torrentPaths = args
-          .where(
-            (a) => a.toLowerCase().endsWith('.torrent') && !a.startsWith('-'),
-          )
+          .where((a) => !a.startsWith('-'))
+          .map(_decodeFilePath)
+          .where((a) => a.toLowerCase().endsWith('.torrent'))
           .toList();
 
       if (torrentPaths.isEmpty) {
