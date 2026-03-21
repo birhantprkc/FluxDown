@@ -75,6 +75,12 @@ const UI_REPORT_INTERVAL_MS: u128 = 200;
 const MAX_RETRIES: u32 = 3;
 const RETRY_BASE_DELAY: Duration = Duration::from_secs(2);
 
+/// 单个 chunk 的读取超时（stall detection）。如果超过此时间没有收到任何数据，
+/// 视为连接停滞，返回错误触发 retry 机制（断开旧连接，用 Range 请求从断点续传）。
+/// 10 秒足够容忍正常的 CDN 抖动，又能快速从真正卡死的连接中恢复。
+/// 这解决了大文件下载到 98%+ 时 TCP 连接卡死、速度趋近 0 的问题。
+const CHUNK_STALL_TIMEOUT: Duration = Duration::from_secs(10);
+
 // ---------------------------------------------------------------------------
 // Segment state
 // ---------------------------------------------------------------------------
@@ -231,7 +237,8 @@ pub async fn run_coordinated_download(
     if let Err(msg) = validate_coverage(&segments, total_bytes) {
         rinf::debug_print!(
             "[coordinator] task {} segment coverage invalid: {}. Resetting all segments.",
-            task_id, msg
+            task_id,
+            msg
         );
         // Coverage is broken (e.g. partial split persisted before crash).
         // Safest recovery: wipe segments and start fresh.
@@ -252,7 +259,9 @@ pub async fn run_coordinated_download(
         if db_downloaded > 0 && (file_len == 0 || file_len < db_downloaded) {
             rinf::debug_print!(
                 "[coordinator] task {} file integrity mismatch: file_len={}, db_downloaded={}. Resetting.",
-                task_id, file_len, db_downloaded
+                task_id,
+                file_len,
+                db_downloaded
             );
             for seg in segments.values_mut() {
                 seg.downloaded_bytes = 0;
@@ -282,9 +291,8 @@ pub async fn run_coordinated_download(
 
     // The shared segment-progress vector mirrors the `segments` map and is
     // updated by workers via std::sync::Mutex (cheap, no async).
-    let seg_states: Arc<StdMutex<Vec<SegmentProgressInfo>>> = Arc::new(StdMutex::new(
-        build_seg_state_vec(&segments),
-    ));
+    let seg_states: Arc<StdMutex<Vec<SegmentProgressInfo>>> =
+        Arc::new(StdMutex::new(build_seg_state_vec(&segments)));
 
     // ----- 4. Event channel (workers → coordinator) -------------------------
     let (event_tx, mut event_rx) = mpsc::channel::<WorkerEvent>(64);
@@ -293,8 +301,13 @@ pub async fn run_coordinated_download(
     // Only create as many initial workers as there are pending segments.
     // On resume, most segments may be Completed already — spawning workers
     // for them wastes resources and creates idle tasks.
-    let pending_count = segments.values().filter(|s| s.state == SegState::Pending).count();
-    let initial_workers = pending_count.min(initial_segment_count as usize).min(MAX_SEGMENTS as usize);
+    let pending_count = segments
+        .values()
+        .filter(|s| s.state == SegState::Pending)
+        .count();
+    let initial_workers = pending_count
+        .min(initial_segment_count as usize)
+        .min(MAX_SEGMENTS as usize);
 
     let mut worker_assign_txs: Vec<Option<mpsc::Sender<WorkerAssignment>>> =
         Vec::with_capacity(initial_workers);
@@ -502,7 +515,8 @@ pub async fn run_coordinated_download(
     // Verify byte-range coverage as a final safety net.
     if let Err(msg) = validate_coverage(&segments, total_bytes) {
         return Err(DownloadError::Other(format!(
-            "coordinator: post-download coverage error: {}", msg
+            "coordinator: post-download coverage error: {}",
+            msg
         )));
     }
 
@@ -517,7 +531,8 @@ pub async fn run_coordinated_download(
     if let Err(e) = db.flush_segments_progress(task_id, flush_updates).await {
         rinf::debug_print!(
             "[coordinator] task {} final flush failed (non-fatal): {}",
-            task_id, e
+            task_id,
+            e
         );
     }
 
@@ -530,10 +545,7 @@ pub async fn run_coordinated_download(
 
 /// Create `count` uniform segments spanning `[0, total_bytes-1]` and return
 /// both the in-memory map and the DB tuples for batch insertion.
-fn build_fresh_segments(
-    count: i32,
-    total_bytes: i64,
-) -> FreshSegments {
+fn build_fresh_segments(count: i32, total_bytes: i64) -> FreshSegments {
     let count_i64 = count as i64;
     let chunk = total_bytes / count_i64;
     let mut segments = BTreeMap::new();
@@ -636,10 +648,7 @@ fn find_next_work(
     _total_bytes: i64,
 ) -> Option<NextWork> {
     // Strategy 1: existing Pending segment.
-    if let Some(seg) = segments
-        .values()
-        .find(|s| s.state == SegState::Pending)
-    {
+    if let Some(seg) = segments.values().find(|s| s.state == SegState::Pending) {
         let assignment = WorkerAssignment {
             seg_index: seg.index,
             seg_start: seg.start_byte,
@@ -819,7 +828,9 @@ fn try_proactive_split(
 
     rinf::debug_print!(
         "[coordinator] proactive split: segment {} → new pending segment {} at byte {}",
-        best_idx, new_index, split_point
+        best_idx,
+        new_index,
+        split_point
     );
 
     Some(NextWork {
@@ -880,9 +891,10 @@ fn sync_downloaded_from_shared(
     };
     for info in &snapshot {
         if let Some(seg) = segments.get_mut(&info.index)
-            && seg.state == SegState::Active {
-                seg.downloaded_bytes = info.downloaded_bytes;
-            }
+            && seg.state == SegState::Active
+        {
+            seg.downloaded_bytes = info.downloaded_bytes;
+        }
     }
 }
 
@@ -905,7 +917,9 @@ async fn persist_segment_change(
     changed_index: i32,
     split_parent: Option<i32>,
 ) {
-    let Some(seg) = segments.get(&changed_index) else { return };
+    let Some(seg) = segments.get(&changed_index) else {
+        return;
+    };
 
     if let Some(parent_idx) = split_parent {
         // Split scenario: atomic transaction for both child + parent.
@@ -924,30 +938,49 @@ async fn persist_segment_change(
             {
                 rinf::debug_print!(
                     "[coordinator] persist_split failed: task={}, child={}, parent={}, err={}",
-                    task_id, seg.index, parent.index, e
+                    task_id,
+                    seg.index,
+                    parent.index,
+                    e
                 );
             }
         } else {
             // Parent not found in map — fall back to child-only upsert.
             if let Err(e) = db
-                .upsert_segment(task_id, seg.index, seg.start_byte, seg.end_byte, seg.downloaded_bytes)
+                .upsert_segment(
+                    task_id,
+                    seg.index,
+                    seg.start_byte,
+                    seg.end_byte,
+                    seg.downloaded_bytes,
+                )
                 .await
             {
                 rinf::debug_print!(
                     "[coordinator] upsert_segment failed: task={}, seg={}, err={}",
-                    task_id, seg.index, e
+                    task_id,
+                    seg.index,
+                    e
                 );
             }
         }
     } else {
         // No parent — simple upsert (e.g. reassigning a pending segment).
         if let Err(e) = db
-            .upsert_segment(task_id, seg.index, seg.start_byte, seg.end_byte, seg.downloaded_bytes)
+            .upsert_segment(
+                task_id,
+                seg.index,
+                seg.start_byte,
+                seg.end_byte,
+                seg.downloaded_bytes,
+            )
             .await
         {
             rinf::debug_print!(
                 "[coordinator] upsert_segment failed: task={}, seg={}, err={}",
-                task_id, seg.index, e
+                task_id,
+                seg.index,
+                e
             );
         }
     }
@@ -965,8 +998,12 @@ fn send_split_event(
     segments: &BTreeMap<i32, LiveSegment>,
     is_proactive: bool,
 ) {
-    let Some(parent) = segments.get(&parent_idx) else { return };
-    let Some(child) = segments.get(&child_idx) else { return };
+    let Some(parent) = segments.get(&parent_idx) else {
+        return;
+    };
+    let Some(child) = segments.get(&child_idx) else {
+        return;
+    };
 
     SegmentSplitEvent {
         task_id: task_id.to_string(),
@@ -982,8 +1019,13 @@ fn send_split_event(
 
     rinf::debug_print!(
         "[coordinator] split event sent: parent={} new_end={}, child={} [{}, {}], proactive={}, total={}",
-        parent_idx, parent.end_byte, child_idx, child.start_byte, child.end_byte,
-        is_proactive, segments.len()
+        parent_idx,
+        parent.end_byte,
+        child_idx,
+        child.start_byte,
+        child.end_byte,
+        is_proactive,
+        segments.len()
     );
 }
 
@@ -1131,14 +1173,15 @@ async fn do_segment_with_retry(
                 // Recover actual_start *and* seg_end from DB for partial progress.
                 // seg_end may have been shrunk by a coordinator split since we started.
                 if let Ok(segs) = db.load_segments(task_id).await
-                    && let Some(seg) = segs.iter().find(|s| s.index == seg_idx) {
-                        seg_end = seg.end_byte;
-                        actual_start = seg_start + seg.downloaded_bytes;
-                        if actual_start > seg_end {
-                            // Segment completed during previous attempt.
-                            return Ok(seg.downloaded_bytes);
-                        }
+                    && let Some(seg) = segs.iter().find(|s| s.index == seg_idx)
+                {
+                    seg_end = seg.end_byte;
+                    actual_start = seg_start + seg.downloaded_bytes;
+                    if actual_start > seg_end {
+                        // Segment completed during previous attempt.
+                        return Ok(seg.downloaded_bytes);
                     }
+                }
                 let delay = RETRY_BASE_DELAY * 2u32.saturating_pow(attempts - 1);
                 tokio::select! {
                     _ = cancel.cancelled() => return Err(DownloadError::Cancelled),
@@ -1191,32 +1234,29 @@ async fn do_segment(
 
     // For segment 0, try extracting a better filename from the response.
     if seg_idx == 0
-        && let Some(cd) = resp.headers().get(reqwest::header::CONTENT_DISPOSITION) {
-            let resp_name =
-                crate::downloader::extract_filename(resp.headers(), resp.url().as_str());
-            if !resp_name.is_empty() && resp_name != "download" {
-                rinf::debug_print!(
-                    "[coordinator-seg0] got better name from response: {} (cd={:?})",
-                    resp_name,
-                    cd
-                );
-                let snapshot = seg_states
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone();
-                let _ = progress_tx
-                    .send(ProgressUpdate {
-                        task_id: task_id.to_string(),
-                        downloaded_bytes: total_downloaded.load(Ordering::Relaxed),
-                        total_bytes,
-                        status: 1,
-                        error_message: String::new(),
-                        file_name: resp_name,
-                        segment_details: Some(snapshot),
-                    })
-                    .await;
-            }
+        && let Some(cd) = resp.headers().get(reqwest::header::CONTENT_DISPOSITION)
+    {
+        let resp_name = crate::downloader::extract_filename(resp.headers(), resp.url().as_str());
+        if !resp_name.is_empty() && resp_name != "download" {
+            rinf::debug_print!(
+                "[coordinator-seg0] got better name from response: {} (cd={:?})",
+                resp_name,
+                cd
+            );
+            let snapshot = seg_states.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let _ = progress_tx
+                .send(ProgressUpdate {
+                    task_id: task_id.to_string(),
+                    downloaded_bytes: total_downloaded.load(Ordering::Relaxed),
+                    total_bytes,
+                    status: 1,
+                    error_message: String::new(),
+                    file_name: resp_name,
+                    segment_details: Some(snapshot),
+                })
+                .await;
         }
+    }
 
     let mut stream = resp.bytes_stream();
 
@@ -1240,7 +1280,25 @@ async fn do_segment(
                 let _ = db.update_segment_progress(task_id, seg_idx, seg_downloaded).await;
                 return Err(DownloadError::Cancelled);
             }
-            chunk = stream.next() => {
+            result = tokio::time::timeout(CHUNK_STALL_TIMEOUT, stream.next()) => {
+                // Unwrap the timeout layer first.  If no chunk arrived within
+                // CHUNK_STALL_TIMEOUT the TCP connection is likely dead — flush
+                // partial progress and bubble up an error so do_segment_with_retry
+                // can resume from a fresh connection.
+                let chunk = match result {
+                    Ok(c) => c,
+                    Err(_) => {
+                        file.flush().await?;
+                        update_seg_state(seg_states, seg_idx, seg_downloaded, effective_end);
+                        let _ = db.update_segment_progress(
+                            task_id, seg_idx, seg_downloaded,
+                        ).await;
+                        return Err(DownloadError::Other(format!(
+                            "segment {} stalled: no data received for {}s",
+                            seg_idx, CHUNK_STALL_TIMEOUT.as_secs()
+                        )));
+                    }
+                };
                 match chunk {
                     Some(Ok(bytes)) => {
                         // --- Boundary check BEFORE writing ---
@@ -1348,10 +1406,11 @@ fn update_seg_state(
     end_byte: i64,
 ) {
     if let Ok(mut states) = seg_states.lock()
-        && let Some(s) = states.iter_mut().find(|s| s.index == seg_idx) {
-            s.downloaded_bytes = downloaded_bytes;
-            s.end_byte = end_byte;
-        }
+        && let Some(s) = states.iter_mut().find(|s| s.index == seg_idx)
+    {
+        s.downloaded_bytes = downloaded_bytes;
+        s.end_byte = end_byte;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1361,8 +1420,8 @@ fn update_seg_state(
 #[cfg(test)]
 mod tests {
     use super::{
-        LiveSegment, SegState, find_next_work, try_split_largest, try_proactive_split,
-        all_done, validate_coverage, MAX_SEGMENTS,
+        LiveSegment, MAX_SEGMENTS, SegState, all_done, find_next_work, try_proactive_split,
+        try_split_largest, validate_coverage,
     };
     use std::collections::BTreeMap;
 
@@ -1441,22 +1500,40 @@ mod tests {
     fn split_largest_basic() {
         let mut segs = BTreeMap::new();
         // Segment 0: 0..99MB, downloaded 10MB — remaining 90MB
-        segs.insert(0, make_seg(0, 0, 100_000_000 - 1, 10_000_000, SegState::Active));
+        segs.insert(
+            0,
+            make_seg(0, 0, 100_000_000 - 1, 10_000_000, SegState::Active),
+        );
         // Segment 1: 100MB..199MB, downloaded 50MB — remaining 50MB
-        segs.insert(1, make_seg(1, 100_000_000, 200_000_000 - 1, 50_000_000, SegState::Active));
+        segs.insert(
+            1,
+            make_seg(
+                1,
+                100_000_000,
+                200_000_000 - 1,
+                50_000_000,
+                SegState::Active,
+            ),
+        );
 
         let mut next_idx = 2;
         let result = try_split_largest(&mut segs, &mut next_idx);
         assert!(result.is_some(), "should split the largest segment");
 
         let next = result.expect("already checked");
-        assert_eq!(next.assignment.seg_index, 2, "new segment index should be 2");
+        assert_eq!(
+            next.assignment.seg_index, 2,
+            "new segment index should be 2"
+        );
         assert_eq!(next_idx, 3);
         assert_eq!(next.split_parent, Some(0), "parent should be segment 0");
 
         // Original segment 0 should have a smaller end_byte now.
         let orig = segs.get(&0).expect("segment 0 exists");
-        assert!(orig.end_byte < 100_000_000 - 1, "segment 0 should be shrunk");
+        assert!(
+            orig.end_byte < 100_000_000 - 1,
+            "segment 0 should be shrunk"
+        );
 
         // New segment should cover the upper half.
         let new_seg = segs.get(&2).expect("segment 2 exists");
@@ -1464,7 +1541,10 @@ mod tests {
         assert_eq!(new_seg.start_byte, next.assignment.seg_start);
 
         // Coverage must remain valid.
-        assert!(validate_coverage(&segs, 200_000_000).is_ok(), "coverage must be valid after split");
+        assert!(
+            validate_coverage(&segs, 200_000_000).is_ok(),
+            "coverage must be valid after split"
+        );
     }
 
     #[test]
@@ -1484,7 +1564,13 @@ mod tests {
         for i in 0..MAX_SEGMENTS {
             segs.insert(
                 i,
-                make_seg(i, i as i64 * 10_000_000, (i as i64 + 1) * 10_000_000 - 1, 0, SegState::Active),
+                make_seg(
+                    i,
+                    i as i64 * 10_000_000,
+                    (i as i64 + 1) * 10_000_000 - 1,
+                    0,
+                    SegState::Active,
+                ),
             );
         }
         let mut next_idx = MAX_SEGMENTS;
@@ -1520,7 +1606,10 @@ mod tests {
         let total_bytes: i64 = 100_000_000;
         let mut segs = BTreeMap::new();
         // Segment at 70% progress — remaining 30MB.
-        segs.insert(0, make_seg(0, 0, total_bytes - 1, 70_000_000, SegState::Active));
+        segs.insert(
+            0,
+            make_seg(0, 0, total_bytes - 1, 70_000_000, SegState::Active),
+        );
 
         let mut next_idx = 1;
         let result = try_split_largest(&mut segs, &mut next_idx);
@@ -1541,8 +1630,14 @@ mod tests {
     #[test]
     fn split_does_not_split_completed_segments() {
         let mut segs = BTreeMap::new();
-        segs.insert(0, make_seg(0, 0, 99_999_999, 100_000_000, SegState::Completed));
-        segs.insert(1, make_seg(1, 100_000_000, 199_999_999, 0, SegState::Active));
+        segs.insert(
+            0,
+            make_seg(0, 0, 99_999_999, 100_000_000, SegState::Completed),
+        );
+        segs.insert(
+            1,
+            make_seg(1, 100_000_000, 199_999_999, 0, SegState::Active),
+        );
 
         let mut next_idx = 2;
         let result = try_split_largest(&mut segs, &mut next_idx);
@@ -1561,14 +1656,23 @@ mod tests {
     fn find_work_prefers_pending() {
         let mut segs = BTreeMap::new();
         segs.insert(0, make_seg(0, 0, 50_000_000, 0, SegState::Active));
-        segs.insert(1, make_seg(1, 50_000_001, 100_000_000, 0, SegState::Pending));
+        segs.insert(
+            1,
+            make_seg(1, 50_000_001, 100_000_000, 0, SegState::Pending),
+        );
 
         let mut next_idx = 2;
         let result = find_next_work(&mut segs, &mut next_idx, 100_000_001);
         assert!(result.is_some());
         let next = result.expect("checked");
-        assert_eq!(next.assignment.seg_index, 1, "should pick the pending segment first");
-        assert!(next.split_parent.is_none(), "pending reuse should not have split_parent");
+        assert_eq!(
+            next.assignment.seg_index, 1,
+            "should pick the pending segment first"
+        );
+        assert!(
+            next.split_parent.is_none(),
+            "pending reuse should not have split_parent"
+        );
     }
 
     #[test]
@@ -1605,8 +1709,10 @@ mod tests {
         segs.insert(1, make_seg(1, 50_000_000, 99_999_999, 0, SegState::Pending));
 
         let mut next_idx = 2;
-        assert!(try_proactive_split(&mut segs, &mut next_idx).is_none(),
-            "should not proactively split when Pending segments exist");
+        assert!(
+            try_proactive_split(&mut segs, &mut next_idx).is_none(),
+            "should not proactively split when Pending segments exist"
+        );
     }
 
     #[test]

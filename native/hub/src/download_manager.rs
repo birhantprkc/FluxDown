@@ -5,15 +5,15 @@ use std::sync::Arc;
 use futures_util::FutureExt;
 use reqwest::Client;
 use rinf::RustSignal;
-use tokio::sync::{mpsc, oneshot, Semaphore};
+use tokio::sync::{Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::bt_downloader::{self, BtConfig, BtDownloadParams, SharedBtSession, TorrentSource};
+use crate::dash_downloader;
 use crate::db::Db;
 use crate::downloader::{self, DownloadParams, ProgressUpdate, SegmentProgressInfo};
-use crate::dash_downloader;
 use crate::ftp_downloader;
 use crate::hls_downloader;
 use crate::proxy_config::ProxyConfig;
@@ -241,10 +241,7 @@ pub struct DownloadManagerConfig {
     pub user_agent: String,
 }
 impl DownloadManager {
-    pub fn new(
-        db: Db,
-        config: DownloadManagerConfig,
-    ) -> Result<Self, downloader::DownloadError> {
+    pub fn new(db: Db, config: DownloadManagerConfig) -> Result<Self, downloader::DownloadError> {
         let DownloadManagerConfig {
             max_concurrent,
             speed_limit_bps,
@@ -341,7 +338,10 @@ impl DownloadManager {
     /// downloads keep their existing client and are unaffected.
     ///
     /// Returns `Err` if the new client cannot be built (e.g. invalid SOCKS URL).
-    pub fn set_proxy_config(&mut self, config: ProxyConfig) -> Result<(), downloader::DownloadError> {
+    pub fn set_proxy_config(
+        &mut self,
+        config: ProxyConfig,
+    ) -> Result<(), downloader::DownloadError> {
         rinf::debug_print!(
             "[manager] updating proxy config: mode={}, type={}, host={}, port={}",
             config.mode.as_str(),
@@ -398,9 +398,9 @@ impl DownloadManager {
                 SharedBtSession::new(&save_dir, &data_dir, speed_limit, &config)
             })
             .await
-            .map_err(|e| downloader::DownloadError::Other(
-                format!("BT session init thread panicked: {e}"),
-            ))??;
+            .map_err(|e| {
+                downloader::DownloadError::Other(format!("BT session init thread panicked: {e}"))
+            })??;
             self.bt_session = Some(Arc::new(session));
         }
         Ok(())
@@ -470,7 +470,10 @@ impl DownloadManager {
         // Use saturating_sub to guard against underflow if bt_task_ids
         // temporarily contains an entry not yet cleaned from active_tokens
         // (e.g. generation mismatch in on_task_done).
-        let http_ftp_active = self.active_tokens.len().saturating_sub(self.bt_task_ids.len());
+        let http_ftp_active = self
+            .active_tokens
+            .len()
+            .saturating_sub(self.bt_task_ids.len());
         http_ftp_active < self.max_concurrent
     }
 
@@ -540,7 +543,10 @@ impl DownloadManager {
                 break;
             }
             // Edge case: task was resumed/cancelled while queued.
-            if self.active_tokens.contains_key(&self.pending_queue[i].task_id) {
+            if self
+                .active_tokens
+                .contains_key(&self.pending_queue[i].task_id)
+            {
                 self.pending_queue.remove(i);
                 continue;
             }
@@ -550,7 +556,9 @@ impl DownloadManager {
                 i += 1;
                 continue;
             }
-            let Some(queued) = self.pending_queue.remove(i) else { break };
+            let Some(queued) = self.pending_queue.remove(i) else {
+                break;
+            };
             if queued.is_resume {
                 self.do_resume_task(&queued.task_id).await;
             } else {
@@ -644,11 +652,9 @@ impl DownloadManager {
         // Shut down on a background thread (same pattern as Drop) to avoid
         // blocking the actor loop while the librqbit runtime winds down.
         if let Some(bt) = self.bt_session.take() {
-            std::thread::spawn(move || {
-                match Arc::try_unwrap(bt) {
-                    Ok(owned) => owned.shutdown(),
-                    Err(shared) => shared.shutdown(),
-                }
+            std::thread::spawn(move || match Arc::try_unwrap(bt) {
+                Ok(owned) => owned.shutdown(),
+                Err(shared) => shared.shutdown(),
             });
         }
     }
@@ -756,7 +762,9 @@ impl DownloadManager {
 
         if let Err(e) = self
             .db
-            .insert_task(&task_id, &db_url, &file_name, &save_dir, seg, 0, &proxy_url, &queue_id, &checksum)
+            .insert_task(
+                &task_id, &db_url, &file_name, &save_dir, seg, 0, &proxy_url, &queue_id, &checksum,
+            )
             .await
         {
             rinf::debug_print!("insert_task error: {}", e);
@@ -765,7 +773,10 @@ impl DownloadManager {
 
         // Persist .torrent file bytes to DB for resume after restart.
         if !torrent_file_bytes.is_empty()
-            && let Err(e) = self.db.save_torrent_file_bytes(&task_id, &torrent_file_bytes).await
+            && let Err(e) = self
+                .db
+                .save_torrent_file_bytes(&task_id, &torrent_file_bytes)
+                .await
         {
             rinf::debug_print!("save_torrent_file_bytes error: {}", e);
         }
@@ -868,7 +879,8 @@ impl DownloadManager {
         //   2. Queue default_segments (> 0) — inherits from queue when task is auto
         //   3. Global default_segments (> 0) — global setting from config
         //   4. Segment advisor (segments == 0) — dynamic calculation at runtime
-        let queue_default = self.queues
+        let queue_default = self
+            .queues
             .get(&queue_id)
             .map(|q| q.default_segments)
             .filter(|&s| s > 0)
@@ -889,7 +901,8 @@ impl DownloadManager {
         self.active_tokens
             .insert(task_id.clone(), (cancel_token.clone(), spawn_gen));
         // Track which queue this task belongs to for per-queue concurrency counting.
-        self.active_task_queue.insert(task_id.clone(), queue_id.clone());
+        self.active_task_queue
+            .insert(task_id.clone(), queue_id.clone());
         // Select speed limiter: queue-specific if the queue has a limit, global otherwise.
         let speed_limiter = self.queue_limiter_for(&queue_id);
 
@@ -911,8 +924,12 @@ impl DownloadManager {
             // Lazily initialise the shared BT session.
             if let Err(e) = self.ensure_bt_session().await {
                 rinf::debug_print!("[manager] failed to init BT session: {}", e);
-                let _ = self.db.update_task_status(&task_id, 4, &e.to_string()).await;
-                let _ = self.progress_tx
+                let _ = self
+                    .db
+                    .update_task_status(&task_id, 4, &e.to_string())
+                    .await;
+                let _ = self
+                    .progress_tx
                     .send(ProgressUpdate {
                         task_id: task_id.clone(),
                         downloaded_bytes: 0,
@@ -929,7 +946,9 @@ impl DownloadManager {
             }
             // bt_session is guaranteed to be Some after ensure_bt_session().
             let Some(bt_ref) = self.bt_session.as_ref() else {
-                rinf::debug_print!("[manager] BUG: bt_session is None after ensure_bt_session succeeded");
+                rinf::debug_print!(
+                    "[manager] BUG: bt_session is None after ensure_bt_session succeeded"
+                );
                 self.active_tokens.remove(&task_id);
                 return;
             };
@@ -956,16 +975,22 @@ impl DownloadManager {
             };
 
             tokio::spawn(async move {
-                let result = std::panic::AssertUnwindSafe(bt_downloader::run_bt_download(bt_params))
-                    .catch_unwind()
-                    .await;
+                let result =
+                    std::panic::AssertUnwindSafe(bt_downloader::run_bt_download(bt_params))
+                        .catch_unwind()
+                        .await;
 
                 if let Err(panic_info) = result {
                     let msg = panic_message(&panic_info);
                     handle_task_panic(&panic_task_id, &msg, &panic_db, &panic_progress_tx).await;
                 }
 
-                let _ = done_tx.send(TaskDone { task_id: panic_task_id, generation: spawn_gen }).await;
+                let _ = done_tx
+                    .send(TaskDone {
+                        task_id: panic_task_id,
+                        generation: spawn_gen,
+                    })
+                    .await;
             })
         } else {
             // Resolve proxy and UA: per-task values override global config.
@@ -988,7 +1013,8 @@ impl DownloadManager {
             } else {
                 self.global_user_agent.as_str()
             };
-            let needs_rebuild = !proxy_url.is_empty() || !user_agent.is_empty() || !queue_ua.is_empty();
+            let needs_rebuild =
+                !proxy_url.is_empty() || !user_agent.is_empty() || !queue_ua.is_empty();
             let (task_client, task_proxy) = if needs_rebuild {
                 let pc = if proxy_url.is_empty() {
                     self.proxy_config.resolve()
@@ -998,10 +1024,7 @@ impl DownloadManager {
                 match downloader::build_client(&pc, resolved_ua) {
                     Ok(c) => (c, pc),
                     Err(e) => {
-                        rinf::debug_print!(
-                            "[manager] failed to build per-task client: {}",
-                            e
-                        );
+                        rinf::debug_print!("[manager] failed to build per-task client: {}", e);
                         // Fallback to global
                         (self.client.clone(), self.proxy_config.resolve())
                     }
@@ -1062,7 +1085,12 @@ impl DownloadManager {
                     handle_task_panic(&panic_task_id, &msg, &panic_db, &panic_progress_tx).await;
                 }
 
-                let _ = done_tx.send(TaskDone { task_id: panic_task_id, generation: spawn_gen }).await;
+                let _ = done_tx
+                    .send(TaskDone {
+                        task_id: panic_task_id,
+                        generation: spawn_gen,
+                    })
+                    .await;
             })
         };
         self.active_handles.insert(task_id, handle);
@@ -1182,8 +1210,14 @@ impl DownloadManager {
 
         // Load task once and reuse for both the is_bt check and the queue entry.
         let task_row = self.db.load_task_by_id(task_id).await.ok().flatten();
-        let is_bt = task_row.as_ref().map(|t| is_bt_url(&t.url)).unwrap_or(false);
-        let queue_id = task_row.as_ref().map(|t| t.queue_id.clone()).unwrap_or_default();
+        let is_bt = task_row
+            .as_ref()
+            .map(|t| is_bt_url(&t.url))
+            .unwrap_or(false);
+        let queue_id = task_row
+            .as_ref()
+            .map(|t| t.queue_id.clone())
+            .unwrap_or_default();
 
         if is_bt || (self.has_capacity() && self.has_queue_capacity(&queue_id)) {
             self.do_resume_task(task_id).await;
@@ -1223,7 +1257,7 @@ impl DownloadManager {
                     is_resume: true,
                     cookies: String::new(), // cookies not available for resume from DB
                     referrer: String::new(), // referrer not persisted; not needed for resume
-                    hint_file_size: 0, // no hint on resume; use probe to get current size
+                    hint_file_size: 0,      // no hint on resume; use probe to get current size
                     torrent_file_bytes: Vec::new(), // loaded from DB in do_resume_task
                     proxy_url: t.proxy_url,
                     user_agent: String::new(), // use global UA on resume
@@ -1243,7 +1277,11 @@ impl DownloadManager {
                 return;
             }
             Err(e) => {
-                rinf::debug_print!("[manager] do_resume_task: DB error for task {}: {}", task_id, e);
+                rinf::debug_print!(
+                    "[manager] do_resume_task: DB error for task {}: {}",
+                    task_id,
+                    e
+                );
                 let _ = self
                     .progress_tx
                     .send(ProgressUpdate {
@@ -1270,7 +1308,8 @@ impl DownloadManager {
         self.active_tokens
             .insert(task_id.to_string(), (cancel_token.clone(), spawn_gen));
         // Track queue membership and select the appropriate speed limiter.
-        self.active_task_queue.insert(task_id.to_string(), task.queue_id.clone());
+        self.active_task_queue
+            .insert(task_id.to_string(), task.queue_id.clone());
         let speed_limiter = self.queue_limiter_for(&task.queue_id);
 
         let use_ftp = is_ftp_url(&task.url);
@@ -1293,7 +1332,8 @@ impl DownloadManager {
             if let Err(e) = self.ensure_bt_session().await {
                 rinf::debug_print!("[manager] failed to init BT session for resume: {}", e);
                 let _ = self.db.update_task_status(task_id, 4, &e.to_string()).await;
-                let _ = self.progress_tx
+                let _ = self
+                    .progress_tx
                     .send(ProgressUpdate {
                         task_id: tid.clone(),
                         downloaded_bytes: 0,
@@ -1310,7 +1350,9 @@ impl DownloadManager {
             }
             // bt_session is guaranteed to be Some after ensure_bt_session().
             let Some(bt_ref) = self.bt_session.as_ref() else {
-                rinf::debug_print!("[manager] BUG: bt_session is None after ensure_bt_session succeeded");
+                rinf::debug_print!(
+                    "[manager] BUG: bt_session is None after ensure_bt_session succeeded"
+                );
                 self.active_tokens.remove(task_id);
                 return;
             };
@@ -1338,7 +1380,8 @@ impl DownloadManager {
                 if !output_path.exists() {
                     rinf::debug_print!(
                         "[manager] BT task {} output missing ({}), discarding cached handle for re-verify",
-                        task_id, output_path.display()
+                        task_id,
+                        output_path.display()
                     );
                     // Delete the stale torrent from the session so add_torrent
                     // can re-add it fresh with proper piece verification.
@@ -1350,7 +1393,10 @@ impl DownloadManager {
             // Build the torrent source for resume: if the task was created
             // from a .torrent file, load the persisted bytes from DB.
             let torrent_source = if is_torrent_file_url(&task.url) {
-                let bytes = self.db.load_torrent_file_bytes(task_id).await
+                let bytes = self
+                    .db
+                    .load_torrent_file_bytes(task_id)
+                    .await
                     .unwrap_or_default()
                     .unwrap_or_default();
                 if bytes.is_empty() {
@@ -1383,16 +1429,22 @@ impl DownloadManager {
             };
 
             tokio::spawn(async move {
-                let result = std::panic::AssertUnwindSafe(bt_downloader::run_bt_download(bt_params))
-                    .catch_unwind()
-                    .await;
+                let result =
+                    std::panic::AssertUnwindSafe(bt_downloader::run_bt_download(bt_params))
+                        .catch_unwind()
+                        .await;
 
                 if let Err(panic_info) = result {
                     let msg = panic_message(&panic_info);
                     handle_task_panic(&panic_task_id, &msg, &panic_db, &panic_progress_tx).await;
                 }
 
-                let _ = done_tx.send(TaskDone { task_id: panic_task_id, generation: spawn_gen }).await;
+                let _ = done_tx
+                    .send(TaskDone {
+                        task_id: panic_task_id,
+                        generation: spawn_gen,
+                    })
+                    .await;
             })
         } else {
             // Resolve proxy and UA for resume: use global UA (cookies not
@@ -1440,7 +1492,7 @@ impl DownloadManager {
                 speed_limiter,
                 cookies: String::new(),
                 referrer: String::new(), // referrer not persisted; not needed for resume
-                hint_file_size: 0, // no hint on resume; use probe to get current size
+                hint_file_size: 0,       // no hint on resume; use probe to get current size
                 proxy_config: task_proxy,
                 hls_quality_rx,
                 checksum: task.checksum,
@@ -1470,7 +1522,12 @@ impl DownloadManager {
                     handle_task_panic(&panic_task_id, &msg, &panic_db, &panic_progress_tx).await;
                 }
 
-                let _ = done_tx.send(TaskDone { task_id: panic_task_id, generation: spawn_gen }).await;
+                let _ = done_tx
+                    .send(TaskDone {
+                        task_id: panic_task_id,
+                        generation: spawn_gen,
+                    })
+                    .await;
             })
         };
         self.active_handles.insert(tid, handle);
@@ -1546,11 +1603,7 @@ impl DownloadManager {
         }
         if let Some(handle) = self.active_handles.remove(task_id) {
             // Timeout guard: don't block forever if the task misbehaves.
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                handle,
-            )
-            .await;
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
         }
 
         if let Ok(Some(t)) = self.db.load_task_by_id(task_id).await {
@@ -1592,11 +1645,8 @@ impl DownloadManager {
                 // DASH audio sidecar: clean up .audio.m4a and its .part temp
                 if dash_downloader::is_dash_url(&t.url) {
                     let audio_path = dash_downloader::build_audio_path(&path);
-                    let audio_temp = PathBuf::from(format!(
-                        "{}{}",
-                        audio_path.display(),
-                        downloader::TEMP_EXT
-                    ));
+                    let audio_temp =
+                        PathBuf::from(format!("{}{}", audio_path.display(), downloader::TEMP_EXT));
                     let _ = tokio::fs::remove_file(&audio_temp).await;
                     if delete_files {
                         let _ = tokio::fs::remove_file(&audio_path).await;
@@ -1661,7 +1711,8 @@ impl DownloadManager {
         );
 
         // 1. Remove from pending queue in one pass.
-        self.pending_queue.retain(|q| !id_set.contains(q.task_id.as_str()));
+        self.pending_queue
+            .retain(|q| !id_set.contains(q.task_id.as_str()));
 
         // 2. Cancel all active downloads + collect (task_id, JoinHandle) pairs.
         //    We pair each handle with its task ID so we can send per-task
@@ -1682,11 +1733,13 @@ impl DownloadManager {
 
         // 3. Batch-load all task info from DB in one query (non-blocking, no
         //    need to wait for handles first).
-        let task_infos = self.db.load_tasks_by_ids(task_ids).await.unwrap_or_default();
-        let info_map: HashMap<&str, &TaskInfo> = task_infos
-            .iter()
-            .map(|t| (t.task_id.as_str(), t))
-            .collect();
+        let task_infos = self
+            .db
+            .load_tasks_by_ids(task_ids)
+            .await
+            .unwrap_or_default();
+        let info_map: HashMap<&str, &TaskInfo> =
+            task_infos.iter().map(|t| (t.task_id.as_str(), t)).collect();
 
         // 4. Spawn per-task cleanup futures.  Each future:
         //    a) waits for its own JoinHandle (if any) — only blocks THIS task
@@ -1713,11 +1766,8 @@ impl DownloadManager {
                     cleanup_futs.push(tokio::spawn(async move {
                         // Wait for this task's download handle (10s per-task timeout).
                         if let Some(h) = maybe_handle {
-                            let _ = tokio::time::timeout(
-                                std::time::Duration::from_secs(10),
-                                h,
-                            )
-                            .await;
+                            let _ =
+                                tokio::time::timeout(std::time::Duration::from_secs(10), h).await;
                         }
                         // BT session delete
                         if let Some(ref bt) = bt_session {
@@ -1754,11 +1804,8 @@ impl DownloadManager {
                     cleanup_futs.push(tokio::spawn(async move {
                         // Wait for this task's download handle (10s per-task timeout).
                         if let Some(h) = maybe_handle {
-                            let _ = tokio::time::timeout(
-                                std::time::Duration::from_secs(10),
-                                h,
-                            )
-                            .await;
+                            let _ =
+                                tokio::time::timeout(std::time::Duration::from_secs(10), h).await;
                         }
                         let _permit = sem.acquire().await.unwrap();
                         // Remove temp file
@@ -1806,11 +1853,7 @@ impl DownloadManager {
                 // for handle (if any) then signal immediately.
                 cleanup_futs.push(tokio::spawn(async move {
                     if let Some(h) = maybe_handle {
-                        let _ = tokio::time::timeout(
-                            std::time::Duration::from_secs(10),
-                            h,
-                        )
-                        .await;
+                        let _ = tokio::time::timeout(std::time::Duration::from_secs(10), h).await;
                     }
                     let _ = ptx
                         .send(ProgressUpdate {
@@ -1864,21 +1907,17 @@ impl DownloadManager {
         }
 
         // Batch-load all task info to avoid N separate DB queries.
-        let task_map: HashMap<String, TaskInfo> =
-            match self.db.load_tasks_by_ids(task_ids).await {
-                Ok(tasks) => tasks.into_iter().map(|t| (t.task_id.clone(), t)).collect(),
-                Err(e) => {
-                    rinf::debug_print!(
-                        "[manager] batch_resume: load_tasks_by_ids error: {}",
-                        e
-                    );
-                    // Fallback to per-task queries.
-                    for tid in task_ids {
-                        self.resume_task(tid).await;
-                    }
-                    return;
+        let task_map: HashMap<String, TaskInfo> = match self.db.load_tasks_by_ids(task_ids).await {
+            Ok(tasks) => tasks.into_iter().map(|t| (t.task_id.clone(), t)).collect(),
+            Err(e) => {
+                rinf::debug_print!("[manager] batch_resume: load_tasks_by_ids error: {}", e);
+                // Fallback to per-task queries.
+                for tid in task_ids {
+                    self.resume_task(tid).await;
                 }
-            };
+                return;
+            }
+        };
 
         for tid in task_ids {
             if let Some(task_row) = task_map.get(tid.as_str()) {
@@ -1976,18 +2015,15 @@ impl Drop for DownloadManager {
         // panics if called from within a tokio runtime context.  Spawning a
         // std thread guarantees we are outside any runtime.
         if let Some(bt) = self.bt_session.take() {
-            std::thread::spawn(move || {
-                match Arc::try_unwrap(bt) {
-                    Ok(owned) => owned.shutdown(),
-                    Err(shared) => shared.shutdown(),
-                }
+            std::thread::spawn(move || match Arc::try_unwrap(bt) {
+                Ok(owned) => owned.shutdown(),
+                Err(shared) => shared.shutdown(),
             });
             // Note: we intentionally don't join the thread — the BT runtime
             // shutdown is best-effort on app exit.  The OS will reclaim
             // resources if it doesn't finish in time.
         }
     }
-
 }
 
 impl DownloadManager {
@@ -2023,23 +2059,35 @@ impl DownloadManager {
         };
         if let Err(e) = self
             .db
-            .insert_queue(&id, &name, speed_limit_kbps, max_concurrent, &default_save_dir, position, default_segments, &default_user_agent)
+            .insert_queue(
+                &id,
+                &name,
+                speed_limit_kbps,
+                max_concurrent,
+                &default_save_dir,
+                position,
+                default_segments,
+                &default_user_agent,
+            )
             .await
         {
             rinf::debug_print!("[manager] insert_queue error: {}", e);
             return;
         }
         // Sync in-memory cache.
-        self.queues.insert(id.clone(), QueueInfo {
-            queue_id: id.clone(),
-            name: name.clone(),
-            speed_limit_kbps,
-            max_concurrent,
-            default_save_dir,
-            position,
-            default_segments,
-            default_user_agent,
-        });
+        self.queues.insert(
+            id.clone(),
+            QueueInfo {
+                queue_id: id.clone(),
+                name: name.clone(),
+                speed_limit_kbps,
+                max_concurrent,
+                default_save_dir,
+                position,
+                default_segments,
+                default_user_agent,
+            },
+        );
         rinf::debug_print!("[manager] created queue: id={}, name={}", id, name);
         self.send_all_queues().await;
     }
@@ -2058,7 +2106,15 @@ impl DownloadManager {
     ) {
         if let Err(e) = self
             .db
-            .update_queue(&queue_id, &name, speed_limit_kbps, max_concurrent, &default_save_dir, default_segments, &default_user_agent)
+            .update_queue(
+                &queue_id,
+                &name,
+                speed_limit_kbps,
+                max_concurrent,
+                &default_save_dir,
+                default_segments,
+                &default_user_agent,
+            )
             .await
         {
             rinf::debug_print!("[manager] update_queue error: {}", e);
@@ -2104,7 +2160,8 @@ impl DownloadManager {
         // Note: the existing speed limiter runs to completion; the new
         // queue limiter takes effect on next resume.
         if self.active_task_queue.contains_key(&task_id) {
-            self.active_task_queue.insert(task_id.clone(), queue_id.clone());
+            self.active_task_queue
+                .insert(task_id.clone(), queue_id.clone());
         }
         rinf::debug_print!("[manager] moved task {} to queue '{}'", task_id, queue_id);
         self.send_all_queues().await;
@@ -2143,7 +2200,10 @@ impl DownloadManager {
             .pending_queue
             .iter()
             .position(|q| q.task_id == task_id)
-            .map(|pos| { self.pending_queue.remove(pos); true })
+            .map(|pos| {
+                self.pending_queue.remove(pos);
+                true
+            })
             .unwrap_or(false);
 
         // Step 2: Auto-pause all currently active tasks (except the target itself,
@@ -2237,7 +2297,10 @@ impl DownloadManager {
     async fn clear_priority(&mut self) {
         self.priority_task_id = None;
         let to_resume: Vec<String> = self.auto_paused_ids.drain().collect();
-        rinf::debug_print!("[manager] boost cancelled, resuming {} tasks", to_resume.len());
+        rinf::debug_print!(
+            "[manager] boost cancelled, resuming {} tasks",
+            to_resume.len()
+        );
         for id in &to_resume {
             // Bug 5 修复：跳过已完成的任务，避免 clear_priority 误重启已完成下载。
             // 场景：boost 激活期间某任务恰好完成，clear_priority 时不应再 resume 它。
@@ -2333,15 +2396,34 @@ pub async fn progress_reporter(mut rx: mpsc::Receiver<ProgressUpdate>, db: Db) {
                 state.speed_warmup_remaining = 1;
             } else if state.speed_warmup_remaining > 0 {
                 state.speed_warmup_remaining -= 1;
-            } else if dt > 0.01 && delta_i64 > 0 {
-                // Only update EMA when there is actual progress.  When delta == 0
-                // (no new bytes in this tick), hold the last known speed instead
-                // of decaying towards zero.  This prevents ETA from ballooning
-                // near completion when segments finish and no new data arrives
-                // while the task is still in downloading state.
-                let instant_speed = delta_i64 as f64 / dt;
-                state.ema_speed =
-                    EMA_ALPHA * instant_speed + (1.0 - EMA_ALPHA) * state.ema_speed;
+            } else if dt > 0.01 {
+                if delta_i64 > 0 {
+                    let instant_speed = delta_i64 as f64 / dt;
+                    state.ema_speed =
+                        EMA_ALPHA * instant_speed + (1.0 - EMA_ALPHA) * state.ema_speed;
+                } else {
+                    // No new bytes in this tick.  Gently decay the EMA so the
+                    // UI reflects actual throughput when a connection stalls,
+                    // instead of holding a stale value indefinitely.
+                    //
+                    // Previously the speed was held constant (no decay), which
+                    // caused the UI to display "a few MB/s" even when the TCP
+                    // connection had effectively stopped transmitting.  Now the
+                    // chunk-level stall timeout (CHUNK_STALL_TIMEOUT) handles
+                    // hard stalls by killing and retrying the connection, so we
+                    // no longer need to hide stalls from the ETA calculation.
+                    //
+                    // Decay factor 0.8 per tick: at ~500 ms intervals the speed
+                    // halves in ~1.5 s and drops below 10 % within 5 s —
+                    // responsive enough for stall visibility without causing
+                    // ETA jitter on brief inter-chunk gaps.
+                    state.ema_speed *= 0.8;
+                    // Clamp to zero below 1 KB/s to avoid showing tiny residual
+                    // values (e.g. "1 B/s") during the tail of the decay curve.
+                    if state.ema_speed < 1024.0 {
+                        state.ema_speed = 0.0;
+                    }
+                }
             }
         } else {
             state.ema_speed = 0.0;
@@ -2362,7 +2444,8 @@ pub async fn progress_reporter(mut rx: mpsc::Receiver<ProgressUpdate>, db: Db) {
         let is_status_change = update.status != state.last_sent_status;
         let should_send = is_terminal || is_status_change || {
             let last = last_dart_send.get(&update.task_id);
-            last.is_none() || now.duration_since(*last.unwrap_or(&now)).as_millis() >= MIN_DART_INTERVAL_MS
+            last.is_none()
+                || now.duration_since(*last.unwrap_or(&now)).as_millis() >= MIN_DART_INTERVAL_MS
         };
 
         // Always send if this update carries a newly resolved file_name.
@@ -2450,9 +2533,7 @@ pub async fn progress_reporter(mut rx: mpsc::Receiver<ProgressUpdate>, db: Db) {
         // HTTP segments + BT) the channel would back-pressure and stall BT
         // progress reporting if we awaited each DB write synchronously.
         if update.status == 1 {
-            let task_last_save = last_db_save
-                .entry(update.task_id.clone())
-                .or_insert(now);
+            let task_last_save = last_db_save.entry(update.task_id.clone()).or_insert(now);
             if task_last_save.elapsed().as_secs() >= downloader::DB_SAVE_INTERVAL_SECS {
                 let db_clone = db.clone();
                 let tid = update.task_id.clone();

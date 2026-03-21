@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use reqwest::header::HeaderValue;
 use reqwest::Client;
+use reqwest::header::HeaderValue;
 use thiserror::Error;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
@@ -124,10 +124,17 @@ const DEFAULT_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
 /// - `ProxyMode::Manual`  → user-specified proxy URL (HTTP/HTTPS/SOCKS4/SOCKS5)
 ///
 /// When `user_agent` is non-empty, it overrides the built-in Chrome UA.
-pub fn build_client(proxy_config: &crate::proxy_config::ProxyConfig, user_agent: &str) -> Result<Client, DownloadError> {
+pub fn build_client(
+    proxy_config: &crate::proxy_config::ProxyConfig,
+    user_agent: &str,
+) -> Result<Client, DownloadError> {
     use crate::proxy_config::{ProxyMode, detect_system_proxy};
 
-    let ua = if user_agent.is_empty() { DEFAULT_UA } else { user_agent };
+    let ua = if user_agent.is_empty() {
+        DEFAULT_UA
+    } else {
+        user_agent
+    };
     let mut builder = Client::builder()
         .user_agent(ua)
         // TLS — native-tls uses Windows Schannel (system cert store + AIA chain building)
@@ -184,15 +191,13 @@ pub fn build_client(proxy_config: &crate::proxy_config::ProxyConfig, user_agent:
                         match reqwest::Proxy::all(&url) {
                             Ok(mut proxy) => {
                                 if !sys_proxy.username.is_empty() {
-                                    proxy = proxy.basic_auth(
-                                        &sys_proxy.username,
-                                        &sys_proxy.password,
-                                    );
+                                    proxy =
+                                        proxy.basic_auth(&sys_proxy.username, &sys_proxy.password);
                                 }
                                 if !sys_proxy.no_proxy_list.is_empty() {
-                                    proxy = proxy.no_proxy(
-                                        reqwest::NoProxy::from_string(&sys_proxy.no_proxy_list),
-                                    );
+                                    proxy = proxy.no_proxy(reqwest::NoProxy::from_string(
+                                        &sys_proxy.no_proxy_list,
+                                    ));
                                 }
                                 builder = builder.proxy(proxy);
                             }
@@ -204,7 +209,9 @@ pub fn build_client(proxy_config: &crate::proxy_config::ProxyConfig, user_agent:
                             }
                         }
                     } else {
-                        rinf::debug_print!("[build_client] system proxy enabled but no URL resolved");
+                        rinf::debug_print!(
+                            "[build_client] system proxy enabled but no URL resolved"
+                        );
                     }
                 }
                 Ok(None) => {
@@ -221,23 +228,18 @@ pub fn build_client(proxy_config: &crate::proxy_config::ProxyConfig, user_agent:
                 match reqwest::Proxy::all(&url) {
                     Ok(mut proxy) => {
                         if !proxy_config.username.is_empty() {
-                            proxy = proxy.basic_auth(
-                                &proxy_config.username,
-                                &proxy_config.password,
-                            );
+                            proxy =
+                                proxy.basic_auth(&proxy_config.username, &proxy_config.password);
                         }
                         if !proxy_config.no_proxy_list.is_empty() {
-                            proxy = proxy.no_proxy(
-                                reqwest::NoProxy::from_string(&proxy_config.no_proxy_list),
-                            );
+                            proxy = proxy.no_proxy(reqwest::NoProxy::from_string(
+                                &proxy_config.no_proxy_list,
+                            ));
                         }
                         builder = builder.proxy(proxy);
                     }
                     Err(e) => {
-                        rinf::debug_print!(
-                            "[build_client] failed to create proxy from URL: {}",
-                            e
-                        );
+                        rinf::debug_print!("[build_client] failed to create proxy from URL: {}", e);
                     }
                 }
             } else {
@@ -273,7 +275,12 @@ const PROBE_RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
 /// On Windows, the very first HTTPS request from a new process can fail due to
 /// DNS resolver cold-start, rustls TLS session initialisation, or firewall
 /// first-connection inspection.  Retrying transparently hides this from users.
-pub async fn resolve_file_info(client: &Client, url: &str, cookies: &str, referrer: &str) -> Result<FileInfo, DownloadError> {
+pub async fn resolve_file_info(
+    client: &Client,
+    url: &str,
+    cookies: &str,
+    referrer: &str,
+) -> Result<FileInfo, DownloadError> {
     let mut last_err = None;
     for attempt in 0..PROBE_MAX_RETRIES {
         match resolve_file_info_once(client, url, cookies, referrer).await {
@@ -293,9 +300,7 @@ pub async fn resolve_file_info(client: &Client, url: &str, cookies: &str, referr
             }
         }
     }
-    Err(last_err.unwrap_or_else(|| {
-        DownloadError::Other("probe failed after retries".to_string())
-    }))
+    Err(last_err.unwrap_or_else(|| DownloadError::Other("probe failed after retries".to_string())))
 }
 
 /// Walk the std::error::Error source chain and return a " → cause1 → cause2" suffix string.
@@ -310,7 +315,12 @@ fn format_error_chain(mut src: Option<&dyn StdError>) -> String {
     s
 }
 
-async fn resolve_file_info_once(client: &Client, url: &str, cookies: &str, referrer: &str) -> Result<FileInfo, DownloadError> {
+async fn resolve_file_info_once(
+    client: &Client,
+    url: &str,
+    cookies: &str,
+    referrer: &str,
+) -> Result<FileInfo, DownloadError> {
     // --- Concurrent HEAD + GET probe ----------------------------------------
     // Fire both HEAD and GET Range:0-0 in parallel.  HEAD is faster when it
     // works, but many servers/CDNs omit Content-Disposition on HEAD.  By
@@ -353,7 +363,9 @@ async fn resolve_file_info_once(client: &Client, url: &str, cookies: &str, refer
         Ok(r) => {
             rinf::debug_print!(
                 "[resolve] HEAD failed: status={}, url={}, cookies_len={}",
-                r.status(), r.url(), cookies.len()
+                r.status(),
+                r.url(),
+                cookies.len()
             );
             None
         }
@@ -380,7 +392,9 @@ async fn resolve_file_info_once(client: &Client, url: &str, cookies: &str, refer
         Ok(r) => {
             rinf::debug_print!(
                 "[resolve] GET failed: status={}, url={}, cookies_len={}",
-                r.status(), r.url(), cookies.len()
+                r.status(),
+                r.url(),
+                cookies.len()
             );
             None
         }
@@ -421,9 +435,7 @@ async fn resolve_file_info_once(client: &Client, url: &str, cookies: &str, refer
         // Prefer GET's final URL (may differ after redirect)
         final_url = get_url.clone();
         // If GET gave us 206, copy Content-Range for accurate file size
-        if *got_206
-            && let Some(cr) = get_headers.get("content-range")
-        {
+        if *got_206 && let Some(cr) = get_headers.get("content-range") {
             headers.insert(
                 reqwest::header::HeaderName::from_static("content-range"),
                 cr.clone(),
@@ -464,7 +476,11 @@ async fn resolve_file_info_once(client: &Client, url: &str, cookies: &str, refer
     let file_name = extract_filename(&headers, final_url.as_str());
     rinf::debug_print!(
         "[resolve] url={} → name={}, size={}, range={}, ct={}",
-        url, file_name, total_bytes, supports_range, content_type
+        url,
+        file_name,
+        total_bytes,
+        supports_range,
+        content_type
     );
 
     Ok(FileInfo {
@@ -498,9 +514,7 @@ fn mime_to_ext(content_type: &str) -> Option<&'static str> {
         "application/octet-stream" => None, // generic binary
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => Some("xlsx"),
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => Some("docx"),
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation" => {
-            Some("pptx")
-        }
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation" => Some("pptx"),
         "application/msword" => Some("doc"),
         "application/vnd.ms-excel" => Some("xls"),
         "application/vnd.ms-powerpoint" => Some("ppt"),
@@ -675,7 +689,9 @@ pub async fn dedup_filename(dir: &Path, name: &str) -> String {
     let candidate = dir.join(name);
     let temp_candidate = PathBuf::from(format!("{}{}", candidate.display(), TEMP_EXT));
     if !tokio::fs::try_exists(&candidate).await.unwrap_or(false)
-        && !tokio::fs::try_exists(&temp_candidate).await.unwrap_or(false)
+        && !tokio::fs::try_exists(&temp_candidate)
+            .await
+            .unwrap_or(false)
     {
         return name.to_string();
     }
@@ -706,9 +722,7 @@ pub async fn dedup_filename(dir: &Path, name: &str) -> String {
         };
         let temp_name = format!("{}{}", new_name, TEMP_EXT);
         // Check both the final and in-progress file names.
-        if !existing.contains(OsStr::new(&new_name))
-            && !existing.contains(OsStr::new(&temp_name))
-        {
+        if !existing.contains(OsStr::new(&new_name)) && !existing.contains(OsStr::new(&temp_name)) {
             return new_name;
         }
     }
@@ -729,6 +743,11 @@ pub const BUF_WRITER_CAPACITY: usize = 256 * 1024;
 /// SQLite Mutex contention (reduces writes from ~80/s to ~5/s with 16 segments).
 pub const DB_SAVE_INTERVAL_SECS: u64 = 3;
 
+/// 单个 chunk 的读取超时（stall detection）。如果超过此时间没有收到任何数据，
+/// 视为连接停滞，返回错误触发 retry 或让用户感知到真实状态。
+/// 与 segment_coordinator 中的同名常量保持一致。
+const CHUNK_STALL_TIMEOUT: Duration = Duration::from_secs(10);
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -739,7 +758,11 @@ pub async fn run_download(params: DownloadParams) {
 
     match result {
         Ok(total) => {
-            rinf::debug_print!("[download] task {} completed, total={} bytes", task_id_log, total);
+            rinf::debug_print!(
+                "[download] task {} completed, total={} bytes",
+                task_id_log,
+                total
+            );
             let _ = params.db.update_task_status(&params.task_id, 3, "").await;
             let _ = params
                 .progress_tx
@@ -770,7 +793,11 @@ pub async fn run_download(params: DownloadParams) {
                 Ok(Some(t)) => {
                     // checksum 失败 → 字节已全部下载，进度应显示 100%。
                     // 其他错误 → 保留 DB 中实际已下载量，防止 UI 回跳至 0%。
-                    let dl = if is_checksum_fail { t.total_bytes } else { t.downloaded_bytes };
+                    let dl = if is_checksum_fail {
+                        t.total_bytes
+                    } else {
+                        t.downloaded_bytes
+                    };
                     (dl, t.total_bytes)
                 }
                 other => {
@@ -805,7 +832,10 @@ pub async fn run_download(params: DownloadParams) {
 /// Returns `Ok(())` if the digest matches, or `Err(DownloadError::ChecksumMismatch)` if not.
 async fn verify_checksum(path: &Path, spec: &str) -> Result<(), DownloadError> {
     let sep = spec.find('=').ok_or_else(|| {
-        DownloadError::Other(format!("invalid checksum format (expected algo=hash): {}", spec))
+        DownloadError::Other(format!(
+            "invalid checksum format (expected algo=hash): {}",
+            spec
+        ))
     })?;
     let algo_raw = spec[..sep].trim().to_lowercase();
     let expected_hex = spec[sep + 1..].trim().to_lowercase();
@@ -827,65 +857,64 @@ async fn verify_checksum(path: &Path, spec: &str) -> Result<(), DownloadError> {
     let path_owned = path.to_path_buf();
     let algo_owned = algo.to_string();
 
-    let actual_hex =
-        tokio::task::spawn_blocking(move || -> Result<String, DownloadError> {
-            use std::io::Read;
-            let mut file = std::fs::File::open(&path_owned)?;
-            let mut buf = vec![0u8; 1024 * 1024]; // 1 MiB read buffer
-            match algo_owned.as_str() {
-                "sha256" => {
-                    use sha2::Digest;
-                    let mut h = sha2::Sha256::new();
-                    loop {
-                        let n = file.read(&mut buf)?;
-                        if n == 0 {
-                            break;
-                        }
-                        h.update(&buf[..n]);
+    let actual_hex = tokio::task::spawn_blocking(move || -> Result<String, DownloadError> {
+        use std::io::Read;
+        let mut file = std::fs::File::open(&path_owned)?;
+        let mut buf = vec![0u8; 1024 * 1024]; // 1 MiB read buffer
+        match algo_owned.as_str() {
+            "sha256" => {
+                use sha2::Digest;
+                let mut h = sha2::Sha256::new();
+                loop {
+                    let n = file.read(&mut buf)?;
+                    if n == 0 {
+                        break;
                     }
-                    Ok(hex::encode(h.finalize()))
+                    h.update(&buf[..n]);
                 }
-                "sha512" => {
-                    use sha2::Digest;
-                    let mut h = sha2::Sha512::new();
-                    loop {
-                        let n = file.read(&mut buf)?;
-                        if n == 0 {
-                            break;
-                        }
-                        h.update(&buf[..n]);
-                    }
-                    Ok(hex::encode(h.finalize()))
-                }
-                "sha1" => {
-                    use sha1::Digest;
-                    let mut h = sha1::Sha1::new();
-                    loop {
-                        let n = file.read(&mut buf)?;
-                        if n == 0 {
-                            break;
-                        }
-                        h.update(&buf[..n]);
-                    }
-                    Ok(hex::encode(h.finalize()))
-                }
-                "md5" => {
-                    use md5::Digest;
-                    let mut h = md5::Md5::new();
-                    loop {
-                        let n = file.read(&mut buf)?;
-                        if n == 0 {
-                            break;
-                        }
-                        h.update(&buf[..n]);
-                    }
-                    Ok(hex::encode(h.finalize()))
-                }
-                _ => Err(DownloadError::Other("unreachable algo branch".to_string())),
+                Ok(hex::encode(h.finalize()))
             }
-        })
-        .await
-        .map_err(|e| DownloadError::Other(format!("checksum thread panicked: {}", e)))??;
+            "sha512" => {
+                use sha2::Digest;
+                let mut h = sha2::Sha512::new();
+                loop {
+                    let n = file.read(&mut buf)?;
+                    if n == 0 {
+                        break;
+                    }
+                    h.update(&buf[..n]);
+                }
+                Ok(hex::encode(h.finalize()))
+            }
+            "sha1" => {
+                use sha1::Digest;
+                let mut h = sha1::Sha1::new();
+                loop {
+                    let n = file.read(&mut buf)?;
+                    if n == 0 {
+                        break;
+                    }
+                    h.update(&buf[..n]);
+                }
+                Ok(hex::encode(h.finalize()))
+            }
+            "md5" => {
+                use md5::Digest;
+                let mut h = md5::Md5::new();
+                loop {
+                    let n = file.read(&mut buf)?;
+                    if n == 0 {
+                        break;
+                    }
+                    h.update(&buf[..n]);
+                }
+                Ok(hex::encode(h.finalize()))
+            }
+            _ => Err(DownloadError::Other("unreachable algo branch".to_string())),
+        }
+    })
+    .await
+    .map_err(|e| DownloadError::Other(format!("checksum thread panicked: {}", e)))??;
 
     if actual_hex != expected_hex {
         return Err(DownloadError::ChecksumMismatch(format!(
@@ -900,7 +929,7 @@ async fn verify_checksum(path: &Path, spec: &str) -> Result<(), DownloadError> {
 /// Updates `tasks.segments` in DB so that subsequent resumes skip the probe.
 async fn compute_segments_with_advisor(p: &DownloadParams, info: &FileInfo) -> i32 {
     use crate::segment_advisor::{
-        advise_static, advise_with_bandwidth, probe_bandwidth, AdvisorInput,
+        AdvisorInput, advise_static, advise_with_bandwidth, probe_bandwidth,
     };
     let advisor_input = AdvisorInput {
         total_bytes: info.total_bytes,
@@ -932,7 +961,15 @@ async fn compute_segments_with_advisor(p: &DownloadParams, info: &FileInfo) -> i
             );
             static_advice.segments
         } else {
-            match probe_bandwidth(&p.client, &p.url, info.supports_range, &p.cancel_token, &p.cookies).await {
+            match probe_bandwidth(
+                &p.client,
+                &p.url,
+                info.supports_range,
+                &p.cancel_token,
+                &p.cookies,
+            )
+            .await
+            {
                 Some(bw) => {
                     let bw_advice = advise_with_bandwidth(&advisor_input, bw);
                     rinf::debug_print!(
@@ -962,7 +999,8 @@ async fn compute_segments_with_advisor(p: &DownloadParams, info: &FileInfo) -> i
     if let Err(e) = p.db.update_task_segments(&p.task_id, result).await {
         rinf::debug_print!(
             "[download] task {} failed to persist segment count to DB: {}",
-            p.task_id, e
+            p.task_id,
+            e
         );
     }
 
@@ -1002,7 +1040,9 @@ async fn run_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
         };
         rinf::debug_print!(
             "[download] task {} using hint: name={}, size={} (probe skipped)",
-            p.task_id, name, p.hint_file_size
+            p.task_id,
+            name,
+            p.hint_file_size
         );
         FileInfo {
             file_name: name,
@@ -1079,8 +1119,7 @@ async fn run_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
     // For resume tasks, send persisted downloaded bytes as baseline so speed
     // smoothing doesn't treat resumed bytes as a fresh in-interval delta.
     let initial_downloaded = if p.is_resume {
-        p.db
-            .load_task_by_id(&p.task_id)
+        p.db.load_task_by_id(&p.task_id)
             .await
             .ok()
             .flatten()
@@ -1118,7 +1157,8 @@ async fn run_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
                 let n = existing.len() as i32;
                 rinf::debug_print!(
                     "[download] task {} resume: reusing {} existing segment(s) from DB",
-                    p.task_id, n
+                    p.task_id,
+                    n
                 );
                 n
             } else {
@@ -1140,7 +1180,11 @@ async fn run_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
     rinf::debug_print!(
         "[download] task {} mode={}, segments={}, temp={}, dest={}",
         p.task_id,
-        if use_segments { "multi-segment" } else { "single" },
+        if use_segments {
+            "multi-segment"
+        } else {
+            "single"
+        },
         segments,
         temp_path.display(),
         dest_path.display()
@@ -1211,7 +1255,8 @@ async fn run_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
             if (meta.len() as i64) != info.total_bytes {
                 return Err(DownloadError::Other(format!(
                     "size mismatch: expected {} bytes, got {} bytes",
-                    info.total_bytes, meta.len()
+                    info.total_bytes,
+                    meta.len()
                 )));
             }
         }
@@ -1228,7 +1273,8 @@ async fn run_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
             Err(e) => {
                 rinf::debug_print!(
                     "[download] task {} warning: cannot read temp file size: {}",
-                    p.task_id, e
+                    p.task_id,
+                    e
                 );
                 0
             }
@@ -1239,7 +1285,8 @@ async fn run_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
     if !p.checksum.is_empty() {
         rinf::debug_print!(
             "[download] task {} verifying checksum: {}",
-            p.task_id, p.checksum
+            p.task_id,
+            p.checksum
         );
         verify_checksum(&temp_path, &p.checksum).await?;
         rinf::debug_print!("[download] task {} checksum ok", p.task_id);
@@ -1247,14 +1294,16 @@ async fn run_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
 
     // All data verified — rename temp file to final destination.
     // This is the atomic moment the file "appears" as complete.
-    tokio::fs::rename(&temp_path, &dest_path).await.map_err(|e| {
-        DownloadError::Other(format!(
-            "failed to rename {} → {}: {}",
-            temp_path.display(),
-            dest_path.display(),
-            e
-        ))
-    })?;
+    tokio::fs::rename(&temp_path, &dest_path)
+        .await
+        .map_err(|e| {
+            DownloadError::Other(format!(
+                "failed to rename {} → {}: {}",
+                temp_path.display(),
+                dest_path.display(),
+                e
+            ))
+        })?;
 
     rinf::debug_print!(
         "[download] task {} renamed {} → {}",
@@ -1297,7 +1346,8 @@ async fn download_single(
 
     // Resume only if server supports Range and we have a partial file that is
     // smaller than total (or total is unknown)
-    let resume = supports_range && existing_len > 0 && (total_bytes == 0 || existing_len < total_bytes);
+    let resume =
+        supports_range && existing_len > 0 && (total_bytes == 0 || existing_len < total_bytes);
 
     let mut downloaded: i64;
     let mut file;
@@ -1317,10 +1367,7 @@ async fn download_single(
         file = tokio::io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, raw_file);
     } else {
         downloaded = 0;
-        file = tokio::io::BufWriter::with_capacity(
-            BUF_WRITER_CAPACITY,
-            File::create(dest).await?,
-        );
+        file = tokio::io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, File::create(dest).await?);
         // Reset DB progress so the UI doesn't show stale values
         let _ = db.update_task_progress(task_id, 0).await;
     }
@@ -1333,9 +1380,14 @@ async fn download_single(
     let resp_name = extract_filename(resp.headers(), resp.url().as_str());
     if !resp_name.is_empty()
         && resp_name != "download"
-        && resp.headers().contains_key(reqwest::header::CONTENT_DISPOSITION)
+        && resp
+            .headers()
+            .contains_key(reqwest::header::CONTENT_DISPOSITION)
     {
-        rinf::debug_print!("[download-single] got better name from response: {}", resp_name);
+        rinf::debug_print!(
+            "[download-single] got better name from response: {}",
+            resp_name
+        );
         let _ = progress_tx
             .send(ProgressUpdate {
                 task_id: task_id.to_string(),
@@ -1366,7 +1418,23 @@ async fn download_single(
                 let _ = db.update_task_progress(task_id, downloaded).await;
                 return Err(DownloadError::Cancelled);
             }
-            chunk = stream.next() => {
+            result = tokio::time::timeout(CHUNK_STALL_TIMEOUT, stream.next()) => {
+                // Unwrap the timeout layer first.  If no chunk arrived within
+                // CHUNK_STALL_TIMEOUT the TCP connection is likely dead — flush
+                // partial progress and bubble up an error.  For single-thread
+                // downloads the task will enter error state; the user can resume
+                // and a fresh Range request will pick up from saved progress.
+                let chunk = match result {
+                    Ok(c) => c,
+                    Err(_) => {
+                        file.flush().await?;
+                        let _ = db.update_task_progress(task_id, downloaded).await;
+                        return Err(DownloadError::Other(format!(
+                            "download stalled: no data received for {}s",
+                            CHUNK_STALL_TIMEOUT.as_secs()
+                        )));
+                    }
+                };
                 match chunk {
                     Some(Ok(bytes)) => {
                         // --- Speed limiter: write in sub-chunks as tokens allow ---
@@ -1458,7 +1526,9 @@ async fn download_multi_segment(
             if last.end_byte != expected_end {
                 rinf::debug_print!(
                     "[download] task {} total_bytes changed: segment end_byte={}, expected={}. Discarding old segments.",
-                    task_id, last.end_byte, expected_end
+                    task_id,
+                    last.end_byte,
+                    expected_end
                 );
                 db.delete_segments(task_id).await?;
             }
@@ -1490,9 +1560,9 @@ async fn download_multi_segment(
 #[cfg(test)]
 mod tests {
     use super::{
+        PROBE_MAX_RETRIES, PROBE_RETRY_BASE_DELAY, PROBE_TIMEOUT, TEMP_EXT, dedup_filename,
         extract_filename, extract_from_content_disposition, extract_from_url, mime_to_ext,
-        sanitize_filename, urlencoding_decode, dedup_filename,
-        PROBE_MAX_RETRIES, PROBE_RETRY_BASE_DELAY, PROBE_TIMEOUT, TEMP_EXT,
+        sanitize_filename, urlencoding_decode,
     };
     use std::time::Duration;
 
@@ -1507,7 +1577,10 @@ mod tests {
 
     #[test]
     fn sanitize_replaces_all_special_chars() {
-        assert_eq!(sanitize_filename(r#"a<b>c:d"e/f\g|h?i*j"#), "a_b_c_d_e_f_g_h_i_j");
+        assert_eq!(
+            sanitize_filename(r#"a<b>c:d"e/f\g|h?i*j"#),
+            "a_b_c_d_e_f_g_h_i_j"
+        );
     }
 
     #[test]
@@ -1560,7 +1633,10 @@ mod tests {
     #[test]
     fn extract_from_url_trailing_slash_returns_none() {
         let name = extract_from_url("https://example.com/path/");
-        assert!(name.is_none(), "trailing slash should return None, got: {name:?}");
+        assert!(
+            name.is_none(),
+            "trailing slash should return None, got: {name:?}"
+        );
     }
 
     #[test]
@@ -1582,12 +1658,18 @@ mod tests {
 
     #[test]
     fn urlencoding_decode_basic() {
-        assert_eq!(urlencoding_decode("hello%20world").unwrap_or_default(), "hello world");
+        assert_eq!(
+            urlencoding_decode("hello%20world").unwrap_or_default(),
+            "hello world"
+        );
     }
 
     #[test]
     fn urlencoding_decode_plus_to_space() {
-        assert_eq!(urlencoding_decode("hello+world").unwrap_or_default(), "hello world");
+        assert_eq!(
+            urlencoding_decode("hello+world").unwrap_or_default(),
+            "hello world"
+        );
     }
 
     #[test]
@@ -1640,7 +1722,7 @@ mod tests {
     #[test]
     fn content_disposition_filename_star_overrides_plain() {
         let headers = make_headers_with_cd(
-            "attachment; filename=\"fallback.txt\"; filename*=UTF-8''preferred.txt"
+            "attachment; filename=\"fallback.txt\"; filename*=UTF-8''preferred.txt",
         );
         let name = extract_from_content_disposition(&headers);
         // filename* should take precedence
@@ -1733,10 +1815,11 @@ mod tests {
 
         // Worst case: 2 attempts × 15s (concurrent HEAD+GET) + 1s delay = 31s
         let worst_per_attempt = PROBE_TIMEOUT; // HEAD+GET concurrent
-        let worst_total = worst_per_attempt * PROBE_MAX_RETRIES
-            + PROBE_RETRY_BASE_DELAY;
-        assert!(worst_total <= Duration::from_secs(60),
-            "worst-case probe time {worst_total:?} should be <= 60s after fix");
+        let worst_total = worst_per_attempt * PROBE_MAX_RETRIES + PROBE_RETRY_BASE_DELAY;
+        assert!(
+            worst_total <= Duration::from_secs(60),
+            "worst-case probe time {worst_total:?} should be <= 60s after fix"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1752,7 +1835,10 @@ mod tests {
         // Verify the merge condition logic is correct:
         let headers = reqwest::header::HeaderMap::new();
         let has_cd = headers.contains_key(reqwest::header::CONTENT_DISPOSITION);
-        assert!(!has_cd, "empty headers should not have Content-Disposition — GET data will be merged");
+        assert!(
+            !has_cd,
+            "empty headers should not have Content-Disposition — GET data will be merged"
+        );
 
         // With Content-Disposition present, no merge needed
         let mut headers = reqwest::header::HeaderMap::new();
@@ -1760,7 +1846,10 @@ mod tests {
             headers.insert(reqwest::header::CONTENT_DISPOSITION, v);
         }
         let has_cd = headers.contains_key(reqwest::header::CONTENT_DISPOSITION);
-        assert!(has_cd, "Content-Disposition present — no need to merge from GET");
+        assert!(
+            has_cd,
+            "Content-Disposition present — no need to merge from GET"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1786,7 +1875,9 @@ mod tests {
         let dir = std::env::temp_dir().join("fluxdown_test_dedup_conflict");
         let _ = tokio::fs::create_dir_all(&dir).await;
         // Create conflicting file
-        tokio::fs::write(dir.join("test.txt"), b"").await.unwrap_or(());
+        tokio::fs::write(dir.join("test.txt"), b"")
+            .await
+            .unwrap_or(());
 
         let result = dedup_filename(&dir, "test.txt").await;
         assert_eq!(result, "test (1).txt");
@@ -1800,7 +1891,9 @@ mod tests {
         let dir = std::env::temp_dir().join("fluxdown_test_dedup_temp");
         let _ = tokio::fs::create_dir_all(&dir).await;
         // Create a .fdownloading temp file — should also be considered a conflict
-        tokio::fs::write(dir.join(format!("test.txt{TEMP_EXT}")), b"").await.unwrap_or(());
+        tokio::fs::write(dir.join(format!("test.txt{TEMP_EXT}")), b"")
+            .await
+            .unwrap_or(());
 
         let result = dedup_filename(&dir, "test.txt").await;
         assert_eq!(result, "test (1).txt");
@@ -1812,7 +1905,9 @@ mod tests {
     async fn dedup_filename_no_extension() {
         let dir = std::env::temp_dir().join("fluxdown_test_dedup_noext");
         let _ = tokio::fs::create_dir_all(&dir).await;
-        tokio::fs::write(dir.join("README"), b"").await.unwrap_or(());
+        tokio::fs::write(dir.join("README"), b"")
+            .await
+            .unwrap_or(());
 
         let result = dedup_filename(&dir, "README").await;
         assert_eq!(result, "README (1)");
@@ -1858,7 +1953,7 @@ mod tests {
         let value = from_utf8_result.unwrap();
         // The decoded string must contain the Chinese characters.
         assert!(
-            value.contains('\u{4e09}'),   // first char of 三
+            value.contains('\u{4e09}'), // first char of 三
             "decoded header must contain Chinese chars from 三体; got: {value:?}"
         );
         assert!(
@@ -1894,5 +1989,4 @@ mod tests {
             "raw UTF-8 bytes in filename= must not prevent filename*= from being parsed"
         );
     }
-
 }
