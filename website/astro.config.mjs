@@ -36,6 +36,18 @@ export default defineConfig({
         optional: true,
       }),
 
+      // ── 可选：爱发电 Open API 凭证 ──
+      AFDIAN_USER_ID: envField.string({
+        context: "server",
+        access: "secret",
+        optional: true,
+      }),
+      AFDIAN_TOKEN: envField.string({
+        context: "server",
+        access: "secret",
+        optional: true,
+      }),
+
       // ── 可选：SMTP 邮件配置 ──
       SMTP_HOST: envField.string({
         context: "server",

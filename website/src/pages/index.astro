@@ -6,6 +6,7 @@ import HeroSection from "../components/HeroSection";
 import FeaturesSection from "../components/FeaturesSection";
 import ExtensionSection from "../components/ExtensionSection";
 import DownloadSection from "../components/DownloadSection";
+import SponsorSection from "../components/SponsorSection";
 import Footer from "../components/Footer";
 ---
 
@@ -32,6 +33,12 @@ import Footer from "../components/Footer";
       <div class="absolute left-1/2 -translate-x-1/2 -top-12 w-64 h-24 bg-brand-blue/[0.04] blur-3xl rounded-full pointer-events-none"></div>
     </div>
     <DownloadSection client:visible />
+    <!-- Section divider: Download → Sponsor -->
+    <div class="relative h-px w-full">
+      <div class="absolute inset-0 bg-gradient-to-r from-transparent via-pink-500/25 to-transparent"></div>
+      <div class="absolute left-1/2 -translate-x-1/2 -top-12 w-64 h-24 bg-pink-500/[0.04] blur-3xl rounded-full pointer-events-none"></div>
+    </div>
+    <SponsorSection client:visible />
   </main>
   <Footer client:load />
 </Layout>

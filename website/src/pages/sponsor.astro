@@ -1,0 +1,19 @@
+---
+import Layout from "../layouts/Layout.astro";
+import { FloatingNavbar } from "../components/ui/floating-navbar";
+import AnnouncementBar from "../components/AnnouncementBar";
+import SponsorSection from "../components/SponsorSection";
+import Footer from "../components/Footer";
+---
+
+<Layout
+  title="Sponsor FluxDown - Support Open Source Development"
+  description="Support FluxDown development on Afdian. Your sponsorship fuels open source innovation and keeps the project alive."
+>
+  <AnnouncementBar client:load />
+  <FloatingNavbar client:load />
+  <main>
+    <SponsorSection client:load fullPage />
+  </main>
+  <Footer client:load />
+</Layout>

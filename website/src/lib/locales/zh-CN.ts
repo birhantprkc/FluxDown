@@ -54,12 +54,16 @@ const zhCN: Messages = {
 
   // Nav
   "nav.features": "功能",
-  "nav.extension": "浏览器扩展",
   "nav.download": "下载",
+  "nav.resources": "资源",
+  "nav.extension": "浏览器扩展",
+  "nav.themeBuilder": "主题构建器",
+  "nav.changelog": "更新日志",
+  "nav.faq": "常见问题",
+  "nav.community": "社区",
   "nav.announcements": "公告",
   "nav.feedback": "反馈",
-  "nav.changelog": "更新日志",
-  "nav.themeBuilder": "主题构建器",
+  "nav.sponsor": "赞助",
 
   // Theme Builder
   "tb.badge": "主题构建器",
@@ -496,6 +500,17 @@ const zhCN: Messages = {
   "terms.s10.desc":
     "如果您对本服务条款有任何疑问，请通过我们网站的反馈页面与我们联系。",
 
+  // Sponsor (plans are fetched dynamically from Afdian API)
+  "sponsor.badge": "开源支持",
+  "sponsor.title": "赞助 ",
+  "sponsor.titleHighlight": "FluxDown",
+  "sponsor.subtitle":
+    "FluxDown 是完全免费的开源项目。您的赞助将持续推动开发进程，让项目保持活力。",
+  "sponsor.cta": "前往爱发电赞助",
+  "sponsor.ctaHint": "通过爱发电平台安全支付，支持微信 / 支付宝",
+  "sponsor.sponsors": "感谢赞助者",
+  "sponsor.beFirst": "成为第一位赞助者！",
+
   // Footer
   "footer.desc":
     "基于 Rust 构建的下载管理器，支持 HTTP/FTP/BT 多协议加速、智能分段、浏览器无缝集成。极速可靠，零广告，永久免费。",
@@ -510,6 +525,7 @@ const zhCN: Messages = {
   "footer.feedback": "反馈建议",
   "footer.changelog": "更新日志",
   "footer.themeBuilder": "主题构建器",
+  "footer.sponsor": "赞助支持",
   "footer.legal": "法律",
   "footer.privacy": "隐私政策",
   "footer.terms": "服务条款",

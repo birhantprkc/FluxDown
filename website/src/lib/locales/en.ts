@@ -63,6 +63,10 @@ const en = {
   "nav.feedback": "Feedback",
   "nav.changelog": "Changelog",
   "nav.themeBuilder": "Theme Builder",
+  "nav.resources": "Resources",
+  "nav.community": "Community",
+  "nav.sponsor": "Sponsor",
+  "nav.faq": "FAQ",
 
   // Theme Builder
   "tb.badge": "Theme Builder",
@@ -535,8 +539,21 @@ const en = {
   "footer.legal": "Legal",
   "footer.privacy": "Privacy",
   "footer.terms": "Terms",
+  "footer.sponsor": "Sponsor",
   "footer.copyright": "© {year} FluxDown. All rights reserved.",
   "footer.builtWith": "Astro + React + Rust",
+
+  // Sponsor (Afdian) — plans are fetched dynamically from API
+  "sponsor.badge": "Open Source",
+  "sponsor.title": "Support ",
+  "sponsor.titleHighlight": "FluxDown",
+  "sponsor.subtitle":
+    "FluxDown is free and open source forever. Your sponsorship fuels continuous development and keeps the project alive.",
+  "sponsor.cta": "Sponsor on Afdian",
+  "sponsor.ctaHint":
+    "Redirects to afdian.com — a trusted Chinese patronage platform",
+  "sponsor.sponsors": "Our Sponsors",
+  "sponsor.beFirst": "Become the first sponsor!",
 } as const;
 
 export type Messages = { [K in keyof typeof en]: string };

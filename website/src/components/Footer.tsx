@@ -87,6 +87,7 @@ export default function Footer() {
                 { href: "/faq", label: t("footer.faq") },
                 { href: "/feedback", label: t("footer.feedback") },
                 { href: "/feedback", label: t("footer.contact") },
+                { href: "/sponsor", label: t("footer.sponsor") },
               ].map(({ href, label }, i) => (
                 <li key={`${href}-${i}`}>
                   <a
