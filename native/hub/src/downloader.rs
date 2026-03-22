@@ -177,15 +177,28 @@ pub fn build_client(
         //  3. Some servers advertise h2 via ALPN but have buggy HTTP/2
         //     implementations that close connections mid-response.
         .http1_only()
+        // TCP tuning — disable Nagle's algorithm to eliminate up to 200 ms
+        // latency on small writes (Range request headers, TLS handshake
+        // messages).  All high-performance download managers (IDM, aria2)
+        // set this.  Safe for bulk transfers because BufWriter already
+        // coalesces writes into 256 KB chunks before hitting the socket.
+        .tcp_nodelay(true)
         // Redirects — follow up to 30 hops like Chrome
         .redirect(reqwest::redirect::Policy::limited(30))
-        // Timeouts
-        .connect_timeout(Duration::from_secs(30))
+        // Timeouts — 15 s is sufficient for initial TCP+TLS handshake;
+        // the stall detector (CHUNK_STALL_TIMEOUT) handles mid-transfer
+        // hangs separately.  Shorter timeout lets failed segments retry
+        // faster instead of blocking a worker for 30 s.
+        .connect_timeout(Duration::from_secs(15))
         // No global timeout — downloads can be very long
-        // Connection pool — close idle connections after 90s to avoid
-        // stale connections, and keep at most 8 idle per host.
-        .pool_idle_timeout(Duration::from_secs(30))
-        .pool_max_idle_per_host(4)
+        // Connection pool — keep enough idle connections to cover all
+        // segments of a typical multi-segment download.  16 matches
+        // MAX_SEGMENTS on a 4-core machine (cpu_cores * 4) and avoids
+        // expensive TCP+TLS re-handshakes when workers finish one segment
+        // and immediately start the next.  90 s idle timeout tolerates
+        // brief pauses / UI interaction without discarding warm connections.
+        .pool_idle_timeout(Duration::from_secs(90))
+        .pool_max_idle_per_host(16)
         // Cookies — needed for session-based downloads (Google Drive, etc.).
         // reqwest follows RFC 6265: cookies are scoped to their domain.
         .cookie_store(true)

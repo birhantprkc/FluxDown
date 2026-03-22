@@ -1,17 +1,21 @@
 //! Global token-bucket speed limiter shared across all download tasks.
 //!
-//! The limiter uses a simple token-bucket algorithm:
-//! - Tokens are replenished at `limit` bytes/sec.
-//! - Each download chunk must acquire tokens before proceeding.
+//! The limiter uses a token-bucket algorithm with **time-based refill**:
+//! - A background task measures *actual* wall-clock elapsed time between ticks
+//!   and adds tokens proportionally, eliminating drift from `tokio::time::interval`.
+//! - Tokens are capped at 250 ms worth of the configured limit, preventing
+//!   excessive bursts after idle periods while tolerating normal tick jitter.
+//! - Refill uses a CAS loop (no `fetch_add` + `store` race window).
 //! - When `limit == 0`, the limiter is disabled (unlimited speed).
 //!
 //! The limiter is designed to be cheaply cloneable (`Arc` inside) so every
 //! download segment can hold a handle without additional allocation.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::Notify;
+use tokio::time::Instant;
 
 /// Shared, cheaply-cloneable speed limiter.
 #[derive(Clone)]
@@ -31,8 +35,15 @@ struct Inner {
     refill_wake: Arc<Notify>,
 }
 
-/// Refill interval — 50 ms gives smooth throughput without too many wake-ups.
+/// Nominal refill interval — 50 ms gives smooth throughput without too many
+/// wake-ups.  The *actual* refill amount is computed from wall-clock elapsed
+/// time, so this only controls how often the task wakes.
 const REFILL_INTERVAL_MS: u64 = 50;
+
+/// Token bucket capacity expressed as a fraction of the per-second limit.
+/// 250 ms worth of tokens (limit / 4) keeps bursts small while absorbing
+/// 4–5 ticks of jitter without losing any tokens.
+const CAP_DURATION_MS: u64 = 250;
 
 impl SpeedLimiter {
     /// Create a new limiter with the given initial limit (bytes/sec).
@@ -113,8 +124,9 @@ impl SpeedLimiter {
         tokio::spawn(async move {
             let mut interval =
                 tokio::time::interval(std::time::Duration::from_millis(REFILL_INTERVAL_MS));
-            // The first tick completes immediately — skip it.
+            // The first tick completes immediately — skip it and record baseline.
             interval.tick().await;
+            let mut last_refill = Instant::now();
 
             loop {
                 interval.tick().await;
@@ -141,18 +153,56 @@ impl SpeedLimiter {
                         () = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
                         () = wake => {}
                     }
+                    // Reset baseline so the first limited tick doesn't get a
+                    // huge elapsed value.
+                    last_refill = Instant::now();
                     continue;
                 }
 
-                // Add tokens proportional to (limit * interval).
-                let refill = limit * REFILL_INTERVAL_MS / 1000;
-                // Cap at 2× per-tick amount to prevent burst accumulation after
-                // a period of inactivity.
-                let cap = refill * 2;
-                let prev = inner.tokens.fetch_add(refill, Ordering::AcqRel);
-                let new_val = prev + refill;
-                if new_val > cap {
-                    inner.tokens.store(cap, Ordering::Release);
+                // ── Time-based refill ───────────────────────────────────
+                // Measure actual wall-clock time since last refill to
+                // compensate for interval jitter / missed-tick bursts.
+                let now = Instant::now();
+                let elapsed_us = (now - last_refill).as_micros() as u64;
+                last_refill = now;
+
+                // refill = limit * elapsed_us / 1_000_000
+                // Use u128 intermediate to avoid overflow for very large limits.
+                let refill = ((limit as u128) * (elapsed_us as u128) / 1_000_000u128) as u64;
+
+                if refill == 0 {
+                    // Extremely low limit + short interval — skip this tick;
+                    // tokens will accumulate on the next one with larger elapsed.
+                    continue;
+                }
+
+                // Cap: 250 ms worth of the current limit.  For very low limits
+                // ensure at least 2× nominal-tick amount so tokens aren't
+                // perpetually capped to zero.
+                let nominal_tick = limit * REFILL_INTERVAL_MS / 1000;
+                let cap = (limit * CAP_DURATION_MS / 1000)
+                    .max(nominal_tick * 2)
+                    .max(1);
+
+                // ── Atomic CAS refill ───────────────────────────────────
+                // Add `refill` tokens and clamp to `cap` in a single atomic
+                // step, eliminating the fetch_add + store race window.
+                loop {
+                    let current = inner.tokens.load(Ordering::Acquire);
+                    let new_val = current.saturating_add(refill).min(cap);
+                    if new_val == current {
+                        // Nothing to change (already at or above cap).
+                        break;
+                    }
+                    match inner.tokens.compare_exchange_weak(
+                        current,
+                        new_val,
+                        Ordering::AcqRel,
+                        Ordering::Relaxed,
+                    ) {
+                        Ok(_) => break,
+                        Err(_) => continue, // contention — retry
+                    }
                 }
 
                 inner.notify.notify_waiters();
@@ -176,7 +226,10 @@ mod tests {
         limiter.spawn_refill_task();
 
         let got = limiter.consume(1_000_000).await;
-        assert_eq!(got, 1_000_000, "unlimited limiter should return full requested amount");
+        assert_eq!(
+            got, 1_000_000,
+            "unlimited limiter should return full requested amount"
+        );
     }
 
     #[tokio::test]
@@ -197,7 +250,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         let got = limiter.consume(100_000).await; // request 100 KB
-        // Should get at most a few hundred bytes (10KB/s * 0.1s = ~1KB available)
+        // Should get at most ~1 KB (10KB/s × 0.1s), capped to 250ms bucket.
         assert!(got > 0, "should get some tokens");
         assert!(got < 100_000, "should not get full request under limit");
     }
@@ -237,11 +290,46 @@ mod tests {
         }
 
         let elapsed = start.elapsed();
-        // Should take roughly 0.3-1.5s (allowing wide margin for CI variance)
-        assert!(elapsed > Duration::from_millis(200),
-            "consumed {target} bytes in {elapsed:?} — too fast for {limit_bps} bps limit");
-        assert!(elapsed < Duration::from_secs(3),
-            "consumed {target} bytes in {elapsed:?} — too slow, possible deadlock");
+        // Should take roughly 0.3–1.5s (allowing wide margin for CI variance)
+        assert!(
+            elapsed > Duration::from_millis(200),
+            "consumed {target} bytes in {elapsed:?} — too fast for {limit_bps} bps limit"
+        );
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "consumed {target} bytes in {elapsed:?} — too slow, possible deadlock"
+        );
+    }
+
+    /// Validates that throughput is within ±15 % of the configured limit at
+    /// higher speeds (the scenario reported as inaccurate).
+    #[tokio::test]
+    async fn high_speed_accuracy() {
+        let limit_bps: u64 = 5_000_000; // 5 MB/s
+        let limiter = SpeedLimiter::new(limit_bps);
+        limiter.spawn_refill_task();
+
+        let duration = Duration::from_secs(2);
+        let start = Instant::now();
+        let mut total = 0u64;
+
+        while start.elapsed() < duration {
+            let got = limiter.consume(65_536).await;
+            total += got;
+        }
+
+        let elapsed = start.elapsed().as_secs_f64();
+        let actual_bps = total as f64 / elapsed;
+        let ratio = actual_bps / limit_bps as f64;
+
+        assert!(
+            ratio > 0.85,
+            "throughput {actual_bps:.0} B/s is too low vs limit {limit_bps} B/s (ratio {ratio:.3})"
+        );
+        assert!(
+            ratio < 1.15,
+            "throughput {actual_bps:.0} B/s exceeds limit {limit_bps} B/s (ratio {ratio:.3})"
+        );
     }
 
     /// Tests that the speed limiter doesn't starve when multiple consumers
@@ -277,9 +365,15 @@ mod tests {
             assert!(*t > 0, "consumer {i} got 0 bytes — starvation detected");
         }
 
-        // Total across all consumers should be approximately 100KB (1 second at 100KB/s)
+        // Total across all consumers should be approximately 100 KB (1 s at 100 KB/s)
         let grand_total: u64 = totals.iter().sum();
-        assert!(grand_total > 50_000, "total {grand_total} too low for 100KB/s limit over 1s");
-        assert!(grand_total < 300_000, "total {grand_total} exceeds limit — limiter broken");
+        assert!(
+            grand_total > 50_000,
+            "total {grand_total} too low for 100KB/s limit over 1s"
+        );
+        assert!(
+            grand_total < 200_000,
+            "total {grand_total} exceeds limit — limiter broken"
+        );
     }
 }

@@ -25,12 +25,17 @@ const MIN_SEGMENTS: i32 = 1;
 /// Absolute upper bound — caps runaway calculations.
 const MAX_SEGMENTS: i32 = 64;
 
-/// Each segment should handle at least 2 MB to amortize HTTP/TLS handshake
-/// and TCP slow-start overhead.
-const MIN_BYTES_PER_SEGMENT: i64 = 2 * 1024 * 1024; // 2 MB
+/// Each segment should handle at least 1 MB to amortize HTTP/TLS handshake
+/// and TCP slow-start overhead.  Modern TLS 1.3 completes in ~1 RTT, so the
+/// handshake cost for 1 MB segments is negligible (<1% on most links).
+/// Lowered from 2 MB to allow more segments on 10–20 MB files, matching
+/// IDM's aggressive segmentation behaviour.
+const MIN_BYTES_PER_SEGMENT: i64 = 1024 * 1024; // 1 MB
 
 /// Files ≤ this size are always single-segment (no benefit from splitting).
-const SINGLE_SEGMENT_THRESHOLD: i64 = 4 * 1024 * 1024; // 4 MB
+/// Lowered from 4 MB to 2 MB: on broadband connections even 2–4 MB files
+/// benefit from 2 parallel segments (halves the wall-clock time).
+const SINGLE_SEGMENT_THRESHOLD: i64 = 2 * 1024 * 1024; // 2 MB
 
 /// How many bytes to download during the bandwidth probe.
 /// 128 KB 已足以退出 TCP 慢启动（典型 RTT 30-100ms，慢启动 ~5 RTTs 约 50KB），
@@ -133,17 +138,18 @@ pub fn advise_with_bandwidth(input: &AdvisorInput, bandwidth_bps: f64) -> Segmen
     // Scale the static recommendation based on bandwidth.
     //
     // Rationale:
-    // - Very slow links (< 512 KB/s): extra connections help little; limit to
-    //   2–4 segments to reduce overhead.
+    // - Very slow links (< 512 KB/s): multiple connections can bypass
+    //   per-connection server-side throttling — keep at least 50% of the
+    //   static recommendation (was 25%, too conservative).
     // - Medium links (512 KB/s – 5 MB/s): moderate parallelism helps.
     // - Fast links (5 MB/s – 50 MB/s): more segments can saturate the pipe.
     // - Very fast links (> 50 MB/s): full parallelism up to CPU limit.
     let bw_factor = if bandwidth_bps < BW_LOW {
-        0.25 // cap to ~25% of static recommendation
+        0.5 // keep ~50% of static recommendation (raised from 0.25)
     } else if bandwidth_bps < BW_MED {
-        // Linear interpolation between 0.25 and 0.75
+        // Linear interpolation between 0.5 and 0.75
         let t = (bandwidth_bps - BW_LOW) / (BW_MED - BW_LOW);
-        0.25 + t * 0.50
+        0.5 + t * 0.25
     } else if bandwidth_bps < BW_HIGH {
         // Linear interpolation between 0.75 and 1.0
         let t = (bandwidth_bps - BW_MED) / (BW_HIGH - BW_MED);

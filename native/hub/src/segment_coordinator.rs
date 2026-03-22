@@ -54,7 +54,9 @@ use crate::speed_limiter::SpeedLimiter;
 
 /// Minimum remaining bytes in a segment before it can be split.
 /// Below this threshold the overhead of a new HTTP request outweighs the gain.
-const MIN_SPLIT_BYTES: i64 = 4 * 1024 * 1024; // 4 MB
+/// 2 MB: TLS 1.3 握手仅需 1 RTT (~30-100ms)，2MB 段的建连开销占比 <1%，
+/// 降低阈值让动态拆分更积极，空闲 worker 能更快参与慢段的下载。
+const MIN_SPLIT_BYTES: i64 = 2 * 1024 * 1024; // 2 MB
 
 /// Maximum total number of segments (including dynamically created ones).
 const MAX_SEGMENTS: i32 = 64;
