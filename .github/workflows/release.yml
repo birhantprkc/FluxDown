@@ -3,11 +3,11 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: '同步到 R2 的版本 tag（如 v0.1.28）'
+        description: "同步到 R2 的版本 tag（如 v0.1.28）"
         required: true
         type: string
 
@@ -53,7 +53,6 @@ jobs:
               --no-progress
           done
           echo "✅ R2 sync complete: ${{ secrets.CF_R2_PUBLIC_URL }}/${TAG}/"
-
 
   # ── 并行 Job 1: 构建 Windows 安装包（x64 + ARM64）──
   build-windows:
@@ -208,7 +207,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: "22"
 
       - name: Get version from tag
         id: version
@@ -777,6 +776,52 @@ jobs:
           done
 
           echo "R2 sync complete. Files available at: ${{ secrets.CF_R2_PUBLIC_URL }}/${TAG_NAME}/"
+
+      # ── 清理 R2 旧版本，仅保留最近 5 个版本（免费额度 10GB）──
+      - name: Cleanup old versions from R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: ${{ secrets.CF_R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.CF_R2_BUCKET }}
+        run: |
+          KEEP_VERSIONS=20
+          echo "🧹 R2 cleanup: keeping latest ${KEEP_VERSIONS} versions"
+
+          # 列出 R2 中所有 v* 前缀目录，提取唯一的版本 tag
+          ALL_VERSIONS=$(aws s3 ls "s3://${R2_BUCKET}/" \
+            --endpoint-url "${R2_ENDPOINT}" \
+            | grep 'PRE v' \
+            | awk '{print $2}' \
+            | sed 's|/||' \
+            | sort -t. -k1,1n -k2,2n -k3,3n \
+          )
+
+          TOTAL=$(echo "$ALL_VERSIONS" | grep -c . || true)
+          echo "Found ${TOTAL} versions in R2"
+
+          if [ "$TOTAL" -le "$KEEP_VERSIONS" ]; then
+            echo "✅ Only ${TOTAL} versions exist, nothing to clean up"
+            exit 0
+          fi
+
+          # 计算需要删除的版本数
+          DELETE_COUNT=$((TOTAL - KEEP_VERSIONS))
+          TO_DELETE=$(echo "$ALL_VERSIONS" | head -n "$DELETE_COUNT")
+
+          echo "Will delete ${DELETE_COUNT} old version(s):"
+          echo "$TO_DELETE"
+
+          for ver in $TO_DELETE; do
+            echo "  🗑️  Deleting ${ver}/ ..."
+            aws s3 rm "s3://${R2_BUCKET}/${ver}/" \
+              --endpoint-url "${R2_ENDPOINT}" \
+              --recursive \
+              --no-progress
+          done
+
+          echo "✅ Cleanup complete. Kept latest ${KEEP_VERSIONS} versions."
 
       # ── 创建 Release 并上传所有文件 ──
       - name: Create GitHub Release
