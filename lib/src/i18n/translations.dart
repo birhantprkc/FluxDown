@@ -605,8 +605,8 @@ class S {
     'Directory picker timed out, please try again.\nIf a file picker window opened in the background, close it first.',
   );
   String get filePickerErrorNoTool => _t(
-    '未找到系统文件选择工具（kdialog / zenity）\n请安装后重试：sudo pacman -S kdialog 或 sudo apt install zenity',
-    'No system file picker found (kdialog / zenity).\nInstall one and retry: sudo pacman -S kdialog or sudo apt install zenity',
+    '未找到系统文件选择工具\n请安装 xdg-desktop-portal-gtk（推荐）或 zenity / kdialog：\nsudo pacman -S xdg-desktop-portal-gtk 或 sudo apt install xdg-desktop-portal-gtk',
+    'No system file picker found.\nInstall xdg-desktop-portal-gtk (recommended) or zenity / kdialog:\nsudo pacman -S xdg-desktop-portal-gtk or sudo apt install xdg-desktop-portal-gtk',
   );
   String get filePickerErrorNative => _t(
     '无法打开文件选择对话框，请重试。',

@@ -2384,12 +2384,26 @@ class _ThemeActions extends StatelessWidget {
     final provider = FluxDownApp.of(context);
     final s = LocaleScope.of(context);
 
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: ['json'],
-      dialogTitle: s.themeImport,
-      allowMultiple: true,
-    );
+    FilePickerResult? result;
+    try {
+      result = await FilePickerService.pickFiles(
+        dialogTitle: s.themeImport,
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+        allowMultiple: true,
+      );
+    } on FilePickerException catch (e) {
+      if (!context.mounted) return;
+      final msg = switch (e.reason) {
+        FilePickerFailReason.timeout => s.filePickerErrorTimeout,
+        FilePickerFailReason.noDialogTool => s.filePickerErrorNoTool,
+        FilePickerFailReason.comInitFailed => s.filePickerErrorNative,
+        FilePickerFailReason.nativeDialogFailed => s.filePickerErrorNative,
+        FilePickerFailReason.unknown => s.filePickerErrorGeneric,
+      };
+      ShadSonner.of(context).show(ShadToast.destructive(title: Text(msg)));
+      return;
+    }
     if (result == null || result.files.isEmpty) return;
 
     int successCount = 0;
@@ -2441,12 +2455,26 @@ class _ThemeActions extends StatelessWidget {
     final safeName = tokens.name
         .replaceAll(RegExp(r'[^\w\-]'), '_')
         .toLowerCase();
-    final result = await FilePicker.platform.saveFile(
-      dialogTitle: s.themeExport,
-      fileName: '$safeName.json',
-      type: FileType.custom,
-      allowedExtensions: ['json'],
-    );
+    String? result;
+    try {
+      result = await FilePickerService.saveFile(
+        dialogTitle: s.themeExport,
+        fileName: '$safeName.json',
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+    } on FilePickerException catch (e) {
+      if (!context.mounted) return;
+      final msg = switch (e.reason) {
+        FilePickerFailReason.timeout => s.filePickerErrorTimeout,
+        FilePickerFailReason.noDialogTool => s.filePickerErrorNoTool,
+        FilePickerFailReason.comInitFailed => s.filePickerErrorNative,
+        FilePickerFailReason.nativeDialogFailed => s.filePickerErrorNative,
+        FilePickerFailReason.unknown => s.filePickerErrorGeneric,
+      };
+      ShadSonner.of(context).show(ShadToast.destructive(title: Text(msg)));
+      return;
+    }
     if (result == null) return;
 
     try {
@@ -4044,7 +4072,7 @@ class _LogExportCardState extends State<_LogExportCard> {
       final now = DateTime.now();
       final datePart =
           '${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}';
-      final result = await FilePicker.platform.saveFile(
+      final result = await FilePickerService.saveFile(
         dialogTitle: s.logSelectExportDir,
         fileName: 'fluxdown_logs_$datePart.zip',
         type: FileType.custom,
