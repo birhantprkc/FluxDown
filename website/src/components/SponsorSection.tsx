@@ -23,7 +23,8 @@ import type { Messages } from "@/lib/locales";
    - Graceful degradation when API unavailable
    ============================================================ */
 
-const AFDIAN_URL = "https://ifdian.net/u/7b862392211611f1942a52540025c377";
+const AFDIAN_URL = "https://ifdian.net/a/zerx-lab";
+const AFDIAN_SPONSOR_URL = "https://ifdian.net/u/7b862392211611f1942a52540025c377";
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -493,7 +494,7 @@ export default function SponsorSection({
           transition={{ duration: 0.5, delay: 0.3 }}
         >
           <a
-            href={AFDIAN_URL}
+            href={AFDIAN_SPONSOR_URL}
             target="_blank"
             rel="noopener noreferrer"
             className="group inline-flex items-center gap-2.5 px-7 py-3.5 rounded-xl bg-gradient-to-r from-pink-500 to-rose-500 text-white font-semibold text-sm tracking-wide shadow-lg shadow-pink-500/20 hover:shadow-xl hover:shadow-pink-500/30 hover:from-pink-600 hover:to-rose-600 transition-all duration-300 hover:scale-[1.03] active:scale-[0.98]"
