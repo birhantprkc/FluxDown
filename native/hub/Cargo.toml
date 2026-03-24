@@ -49,6 +49,8 @@ winreg = "0.55"
 # Windows 用系统内置 Schannel（native-tls），完全绕开 aws-lc-sys 的 MSVC 编译问题
 reqwest = { version = "0.12", features = ["stream", "native-tls", "cookies", "json", "socks"] }
 librqbit = { version = "8", default-features = false, features = ["default-tls"] }
+# 系统调用：SetFileInformationByHandle（文件预分配真正保留 NTFS 物理簇）
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 [target.'cfg(not(windows))'.dependencies]
 # Linux/macOS 用 rustls（纯 Rust，无系统 TLS 依赖）

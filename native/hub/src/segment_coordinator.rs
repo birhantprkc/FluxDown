@@ -440,11 +440,12 @@ pub async fn run_coordinated_download(
 
     // ----- 2. Pre-allocate file to full size --------------------------------
     //
-    // Linux: fallocate(2) 分配真实磁盘块（不写零，近乎瞬时），避免
-    //        set_len()/ftruncate 创建稀疏文件导致的：
-    //        - 多段随机写时文件系统需动态分配块 → 碎片化
-    //        - 磁盘空间不足时下载到中途才报 ENOSPC（而非启动时立即检测）
-    // 其他平台: 回退到 set_len()（Windows 上等效于 SetEndOfFile）。
+    // Linux:   fallocate(2) 分配真实磁盘块（不写零，近乎瞬时），避免
+    //          set_len()/ftruncate 创建稀疏文件导致的碎片化和延迟 ENOSPC。
+    // Windows: SetFileInformationByHandle(FileAllocationInfo) 预分配 NTFS
+    //          物理簇（连续优先），提前检测磁盘空间不足，减少碎片化；
+    //          再 SetEndOfFile 设置逻辑大小。
+    // macOS 等: 回退到 set_len()。
     {
         let file = OpenOptions::new()
             .create(true)
@@ -487,7 +488,46 @@ pub async fn run_coordinated_download(
                 .await
                 .map_err(|e| DownloadError::Other(format!("fallocate task panicked: {e}")))??;
             }
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(target_os = "windows")]
+            {
+                let std_file = file.into_std().await;
+                tokio::task::spawn_blocking(move || -> Result<(), DownloadError> {
+                    use std::os::windows::io::AsRawHandle;
+                    // FILE_ALLOCATION_INFO: 单字段 AllocationSize (LARGE_INTEGER = i64)
+                    #[repr(C)]
+                    struct FileAllocInfo {
+                        allocation_size: i64,
+                    }
+                    let handle = std_file.as_raw_handle() as isize;
+                    // Step 1: 预分配 NTFS 物理簇——立即保留磁盘空间（连续簇优先），
+                    // 磁盘不足时提前报错（等效 Linux fallocate 的 ENOSPC 检测），
+                    // 减少多段随机写时的 NTFS 碎片化。
+                    let info = FileAllocInfo {
+                        allocation_size: target_len as i64,
+                    };
+                    let ret = unsafe {
+                        windows_sys::Win32::Storage::FileSystem::SetFileInformationByHandle(
+                            handle,
+                            windows_sys::Win32::Storage::FileSystem::FileAllocationInfo,
+                            &info as *const _ as *const core::ffi::c_void,
+                            std::mem::size_of::<FileAllocInfo>() as u32,
+                        )
+                    };
+                    if ret == 0 {
+                        // FAT32/exFAT/网络驱动器等不支持时仅记录日志，不中断
+                        log_info!(
+                            "[coordinator] SetFileInformationByHandle(FileAllocationInfo) 失败: {}",
+                            std::io::Error::last_os_error()
+                        );
+                    }
+                    // Step 2: 设置逻辑 EOF——后续 seek+write 依赖此值
+                    std_file.set_len(target_len)?;
+                    Ok(())
+                })
+                .await
+                .map_err(|e| DownloadError::Other(format!("prealloc task panicked: {e}")))??;
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "windows")))]
             {
                 file.set_len(target_len).await?;
             }
