@@ -767,7 +767,7 @@ jobs:
       - name: Create portable tar.gz
         run: |
           VERSION=${{ steps.version.outputs.VERSION }}
-          APP_PATH="build/macos/Build/Products/Release/flux_down.app"
+          APP_PATH="build/macos/Build/Products/Release/FluxDown.app"
           mkdir -p build/installer
           DIST_DIR="FluxDown-${VERSION}-macos-${{ matrix.arch }}"
           mkdir -p "$DIST_DIR"
@@ -782,24 +782,26 @@ jobs:
       - name: Create DMG
         run: |
           VERSION=${{ steps.version.outputs.VERSION }}
-          APP_PATH="build/macos/Build/Products/Release/flux_down.app"
+          APP_PATH="build/macos/Build/Products/Release/FluxDown.app"
           mkdir -p build/installer
+
+          mkdir -p dmg_src
+          cp -R "$APP_PATH" dmg_src/
 
           create-dmg \
             --volname "FluxDown ${VERSION}" \
-            --volicon "assets/logo/fluxdown_logo.icns" \
             --window-pos 200 120 \
             --window-size 660 400 \
             --icon-size 100 \
-            --icon "flux_down.app" 160 185 \
-            --hide-extension "flux_down.app" \
+            --icon "FluxDown.app" 160 185 \
+            --hide-extension "FluxDown.app" \
             --app-drop-link 500 185 \
             --no-internet-enable \
             "build/installer/FluxDown-${VERSION}-macos-${{ matrix.arch }}.dmg" \
-            "$APP_PATH" || \
+            dmg_src/ || \
           hdiutil create \
             -volname "FluxDown ${VERSION}" \
-            -srcfolder "$APP_PATH" \
+            -srcfolder dmg_src \
             -ov -format UDZO \
             "build/installer/FluxDown-${VERSION}-macos-${{ matrix.arch }}.dmg"
 
