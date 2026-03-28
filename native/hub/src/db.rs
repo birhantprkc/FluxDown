@@ -201,17 +201,28 @@ impl Db {
 
     /// Resume-safe variant of `update_task_file_info`.
     ///
-    /// Always updates `file_name`.  Only updates `total_bytes` when the newly
-    /// probed size differs **significantly** from the stored value, which
-    /// indicates the remote file genuinely changed size (not just CDN rounding
-    /// or dynamic Content-Length drift).
+    /// Always updates `file_name`.  Whether `total_bytes` is updated depends on
+    /// the *direction* and *magnitude* of the change:
     ///
-    /// The threshold is 1 % of the stored size or 1 MiB, whichever is smaller,
-    /// with a hard floor of 1 byte so equality is still respected.
+    /// - `probe == stored`  → no update needed.
     ///
-    /// When `total_bytes` is kept unchanged the function returns the **stored**
-    /// value so callers can build correct progress updates even when the probe
-    /// returned a slightly different number.
+    /// - `probe < stored`  (file shrank on the server)
+    ///   → Always update.  Keeping the old (larger) value would cause Range
+    ///     requests past the server's EOF and 416 errors.
+    ///
+    /// - `probe > stored`  (server reports a larger file)
+    ///   → Two sub-cases, distinguished by a tolerance threshold
+    ///     (1 % of stored size, capped at 1 MiB, floor 1 byte):
+    ///
+    ///     delta <= threshold  CDN drift (Transfer-Encoding overhead, dynamic
+    ///                         header injection, signed-URL padding…).
+    ///                         Keep `stored` so that segment `end_byte`
+    ///                         boundaries stay consistent.
+    ///
+    ///     delta > threshold   File genuinely grew.  Update `total_bytes` to
+    ///                         `probe` so the segment coordinator rebuilds
+    ///                         segments to cover the new tail — without this
+    ///                         the tail would be silently truncated.
     ///
     /// Returns `(effective_total_bytes, total_bytes_was_updated)`.
     pub async fn update_task_file_info_resume(
@@ -237,22 +248,35 @@ impl Db {
                 Err(e) => return Err(DbError::Sqlite(e)),
             };
 
-            // Decide whether the probed size represents a genuine file change.
-            //
             // Threshold: 1 % of stored size, capped at 1 MiB, floor 1 byte.
-            // A CDN may pad/trim Content-Length by a few hundred bytes due to
-            // transfer-encoding overhead or dynamic header injection; those
-            // small deltas must NOT invalidate existing segment boundaries.
+            // Must be kept in sync with the identical formula in
+            // segment_coordinator::run_coordinated_download so both layers
+            // always agree on whether a size change is "real".
             let threshold: i64 = if stored_total > 0 {
                 (stored_total / 100).clamp(1, 1_048_576)
             } else {
                 1
             };
 
-            let delta = (probed_total_bytes - stored_total).abs();
-            let size_changed = delta > threshold;
+            let size_changed = if stored_total == 0 {
+                // First-time probe — always write the value.
+                true
+            } else if probed_total_bytes < stored_total {
+                // File shrank — always update to avoid out-of-range requests.
+                true
+            } else if probed_total_bytes > stored_total {
+                // File grew (or CDN drift).  Only treat as a genuine change
+                // when the delta exceeds the CDN-drift tolerance threshold.
+                // Below the threshold we preserve stored_total so that existing
+                // segment end_byte boundaries stay consistent.
+                let delta = probed_total_bytes - stored_total;
+                delta > threshold
+            } else {
+                // Exact match.
+                false
+            };
 
-            let effective_total = if size_changed || stored_total == 0 {
+            let effective_total = if size_changed {
                 // Genuine size change (or first-time probe) — update both fields.
                 conn.execute(
                     "UPDATE tasks SET file_name = ?1, total_bytes = ?2 WHERE id = ?3",
@@ -260,8 +284,9 @@ impl Db {
                 )?;
                 probed_total_bytes
             } else {
-                // Only update file_name; preserve existing total_bytes so that
-                // segment end_byte boundaries remain consistent.
+                // CDN drift within tolerance — only update file_name; preserve
+                // existing total_bytes so that segment end_byte boundaries stay
+                // consistent with what the coordinator will use.
                 conn.execute(
                     "UPDATE tasks SET file_name = ?1 WHERE id = ?2",
                     params![file_name, id],
@@ -269,7 +294,7 @@ impl Db {
                 stored_total
             };
 
-            Ok((effective_total, size_changed || stored_total == 0))
+            Ok((effective_total, size_changed))
         })
         .await?
     }

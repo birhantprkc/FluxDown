@@ -363,19 +363,37 @@ pub async fn run_coordinated_download(
     // encoded in DB segment boundaries (e.g. CDN re-signing shifts Content-Length
     // by a few bytes, or the server file has genuinely changed size).
     //
-    // Two distinct cases:
+    // Three distinct cases:
     //
-    //  db_total <= total_bytes  (server reports same or larger file)
-    //    → Trust the DB segment layout.  The extra bytes the server now claims
-    //      are beyond what we already segmented; downloading the DB-defined
-    //      range is correct and safe.  Correct tasks.total_bytes so the UI
-    //      reaches 100% when the segments complete.
+    //  db_total == total_bytes
+    //    → Exact match.  Trust DB segments as-is.
+    //
+    //  db_total < total_bytes  (server reports a *larger* file)
+    //    → Two sub-cases distinguished by a tolerance threshold:
+    //
+    //      delta <= threshold  (CDN drift — Transfer-Encoding overhead,
+    //                           dynamic header injection, signed-URL padding…)
+    //        → The extra bytes the server "claims" are not real file content.
+    //          Trust DB segments and correct tasks.total_bytes to db_total so
+    //          the progress bar reaches exactly 100 % when segments complete.
+    //
+    //      delta > threshold  (file genuinely grew on the server)
+    //        → The tail content is real and must be downloaded.  Rebuild
+    //          segments from scratch using the new total_bytes so every byte
+    //          is covered.  Without this, the tail would never be fetched,
+    //          the file would be silently truncated, and the integrity check
+    //          would still pass because it compares against the old db_total.
     //
     //  db_total > total_bytes  (server reports a *smaller* file)
     //    → Do NOT trust DB segments.  Requesting Range bytes beyond the server's
-    //      actual EOF would return 416 Range Not Satisfiable.  Instead fall
-    //      through with total_bytes so validate_coverage detects the mismatch
-    //      and rebuilds segments to fit the new file size.
+    //      actual EOF would return 416 Range Not Satisfiable.  Fall through with
+    //      total_bytes so validate_coverage detects the mismatch and rebuilds
+    //      segments to fit the new (smaller) file size.
+    //
+    // Threshold: same formula used in db::update_task_file_info_resume —
+    //   1 % of db_total, capped at 1 MiB, floor 1 byte.
+    // Keeping both thresholds in sync ensures the two layers never disagree
+    // about whether a size change is "real".
     let effective_total_bytes = if !existing.is_empty() {
         // segments is non-empty here; max() will always return Some.
         let db_total = segments
@@ -393,13 +411,54 @@ pub async fn run_coordinated_download(
             );
         }
 
-        if db_total <= total_bytes {
-            // Safe to trust DB segments.  Correct tasks.total_bytes so the
-            // progress bar reaches exactly 100 % on completion.
-            if db_total != total_bytes {
-                let _ = db.update_task_total_bytes(task_id, db_total).await;
-            }
+        if db_total == total_bytes {
+            // Exact match — nothing to do.
             db_total
+        } else if db_total < total_bytes {
+            // Server reports a larger file than what the DB segments cover.
+            // Decide whether this is CDN drift or a genuine file growth.
+            let threshold: i64 = (db_total / 100).clamp(1, 1_048_576);
+            let delta = total_bytes - db_total;
+
+            if delta <= threshold {
+                // CDN drift — the extra bytes are not real file content.
+                // Trust existing segments and snap tasks.total_bytes back to
+                // db_total so the UI reaches 100 % on segment completion.
+                log_info!(
+                    "[coordinator] task {} probe={} db={} delta={} <= threshold={}: \
+                     CDN drift, trusting DB segments",
+                    task_id,
+                    total_bytes,
+                    db_total,
+                    delta,
+                    threshold
+                );
+                let _ = db.update_task_total_bytes(task_id, db_total).await;
+                db_total
+            } else {
+                // Genuine file growth — the tail bytes are real and must be
+                // fetched.  Rebuild segments from scratch using the new size.
+                // This discards all prior progress, but keeping the old
+                // segments would silently truncate the file.
+                log_info!(
+                    "[coordinator] task {} probe={} db={} delta={} > threshold={}: \
+                     file genuinely grew, rebuilding segments to avoid tail truncation",
+                    task_id,
+                    total_bytes,
+                    db_total,
+                    delta,
+                    threshold
+                );
+                db.delete_segments(task_id).await?;
+                let (fresh, db_segs) = build_fresh_segments(initial_segment_count, total_bytes);
+                segments = fresh;
+                db.insert_segments(task_id, &db_segs).await?;
+                next_index = initial_segment_count;
+                let _ = db.update_task_total_bytes(task_id, total_bytes).await;
+                // Return early — segments are already valid, skip validate_coverage.
+                // Re-run pre-allocation and workers with total_bytes.
+                total_bytes
+            }
         } else {
             // db_total > total_bytes: server file is smaller than DB segments cover.
             // Using db_total would issue Range requests past EOF → 416 errors.
