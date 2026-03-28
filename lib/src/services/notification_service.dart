@@ -169,6 +169,8 @@ class NotificationService {
 
     if (Platform.isWindows) {
       _flushQueueWindows(batch);
+    } else if (Platform.isMacOS || Platform.isLinux) {
+      _flushQueueDesktop(batch);
     } else {
       _showOverlay(batch);
     }
@@ -196,6 +198,35 @@ class NotificationService {
       }
     } catch (e, stack) {
       logError(_tag, 'failed to check window visibility', e, stack);
+      _showOverlay(batch);
+    }
+  }
+
+  /// macOS / Linux：窗口可见时用 OverlayEntry，后台/最小化时用系统通知。
+  Future<void> _flushQueueDesktop(List<DownloadTask> batch) async {
+    try {
+      final isVisible = await windowManager.isVisible();
+      final isMinimized = await windowManager.isMinimized();
+      if (_shuttingDown) return;
+
+      if (isVisible && !isMinimized) {
+        logInfo(
+          _tag,
+          'desktop: window visible, using overlay (batch=${batch.length})',
+        );
+        _showOverlay(batch);
+      } else {
+        logInfo(
+          _tag,
+          'desktop: window hidden/minimized, using system notification '
+          '(batch=${batch.length})',
+        );
+        for (final task in batch) {
+          await _showSystemDownloadComplete(task);
+        }
+      }
+    } catch (e, stack) {
+      logError(_tag, 'desktop: failed to check window visibility', e, stack);
       _showOverlay(batch);
     }
   }
@@ -242,11 +273,13 @@ class NotificationService {
 
     // Windows 10: ensure Start Menu shortcut with AUMID exists.
     // Without this, Toast API returns success but nothing is displayed.
-    await ensureWindowsToastShortcut(
-      appName: 'FluxDown',
-      aumid: _appUserModelId,
-      clsid: _appGuid,
-    );
+    if (Platform.isWindows) {
+      await ensureWindowsToastShortcut(
+        appName: 'FluxDown',
+        aumid: _appUserModelId,
+        clsid: _appGuid,
+      );
+    }
 
     try {
       const windows = WindowsInitializationSettings(
@@ -255,7 +288,11 @@ class NotificationService {
         guid: _appGuid,
       );
       const linux = LinuxInitializationSettings(defaultActionName: 'open');
-      const darwin = DarwinInitializationSettings();
+      const darwin = DarwinInitializationSettings(
+        requestAlertPermission: false,
+        requestBadgePermission: false,
+        requestSoundPermission: false,
+      );
       const settings = InitializationSettings(
         windows: windows,
         linux: linux,
@@ -271,8 +308,44 @@ class NotificationService {
         settings: settings,
         onDidReceiveNotificationResponse: _onSystemNotificationResponse,
       );
+      logInfo(_tag, 'initSystem: initialize result=$result');
+
+      // macOS: explicitly request notification permissions after initialize.
+      // Without this step the system never prompts the user and all show()
+      // calls silently fail.
+      if (Platform.isMacOS) {
+        final macOsPlugin = _systemNotifications
+            .resolvePlatformSpecificImplementation<
+              IOSFlutterLocalNotificationsPlugin
+            >();
+        // On macOS the plugin exposes the same API via the macOS implementation.
+        final macPlugin = _systemNotifications
+            .resolvePlatformSpecificImplementation<
+              MacOSFlutterLocalNotificationsPlugin
+            >();
+        if (macPlugin != null) {
+          final granted = await macPlugin.requestPermissions(
+            alert: true,
+            badge: true,
+            sound: true,
+          );
+          logInfo(_tag, 'initSystem: macOS permission granted=$granted');
+        } else {
+          logInfo(_tag, 'initSystem: macOS plugin not resolved, skipping permission request');
+          // Fallback: try iOS plugin (older plugin versions share the same class)
+          if (macOsPlugin != null) {
+            final granted = await macOsPlugin.requestPermissions(
+              alert: true,
+              badge: true,
+              sound: true,
+            );
+            logInfo(_tag, 'initSystem: macOS(iOS-compat) permission granted=$granted');
+          }
+        }
+      }
+
       _systemReady = true;
-      logInfo(_tag, 'initSystem: success (result=$result)');
+      logInfo(_tag, 'initSystem: success');
     } catch (e, stack) {
       logError(_tag, 'initSystem: FAILED', e, stack);
     }
