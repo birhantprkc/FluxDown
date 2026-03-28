@@ -274,7 +274,14 @@ class _HomePageState extends State<HomePage> {
               initialCategory: _initialSettingsCategory,
             ),
           ),
-          // 窗口控制按钮 — 始终固定在窗口右上角
+          // macOS traffic light — 左上角
+          if (Platform.isMacOS)
+            const Positioned(
+              top: 0,
+              left: 0,
+              child: MacosTrafficLights(),
+            ),
+          // 工具按钮（设置页：暂停/恢复/设置/主题） — 右上角
           Positioned(
             top: 0,
             right: 0,
@@ -459,7 +466,14 @@ class _HomePageState extends State<HomePage> {
                 }),
               ),
             ),
-            // 窗口控制按钮 — 始终固定在窗口右上角
+            // macOS traffic light — 左上角
+            if (Platform.isMacOS)
+              const Positioned(
+                top: 0,
+                left: 0,
+                child: MacosTrafficLights(),
+              ),
+            // Windows/Linux 窗口控制按钮 — 右上角（macOS 上此组件返回空）
             Positioned(
               top: 0,
               right: 0,

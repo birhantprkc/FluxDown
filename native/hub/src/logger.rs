@@ -200,7 +200,13 @@ fn resolve_log_dir() -> PathBuf {
         PathBuf::from(format!("{xdg}/fluxdown/logs"))
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME").unwrap_or_default();
+        PathBuf::from(format!("{home}/Library/Application Support/fluxdown/logs"))
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let exe = std::env::current_exe().unwrap_or_default();
         exe.parent()

@@ -542,6 +542,10 @@ class AnalyticsService {
           Platform.environment['USERPROFILE'];
       return '$appData${Platform.pathSeparator}FluxDown';
     }
+    if (Platform.isMacOS) {
+      final home = Platform.environment['HOME'] ?? '.';
+      return '$home/Library/Application Support/fluxdown';
+    }
     final home = Platform.environment['HOME'] ?? '.';
     return '$home${Platform.pathSeparator}.fluxdown';
   }

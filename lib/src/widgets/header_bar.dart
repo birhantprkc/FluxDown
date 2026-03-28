@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
@@ -239,8 +241,9 @@ class HeaderBarState extends State<HeaderBar> {
     return TitleDragArea(
       child: Container(
         height: 48,
-        // right 预留窗口控制按钮宽度：3 窗口按钮(40*3) = 120
-        padding: const EdgeInsets.only(left: 16, right: 120),
+        // Windows/Linux right 预留窗口控制按钮宽度：3 窗口按钮(40*3) = 120
+        // macOS 右侧无窗口按钮，只留少量内边距
+        padding: const EdgeInsets.only(left: 16),
         decoration: BoxDecoration(
           color: c.surface1,
           border: Border(bottom: BorderSide(color: c.border, width: 1)),
@@ -377,11 +380,15 @@ class HeaderBarState extends State<HeaderBar> {
               onPressed: () => themeProvider.toggleTheme(context),
               iconSize: 15,
             ),
-            // 分隔线（工具按钮与窗口控制按钮之间）
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 4),
-              child: Container(width: 1, height: 16, color: c.border),
-            ),
+            // Windows/Linux：工具按钮与窗口控制按钮之间的分隔线 + 占位宽度
+            if (!Platform.isMacOS) ...[
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: Container(width: 1, height: 16, color: c.border),
+              ),
+              // 为 3 个窗口控制按钮（各 40px）预留空间，防止内容被遮挡
+              const SizedBox(width: 120),
+            ],
           ],
         ),
       ),
@@ -616,9 +623,13 @@ class _SearchResultItem extends StatelessWidget {
   }
 }
 
-/// 窗口右上角控制区，通过 Positioned 悬浮在窗口右上角。
-/// - [showToolButtons] = true（默认，设置页使用）：工具按钮 + 分隔线 + 窗口按钮
-/// - [showToolButtons] = false（主页使用，工具按钮已移至 HeaderBar）：仅窗口按钮（最小化 | 最大化 | 关闭）
+/// 窗口控制区。
+///
+/// macOS：Traffic light（红/黄/绿圆形按钮）放在左上角，工具按钮放在右上角。
+/// Windows/Linux：工具按钮 + 窗口控制按钮（最小化/最大化/关闭）全部在右上角。
+///
+/// [showToolButtons] = true（默认，设置页使用）：显示工具按钮（暂停/恢复/设置/主题）。
+/// [showToolButtons] = false（主页使用，工具按钮已移至 HeaderBar）：仅窗口按钮。
 class WindowControls extends StatelessWidget {
   final DownloadController controller;
   final VoidCallback? onSettings;
@@ -635,6 +646,59 @@ class WindowControls extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (Platform.isMacOS) {
+      // macOS：只渲染工具按钮（traffic light 单独由 MacosTrafficLights 组件负责）
+      if (!showToolButtons) return const SizedBox.shrink();
+      return _buildToolButtons(context);
+    }
+    // Windows / Linux：工具按钮 + 窗口控制按钮
+    return _buildWindowsControls(context);
+  }
+
+  Widget _buildToolButtons(BuildContext context) {
+    final c = AppColors.of(context);
+    final themeProvider = FluxDownApp.of(context);
+    return SizedBox(
+      height: 48,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _ToolButton(
+            icon: LucideIcons.circlePause,
+            tooltip: LocaleScope.of(context).pauseAll,
+            onPressed: () => controller.pauseAll(),
+            iconSize: 16,
+          ),
+          _ToolButton(
+            icon: LucideIcons.circlePlay,
+            tooltip: LocaleScope.of(context).resumeAll,
+            onPressed: () => controller.resumeAll(),
+            iconSize: 16,
+          ),
+          _ToolButton(
+            icon: LucideIcons.settings,
+            tooltip: LocaleScope.of(context).settings,
+            onPressed: () => onSettings?.call(),
+            iconSize: 16,
+            isActive: isSettingsActive,
+          ),
+          _ToolButton(
+            icon: themeProvider.isDark(context)
+                ? LucideIcons.sun
+                : LucideIcons.moon,
+            tooltip: themeProvider.isDark(context)
+                ? LocaleScope.of(context).toggleToLight
+                : LocaleScope.of(context).toggleToDark,
+            onPressed: () => themeProvider.toggleTheme(context),
+            iconSize: 15,
+          ),
+
+        ],
+      ),
+    );
+  }
+
+  Widget _buildWindowsControls(BuildContext context) {
     final c = AppColors.of(context);
     final themeProvider = FluxDownApp.of(context);
     return SizedBox(
@@ -676,11 +740,7 @@ class WindowControls extends StatelessWidget {
               onPressed: () => themeProvider.toggleTheme(context),
               iconSize: 15,
             ),
-            // 分隔线
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 4),
-              child: Container(width: 1, height: 16, color: c.border),
-            ),
+
           ],
           // 窗口控制按钮
           _WindowButton(
@@ -714,6 +774,136 @@ class WindowControls extends StatelessWidget {
             isClose: true,
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+// macOS Traffic Light 窗口按钮（左上角红/黄/绿）
+// ─────────────────────────────────────────────
+
+/// macOS 风格的 traffic light 窗口控制按钮。
+///
+/// 悬停时显示对应的 ✕ / – / ⤢ 符号，离开后恢复纯色圆点。
+/// 仅在 [Platform.isMacOS] 时渲染，其他平台返回空组件。
+class MacosTrafficLights extends StatefulWidget {
+  const MacosTrafficLights({super.key});
+
+  @override
+  State<MacosTrafficLights> createState() => _MacosTrafficLightsState();
+}
+
+class _MacosTrafficLightsState extends State<MacosTrafficLights> {
+  bool _hovered = false;
+
+  static const _kClose = Color(0xFFFF5F57);
+  static const _kMinimize = Color(0xFFFFBD2E);
+  static const _kMaximize = Color(0xFF28C840);
+  static const _kDotSize = 12.0;
+  static const _kSpacing = 8.0;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!Platform.isMacOS) return const SizedBox.shrink();
+
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: SizedBox(
+        height: 48,
+        child: Padding(
+          padding: const EdgeInsets.only(left: 12),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              _TrafficDot(
+                color: _kClose,
+                hovered: _hovered,
+                symbol: '✕',
+                symbolSize: 7,
+                onTap: () {
+                  logInfo('MacosTrafficLight', 'close tapped');
+                  windowManager.close();
+                },
+              ),
+              const SizedBox(width: _kSpacing),
+              _TrafficDot(
+                color: _kMinimize,
+                hovered: _hovered,
+                symbol: '–',
+                symbolSize: 8,
+                onTap: () {
+                  logInfo('MacosTrafficLight', 'minimize tapped');
+                  windowManager.minimize();
+                },
+              ),
+              const SizedBox(width: _kSpacing),
+              _TrafficDot(
+                color: _kMaximize,
+                hovered: _hovered,
+                symbol: '⤢',
+                symbolSize: 8,
+                onTap: () async {
+                  logInfo('MacosTrafficLight', 'maximize tapped');
+                  if (await windowManager.isMaximized()) {
+                    await windowManager.unmaximize();
+                  } else {
+                    await windowManager.maximize();
+                  }
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TrafficDot extends StatelessWidget {
+  final Color color;
+  final bool hovered;
+  final String symbol;
+  final double symbolSize;
+  final VoidCallback onTap;
+
+  const _TrafficDot({
+    required this.color,
+    required this.hovered,
+    required this.symbol,
+    required this.symbolSize,
+    required this.onTap,
+  });
+
+  static const _kDotSize = 12.0;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: _kDotSize,
+        height: _kDotSize,
+        decoration: BoxDecoration(
+          color: color,
+          shape: BoxShape.circle,
+        ),
+        child: hovered
+            ? Center(
+                child: Text(
+                  symbol,
+                  style: TextStyle(
+                    fontSize: symbolSize,
+                    height: 1,
+                    color: Colors.black.withValues(alpha: 0.65),
+                    fontWeight: FontWeight.bold,
+                    fontFamily: 'SF Pro',
+                  ),
+                ),
+              )
+            : null,
       ),
     );
   }

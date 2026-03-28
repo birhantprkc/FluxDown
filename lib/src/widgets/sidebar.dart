@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 import 'package:window_manager/window_manager.dart';
@@ -93,6 +95,10 @@ class _SidebarState extends State<Sidebar> {
   // ─────────────────────────────────────────────
 
   Widget _buildLogo(AppColors c) {
+    // macOS: traffic light 按钮已在左上角，logo/名称隐藏，只保留拖拽区占位
+    if (Platform.isMacOS) {
+      return const DragToMoveArea(child: SizedBox(height: 48));
+    }
     return DragToMoveArea(
       child: Container(
         height: 48,

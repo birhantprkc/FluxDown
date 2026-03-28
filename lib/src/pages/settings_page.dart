@@ -4115,6 +4115,8 @@ class _LogExportCardState extends State<_LogExportCard> {
     final path = LogService.instance.logDir.path;
     if (Platform.isWindows) {
       Process.run('explorer', [path]);
+    } else if (Platform.isMacOS) {
+      Process.run('open', [path]);
     } else {
       Process.run('xdg-open', [path]);
     }

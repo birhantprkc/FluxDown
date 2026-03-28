@@ -198,6 +198,7 @@ class LogService {
 
   /// 解析日志目录：
   /// - Linux: ~/.local/share/fluxdown/logs（XDG_DATA_HOME 优先）
+  /// - macOS: ~/Library/Application Support/fluxdown/logs
   /// - 其他: exe 同级 logs/
   static Directory _resolveLogDir() {
     if (Platform.isLinux) {
@@ -205,6 +206,10 @@ class LogService {
           Platform.environment['XDG_DATA_HOME'] ??
           '${Platform.environment['HOME']}/.local/share';
       return Directory('$xdgData/fluxdown/logs');
+    }
+    if (Platform.isMacOS) {
+      final home = Platform.environment['HOME'] ?? '';
+      return Directory('$home/Library/Application Support/fluxdown/logs');
     }
     final exeDir = File(Platform.resolvedExecutable).parent.path;
     return Directory('$exeDir${Platform.pathSeparator}logs');

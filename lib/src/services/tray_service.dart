@@ -32,16 +32,34 @@ class TrayService with TrayListener {
     // 图标路径必须是相对于 exe 目录的路径或绝对路径
     // CMakeLists.txt 已配置将 app_icon.ico 复制到 exe 同级目录
     final exeDir = File(Platform.resolvedExecutable).parent.path;
-    final iconPath = Platform.isWindows
-        ? p.join(exeDir, 'app_icon.ico')
-        : p.join(
-            exeDir,
-            'data',
-            'flutter_assets',
-            'assets',
-            'logo',
-            'fluxdown_logo.png',
-          );
+    final String iconPath;
+    if (Platform.isWindows) {
+      iconPath = p.join(exeDir, 'app_icon.ico');
+    } else if (Platform.isMacOS) {
+      // macOS app bundle: exe is at .app/Contents/MacOS/FluxDown
+      // flutter_assets are at .app/Contents/Frameworks/App.framework/Resources/flutter_assets/
+      final contentsDir = File(Platform.resolvedExecutable).parent.parent.path;
+      iconPath = p.join(
+        contentsDir,
+        'Frameworks',
+        'App.framework',
+        'Resources',
+        'flutter_assets',
+        'assets',
+        'logo',
+        'fluxdown_logo.png',
+      );
+    } else {
+      // Linux: exe is at <prefix>/bin/, flutter_assets at <prefix>/data/flutter_assets/
+      iconPath = p.join(
+        exeDir,
+        'data',
+        'flutter_assets',
+        'assets',
+        'logo',
+        'fluxdown_logo.png',
+      );
+    }
 
     logInfo(_tag, 'setting icon: $iconPath');
     await trayManager.setIcon(iconPath);

@@ -24,6 +24,10 @@
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>$(PRODUCT_COPYRIGHT)</string>
+	<key>NSUserNotificationUsageDescription</key>
+	<string>FluxDown uses notifications to alert you when downloads complete.</string>
+	<key>CFBundleDisplayName</key>
+	<string>FluxDown</string>
 	<key>NSMainNibFile</key>
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>
