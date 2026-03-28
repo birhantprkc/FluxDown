@@ -890,9 +890,10 @@ async fn remux_ts_to_mp4(ts_path: &std::path::Path, task_id: &str) -> Option<Pat
     };
     if file_len > MAX_REMUX_BYTES {
         log_info!(
-            "[hls] task {} skipping remux: {} bytes exceeds limit",
+            "[hls] task {} skipping TS→MP4 remux: file is {} bytes (limit {}), keeping .ts",
             task_id,
-            file_len
+            file_len,
+            MAX_REMUX_BYTES
         );
         return None;
     }

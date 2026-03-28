@@ -9,7 +9,6 @@ import '../services/analytics_service.dart';
 import '../services/log_service.dart';
 import 'download_queue.dart';
 import 'download_task.dart';
-import 'settings_provider.dart';
 
 const _tag = 'DownloadCtrl';
 
@@ -824,68 +823,28 @@ class DownloadController extends ChangeNotifier {
     _safeNotifyListeners();
   }
 
-  /// 批量恢复所有暂停/错误任务（延迟恢复队列方案）。
+  /// 恢复所有暂停/出错的任务。
   ///
-  /// 仅向 Rust 发送前 maxConcurrent 个任务的 resume 指令，其余放入
-  /// _deferredResumeQueue 排队。当活跃任务完成/出错时，
-  /// _resumeNextDeferred() 会从队列中取出下一个任务发送 resume。
-  /// 这从根本上避免了 Rust 为所有任务发送 downloading 信号导致的
-  /// UI「全部启动」假象。
+  /// 将全部候选任务一次性发送给 Rust 的 DownloadManager，由其
+  /// pending_queue 统一管理并发限制，避免 Dart 侧与 Rust 侧双重
+  /// 并发控制产生的竞态（重复恢复、槽位计算不一致等问题）。
+  /// Dart 侧仅做乐观 UI 更新，将所有候选任务立即显示为 resuming。
   void resumeAll() {
     logInfo(_tag, 'resumeAll');
     _deferredResumeQueue.clear();
 
     final candidates = <String>[];
-    for (final t in _tasks) {
+    for (int i = 0; i < _tasks.length; i++) {
+      final t = _tasks[i];
       if (t.status == TaskStatus.paused || t.status == TaskStatus.error) {
         candidates.add(t.id);
+        _boostAutoPausedIds.remove(t.id);
+        _optimisticPausedIds.remove(t.id);
+        _tasks[i] = t.copyWith(status: TaskStatus.resuming);
       }
     }
     if (candidates.isEmpty) return;
-
-    final maxConcurrent =
-        SettingsProvider.globalInstance?.maxConcurrentTasks ?? 5;
-    final currentActive = _tasks
-        .where(
-          (t) =>
-              t.status == TaskStatus.downloading ||
-              t.status == TaskStatus.preparing ||
-              t.status == TaskStatus.resuming,
-        )
-        .length;
-    final slotsAvailable = (maxConcurrent - currentActive).clamp(
-      0,
-      maxConcurrent,
-    );
-
-    // 分割：前 slotsAvailable 个立即发送，其余进入延迟队列
-    final immediate = candidates.take(slotsAvailable).toList();
-    final deferred = candidates.skip(slotsAvailable).toList();
-    _deferredResumeQueue.addAll(deferred);
-
-    // 仅对立即恢复的任务发送 IPC
-    if (immediate.isNotEmpty) {
-      BatchControlTask(taskIds: immediate, action: 1).sendSignalToRust();
-    }
-
-    // 乐观 UI 更新
-    for (int i = 0; i < _tasks.length; i++) {
-      final t = _tasks[i];
-      if (t.status != TaskStatus.paused && t.status != TaskStatus.error) {
-        continue;
-      }
-      _boostAutoPausedIds.remove(t.id);
-      if (immediate.contains(t.id)) {
-        _optimisticPausedIds.remove(t.id);
-        _tasks[i] = t.copyWith(status: TaskStatus.resuming);
-      } else if (_deferredResumeQueue.contains(t.id)) {
-        // 延迟队列中的任务：立即显示为「等待中」，但不发送 resume 到 Rust。
-        // 保留守卫：pauseAll 发出后 Rust 仍可能有残余 downloading 信号延迟到达，
-        // 守卫会在 _onProgress 中拦截这些信号，防止任务提前变成「下载中」。
-        // _resumeNextDeferred() 调用时才移除守卫。
-        _tasks[i] = t.copyWith(status: TaskStatus.pending);
-      }
-    }
+    BatchControlTask(taskIds: candidates, action: 1).sendSignalToRust();
     _safeNotifyListeners();
   }
 

@@ -2542,8 +2542,14 @@ mod tests {
 
     #[test]
     fn single_conn_domain_record_and_check() {
-        // 使用一个唯一域名避免测试间干扰
-        let url = "https://test-single-conn-12345.example.org/file.bin";
+        let url = "http://single-conn-test-record.example.com/file";
+        let domain = "single-conn-test-record.example.com";
+
+        // 预清理：确保本测试域名在全局缓存中不存在（防止并行/重试干扰）
+        if let Ok(mut cache) = single_conn_cache().lock() {
+            cache.remove(domain);
+        }
+
         assert!(!is_single_conn_domain(url), "记录前不应命中缓存");
 
         record_single_conn_domain(url);
@@ -2551,35 +2557,47 @@ mod tests {
 
         // 同域名不同路径也应命中
         assert!(
-            is_single_conn_domain("https://test-single-conn-12345.example.org/other.zip"),
+            is_single_conn_domain("http://single-conn-test-record.example.com/other.zip"),
             "同域名不同路径应命中缓存"
         );
 
         // 不同域名不应命中
         assert!(
-            !is_single_conn_domain("https://other-domain.example.org/file.bin"),
+            !is_single_conn_domain("http://single-conn-test-record-other.example.com/file"),
             "不同域名不应命中缓存"
         );
 
         // 清理：从缓存中移除测试数据
         if let Ok(mut cache) = single_conn_cache().lock() {
-            cache.remove("test-single-conn-12345.example.org");
+            cache.remove(domain);
         }
     }
 
     #[test]
     fn single_conn_domain_different_ports_are_separate() {
-        let url_a = "https://test-port-sep-99999.example.org:443/file.bin";
-        let url_b = "https://test-port-sep-99999.example.org:8080/file.bin";
+        let url_a = "http://single-conn-test-ports-a.example.com:8080/file";
+        let url_b = "http://single-conn-test-ports-b.example.com:9090/file";
+        let domain_a = "single-conn-test-ports-a.example.com:8080";
+        let domain_b = "single-conn-test-ports-b.example.com:9090";
+
+        // 预清理：确保两个测试域名在全局缓存中不存在
+        if let Ok(mut cache) = single_conn_cache().lock() {
+            cache.remove(domain_a);
+            cache.remove(domain_b);
+        }
 
         record_single_conn_domain(url_a);
-        assert!(is_single_conn_domain(url_a));
-        // 不同端口视为不同"域名"
-        assert!(!is_single_conn_domain(url_b), "不同端口应视为不同服务器");
+        assert!(is_single_conn_domain(url_a), "记录后 url_a 应命中缓存");
+        // 不同域名（含不同端口）不应命中
+        assert!(
+            !is_single_conn_domain(url_b),
+            "不同端口/域名应视为不同服务器"
+        );
 
         // 清理
         if let Ok(mut cache) = single_conn_cache().lock() {
-            cache.remove("test-port-sep-99999.example.org:443");
+            cache.remove(domain_a);
+            cache.remove(domain_b);
         }
     }
 }

@@ -593,8 +593,364 @@ mod inner {
     }
 }
 
-// All other non-Windows, non-Linux platforms (macOS, etc.) — no-op.
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+// macOS: write NMH manifest files to ~/Library/Application Support browser directories.
+#[cfg(target_os = "macos")]
+mod inner {
+    use crate::logger::log_info;
+    use serde::Serialize;
+    use std::io;
+    use std::path::{Path, PathBuf};
+
+    const NMH_NAME: &str = "com.fluxdown.nmh";
+    const NMH_DESCRIPTION: &str = "FluxDown Native Messaging Host";
+    const NMH_EXE_NAME: &str = "fluxdown_nmh";
+    /// Shell wrapper script name registered in NMH manifest.
+    /// Chrome/Firefox spawn this shell (a system-signed binary) which then
+    /// exec's the actual fluxdown_nmh binary, bypassing macOS AMFI's
+    /// requirement that processes spawned by Hardened-Runtime apps must
+    /// carry a trusted Developer ID signature (adhoc-only binaries are
+    /// rejected with "Unrecoverable CT signature issue").
+    const NMH_WRAPPER_NAME: &str = "fluxdown_nmh.sh";
+    const MANIFEST_FILENAME: &str = "com.fluxdown.nmh.json";
+    const CHROME_EXTENSION_ID: &str = "chrome-extension://meleenglfggcmcajknpeeeiobnpfmahc/";
+    const FIREFOX_EXTENSION_ID: &str = "fluxdown@fluxdown.app";
+
+    #[derive(Serialize)]
+    struct NmhManifestChromium {
+        name: String,
+        description: String,
+        path: String,
+        #[serde(rename = "type")]
+        host_type: String,
+        allowed_origins: Vec<String>,
+    }
+
+    #[derive(Serialize)]
+    struct NmhManifestFirefox {
+        name: String,
+        description: String,
+        path: String,
+        #[serde(rename = "type")]
+        host_type: String,
+        allowed_extensions: Vec<String>,
+    }
+
+    /// Returns the current user's home directory.
+    ///
+    /// Prefers `$HOME` but falls back to the passwd database via `getpwuid_r`
+    /// so that the correct path is returned even when the process is launched
+    /// by a system service (launchd) that may not set `$HOME`.
+    fn home_dir() -> Option<PathBuf> {
+        if let Ok(h) = std::env::var("HOME") {
+            if !h.is_empty() {
+                return Some(PathBuf::from(h));
+            }
+        }
+        use std::ffi::CStr;
+        let uid = unsafe { libc::getuid() };
+        let buf_size = unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) };
+        let buf_size = if buf_size > 0 {
+            buf_size as usize
+        } else {
+            1024
+        };
+        let mut buf = vec![0i8; buf_size];
+        let mut pwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
+        let mut result: *mut libc::passwd = std::ptr::null_mut();
+        let ret = unsafe {
+            libc::getpwuid_r(
+                uid,
+                pwd.as_mut_ptr(),
+                buf.as_mut_ptr(),
+                buf_size,
+                &mut result,
+            )
+        };
+        if ret == 0 && !result.is_null() {
+            let pwd = unsafe { pwd.assume_init() };
+            if !pwd.pw_dir.is_null() {
+                let cstr = unsafe { CStr::from_ptr(pwd.pw_dir) };
+                if let Ok(s) = cstr.to_str() {
+                    if !s.is_empty() {
+                        return Some(PathBuf::from(s));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// macOS Chromium-family NMH manifest directories.
+    /// Ref: https://developer.chrome.com/docs/apps/nativeMessaging/#native-messaging-host-location-macos
+    fn chromium_nmh_dirs() -> Vec<PathBuf> {
+        let Some(home) = home_dir() else {
+            return vec![];
+        };
+        let lib = home.join("Library").join("Application Support");
+        vec![
+            lib.join("Google")
+                .join("Chrome")
+                .join("NativeMessagingHosts"),
+            lib.join("Google")
+                .join("Chrome Beta")
+                .join("NativeMessagingHosts"),
+            lib.join("Google")
+                .join("Chrome Canary")
+                .join("NativeMessagingHosts"),
+            lib.join("Chromium").join("NativeMessagingHosts"),
+            lib.join("Microsoft Edge").join("NativeMessagingHosts"),
+            lib.join("Microsoft Edge Beta").join("NativeMessagingHosts"),
+            lib.join("Arc")
+                .join("User Data")
+                .join("NativeMessagingHosts"),
+        ]
+    }
+
+    /// macOS Firefox NMH manifest directory.
+    fn firefox_nmh_dir() -> Option<PathBuf> {
+        home_dir().map(|h| {
+            h.join("Library")
+                .join("Application Support")
+                .join("Mozilla")
+                .join("NativeMessagingHosts")
+        })
+    }
+
+    fn find_nmh_exe() -> Result<PathBuf, io::Error> {
+        // 1. Next to current exe (production: inside .app bundle Contents/MacOS/)
+        if let Ok(exe) = std::env::current_exe() {
+            let canonical = std::fs::canonicalize(&exe).unwrap_or(exe);
+            if let Some(dir) = canonical.parent() {
+                let candidate = dir.join(NMH_EXE_NAME);
+                if candidate.exists() {
+                    log_info!(
+                        "[nmh_registry] found NMH exe next to app: {}",
+                        candidate.display()
+                    );
+                    return Ok(candidate);
+                }
+            }
+        }
+
+        // 2. Cargo workspace target directory (development)
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let workspace_root = Path::new(manifest_dir).parent().and_then(|p| p.parent());
+
+        if let Some(ws) = workspace_root {
+            for profile in &["debug", "release"] {
+                let candidate = ws.join("target").join(profile).join(NMH_EXE_NAME);
+                if candidate.exists() {
+                    log_info!(
+                        "[nmh_registry] found NMH exe in cargo target: {}",
+                        candidate.display()
+                    );
+                    return Ok(candidate);
+                }
+            }
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "{} not found. Build it with: cargo build -p fluxdown_nmh",
+                NMH_EXE_NAME
+            ),
+        ))
+    }
+
+    /// Write a shell wrapper script that exec's the real NMH binary.
+    ///
+    /// macOS AMFI rejects adhoc-signed (non-Developer-ID) binaries when they
+    /// are spawned by Hardened Runtime processes such as Chrome or Firefox.
+    /// `/bin/sh` is a system binary with an Apple-signed certificate and is
+    /// always permitted. By registering the *shell script* as the NMH path,
+    /// the browser spawns `/bin/sh`, which in turn exec's `fluxdown_nmh`.
+    /// The shell inherits the NMH stdin/stdout pipe and transparently relays
+    /// it to the binary — zero overhead, no extra process.
+    fn write_wrapper_script(nmh_exe: &Path) -> Result<PathBuf, io::Error> {
+        let Some(home) = home_dir() else {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "cannot determine home directory",
+            ));
+        };
+        let dir = home
+            .join("Library")
+            .join("Application Support")
+            .join("fluxdown");
+        std::fs::create_dir_all(&dir)?;
+        let script_path = dir.join(NMH_WRAPPER_NAME);
+        let exe_str = nmh_exe.to_string_lossy();
+        // Use `exec` so the shell process is replaced by the binary (no extra
+        // zombie process). Pass "$@" to forward any arguments Chrome may add.
+        let script = format!("#!/bin/sh\nexec '{}' \"$@\"\n", exe_str);
+        std::fs::write(&script_path, script)?;
+        // The script must be executable.
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))?;
+        Ok(script_path)
+    }
+
+    fn write_chromium_manifest(wrapper: &Path, dir: &Path) -> Result<PathBuf, io::Error> {
+        std::fs::create_dir_all(dir)?;
+        let manifest = NmhManifestChromium {
+            name: NMH_NAME.to_string(),
+            description: NMH_DESCRIPTION.to_string(),
+            path: wrapper.to_string_lossy().into_owned(),
+            host_type: "stdio".to_string(),
+            allowed_origins: vec![CHROME_EXTENSION_ID.to_string()],
+        };
+        let json = serde_json::to_string_pretty(&manifest)
+            .map_err(|e| io::Error::other(format!("JSON error: {}", e)))?;
+        let path = dir.join(MANIFEST_FILENAME);
+        std::fs::write(&path, json)?;
+        Ok(path)
+    }
+
+    fn write_firefox_manifest(wrapper: &Path, dir: &Path) -> Result<PathBuf, io::Error> {
+        std::fs::create_dir_all(dir)?;
+        let manifest = NmhManifestFirefox {
+            name: NMH_NAME.to_string(),
+            description: NMH_DESCRIPTION.to_string(),
+            path: wrapper.to_string_lossy().into_owned(),
+            host_type: "stdio".to_string(),
+            allowed_extensions: vec![FIREFOX_EXTENSION_ID.to_string()],
+        };
+        let json = serde_json::to_string_pretty(&manifest)
+            .map_err(|e| io::Error::other(format!("JSON error: {}", e)))?;
+        let path = dir.join(MANIFEST_FILENAME);
+        std::fs::write(&path, json)?;
+        Ok(path)
+    }
+
+    pub fn needs_update() -> bool {
+        let Ok(nmh_exe) = find_nmh_exe() else {
+            return true;
+        };
+        // The manifest now points to the shell wrapper, but the wrapper
+        // contains the path to the real binary. Check that the wrapper exists
+        // and that its content references the current NMH exe path.
+        let expected_exe = nmh_exe.to_string_lossy().into_owned();
+
+        // 版本切换检测：wrapper 内容里包含的 NMH exe 路径是否与当前一致。
+        let wrapper_path = home_dir().map(|h| {
+            h.join("Library")
+                .join("Application Support")
+                .join("fluxdown")
+                .join(NMH_WRAPPER_NAME)
+        });
+
+        if let Some(ref wp) = wrapper_path {
+            if !wp.exists() {
+                return true;
+            }
+            let wrapper_ok = std::fs::read_to_string(wp)
+                .map(|c| c.contains(&expected_exe))
+                .unwrap_or(false);
+            if !wrapper_ok {
+                log_info!(
+                    "[nmh_registry] wrapper script outdated or missing exe path → needs update"
+                );
+                return true;
+            }
+        } else {
+            return true;
+        }
+
+        let wrapper_str = wrapper_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+
+        // At least one Chromium dir must have a manifest pointing to the wrapper.
+        let chromium_ok = chromium_nmh_dirs().iter().any(|dir| {
+            let path = dir.join(MANIFEST_FILENAME);
+            std::fs::read_to_string(path)
+                .map(|c| c.contains(&wrapper_str))
+                .unwrap_or(false)
+        });
+
+        // Firefox 是可选浏览器：清单存在时才验证路径；未安装 / 未注册则忽略。
+        let firefox_ok = firefox_nmh_dir()
+            .map(|dir| {
+                let path = dir.join(MANIFEST_FILENAME);
+                if !path.exists() {
+                    return true;
+                }
+                std::fs::read_to_string(path)
+                    .map(|c| c.contains(&wrapper_str))
+                    .unwrap_or(false)
+            })
+            .unwrap_or(true);
+
+        !(chromium_ok && firefox_ok)
+    }
+
+    pub fn register() -> Result<(), io::Error> {
+        let nmh_exe = find_nmh_exe()?;
+
+        // Write the shell wrapper script first; manifests point to it.
+        let wrapper = write_wrapper_script(&nmh_exe)?;
+        log_info!("[nmh_registry] NMH wrapper script: {}", wrapper.display());
+
+        for dir in chromium_nmh_dirs() {
+            match write_chromium_manifest(&wrapper, &dir) {
+                Ok(path) => {
+                    log_info!("[nmh_registry] Chromium manifest: {}", path.display());
+                }
+                Err(e) => {
+                    log_info!(
+                        "[nmh_registry] Chromium manifest error ({}): {}",
+                        dir.display(),
+                        e
+                    );
+                }
+            }
+        }
+
+        if let Some(dir) = firefox_nmh_dir() {
+            match write_firefox_manifest(&wrapper, &dir) {
+                Ok(path) => {
+                    log_info!("[nmh_registry] Firefox manifest: {}", path.display());
+                }
+                Err(e) => {
+                    log_info!("[nmh_registry] Firefox manifest error: {}", e);
+                }
+            }
+        }
+
+        log_info!(
+            "[nmh_registry] NMH registered: exe={}, wrapper={}",
+            nmh_exe.display(),
+            wrapper.display()
+        );
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn unregister() -> Result<(), io::Error> {
+        for dir in chromium_nmh_dirs() {
+            let _ = std::fs::remove_file(dir.join(MANIFEST_FILENAME));
+        }
+        if let Some(dir) = firefox_nmh_dir() {
+            let _ = std::fs::remove_file(dir.join(MANIFEST_FILENAME));
+        }
+        // Remove wrapper script.
+        if let Some(home) = home_dir() {
+            let wrapper = home
+                .join("Library")
+                .join("Application Support")
+                .join("fluxdown")
+                .join(NMH_WRAPPER_NAME);
+            let _ = std::fs::remove_file(wrapper);
+        }
+        log_info!("[nmh_registry] NMH registration removed");
+        Ok(())
+    }
+}
+
+// All other non-Windows, non-Linux, non-macOS platforms — no-op.
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 mod inner {
     use std::io;
 
@@ -606,7 +962,7 @@ mod inner {
         Ok(())
     }
 
-    #[allow(dead_code)] // reserved public API for future uninstall/disable flow
+    #[allow(dead_code)]
     pub fn unregister() -> Result<(), io::Error> {
         Ok(())
     }

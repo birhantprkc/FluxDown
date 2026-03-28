@@ -213,6 +213,10 @@ pub fn build_client(
         // 且企业内网邮箱等场景常见 hostname mismatch，严格验证会导致下载失败。
         // 类似 curl -k / aria2 --check-certificate=false。
         .danger_accept_invalid_certs(true)
+        // NOTE: This setting also applies to MITM proxy scenarios.
+        // A malicious proxy could intercept HTTPS traffic undetected.
+        // Users operating in sensitive environments should be aware of this trade-off.
+        // A future improvement would be to add a "strict TLS" toggle in Settings.
         // HTTP version — force HTTP/1.1 for download manager use cases:
         //  1. Range requests are reliable and well-tested on HTTP/1.1.
         //  2. Multi-segment downloads use separate TCP connections; HTTP/2
@@ -279,7 +283,9 @@ pub fn build_client(
             match detect_system_proxy() {
                 Ok(Some(sys_proxy)) => {
                     if let Some(url) = sys_proxy.to_proxy_url() {
-                        log_info!("[build_client] system proxy detected: {}", url);
+                        log_info!(
+                            "[build_client] system proxy detected (url redacted for security)"
+                        );
                         match reqwest::Proxy::all(&url) {
                             Ok(mut proxy) => {
                                 if !sys_proxy.username.is_empty() {
@@ -311,7 +317,7 @@ pub fn build_client(
         }
         ProxyMode::Manual => {
             if let Some(url) = proxy_config.to_proxy_url() {
-                log_info!("[build_client] manual proxy: {}", url);
+                log_info!("[build_client] manual proxy configured");
                 match reqwest::Proxy::all(&url) {
                     Ok(mut proxy) => {
                         if !proxy_config.username.is_empty() {
@@ -1306,8 +1312,69 @@ async fn run_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
         dedup_filename(&save_dir, &auto_name).await
     };
 
-    p.db.update_task_file_info(&p.task_id, &actual_name, info.total_bytes)
-        .await?;
+    // For resume tasks we must NOT blindly overwrite total_bytes with the
+    // freshly-probed value.  CDN servers frequently return a slightly different
+    // Content-Length on each request (transfer-encoding overhead, dynamic header
+    // injection, signed-URL padding, …).  Even a 1-byte difference would cause
+    // download_multi_segment to conclude "file changed → delete all segments →
+    // restart from zero".
+    //
+    // update_task_file_info_resume() applies a tolerance threshold: only
+    // updates total_bytes when the delta exceeds 1 % of the stored size (or
+    // 1 MiB, whichever is smaller).  It returns the *effective* total_bytes
+    // that callers must use so everything (segments, progress bar, size checks)
+    // is consistent with a single source of truth.
+    //
+    // For new downloads we still use the plain overwrite (update_task_file_info)
+    // because there is no prior state to protect.
+    let effective_total_bytes = if p.is_resume {
+        let (effective, updated) =
+            p.db.update_task_file_info_resume(&p.task_id, &actual_name, info.total_bytes)
+                .await?;
+        if updated {
+            log_info!(
+                "[download] task {} resume: total_bytes updated {} → {} (genuine size change)",
+                p.task_id,
+                info.total_bytes, // probed value that was accepted
+                effective
+            );
+        } else {
+            log_info!(
+                "[download] task {} resume: preserving stored total_bytes={} (probe={}, delta within tolerance)",
+                p.task_id,
+                effective,
+                info.total_bytes
+            );
+        }
+        effective
+    } else {
+        p.db.update_task_file_info(&p.task_id, &actual_name, info.total_bytes)
+            .await?;
+        info.total_bytes
+    };
+
+    // When resuming, also determine whether the server actually supports Range
+    // requests.  The probe result is authoritative for new downloads, but for
+    // resumes the probe may return supports_range=false for servers that only
+    // advertise Accept-Ranges on the real GET (not HEAD).  If we have existing
+    // segment rows in the DB the server clearly supported Range previously, so
+    // trust that history and keep multi-segment mode.
+    let effective_supports_range = if p.is_resume && !info.supports_range {
+        let existing_segs = p.db.load_segments(&p.task_id).await.unwrap_or_default();
+        if !existing_segs.is_empty() {
+            log_info!(
+                "[download] task {} resume: probe says no Range support but {} segment(s) exist in DB — \
+                 trusting prior Range capability",
+                p.task_id,
+                existing_segs.len()
+            );
+            true
+        } else {
+            false
+        }
+    } else {
+        info.supports_range
+    };
 
     // 二次取消检查：缩小 DB 已更新但文件尚未创建的竞争窗口。
     if p.cancel_token.is_cancelled() {
@@ -1335,7 +1402,7 @@ async fn run_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
         .send(ProgressUpdate {
             task_id: p.task_id.clone(),
             downloaded_bytes: initial_downloaded,
-            total_bytes: info.total_bytes,
+            total_bytes: effective_total_bytes,
             status: 1,
             error_message: String::new(),
             file_name: actual_name.clone(),
@@ -1376,7 +1443,8 @@ async fn run_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
 
     // Use multi-segment only when the server supports Range,
     // file is > 1 MB, and we asked for more than 1 segment.
-    let use_segments = info.supports_range && info.total_bytes > 1_048_576 && segments > 1;
+    let use_segments =
+        effective_supports_range && effective_total_bytes > 1_048_576 && segments > 1;
 
     log_info!(
         "[download] task {} mode={}, segments={}, temp={}, dest={}",
@@ -1396,7 +1464,7 @@ async fn run_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
             &p.task_id,
             &p.url,
             &temp_path,
-            info.total_bytes,
+            effective_total_bytes,
             segments,
             client,
             &p.db,
@@ -1415,8 +1483,8 @@ async fn run_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
             &p.task_id,
             &p.url,
             &temp_path,
-            info.total_bytes,
-            info.supports_range,
+            effective_total_bytes,
+            effective_supports_range,
             client,
             &p.db,
             &p.progress_tx,
@@ -1430,16 +1498,16 @@ async fn run_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
     }
 
     // Integrity check — verify download completeness.
-    if info.total_bytes > 0 {
+    if effective_total_bytes > 0 {
         if use_segments {
             // Multi-segment: file is pre-allocated via set_len() so metadata
             // size always == total_bytes.  Check actual progress from DB instead.
             let segs = p.db.load_segments(&p.task_id).await?;
             let seg_total: i64 = segs.iter().map(|s| s.downloaded_bytes).sum();
-            if seg_total < info.total_bytes {
+            if seg_total < effective_total_bytes {
                 return Err(DownloadError::Other(format!(
                     "segment integrity failed: expected {} bytes, segments downloaded {} bytes",
-                    info.total_bytes, seg_total
+                    effective_total_bytes, seg_total
                 )));
             }
             // Also verify actual file size on disk (guards against external
@@ -1448,19 +1516,19 @@ async fn run_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
                 .await
                 .map(|m| m.len() as i64)
                 .unwrap_or(0);
-            if file_len < info.total_bytes {
+            if file_len < effective_total_bytes {
                 return Err(DownloadError::Other(format!(
                     "file integrity failed: disk size={} bytes, expected {} bytes",
-                    file_len, info.total_bytes
+                    file_len, effective_total_bytes
                 )));
             }
         } else {
             // Single-thread: no pre-allocation, file size == downloaded bytes.
             let meta = tokio::fs::metadata(&temp_path).await?;
-            if (meta.len() as i64) != info.total_bytes {
+            if (meta.len() as i64) != effective_total_bytes {
                 return Err(DownloadError::Other(format!(
                     "size mismatch: expected {} bytes, got {} bytes",
-                    info.total_bytes,
+                    effective_total_bytes,
                     meta.len()
                 )));
             }
@@ -1470,8 +1538,8 @@ async fn run_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
     // Determine the actual downloaded size.  When the server didn't report
     // Content-Length (total_bytes == 0), read the real file size from disk so
     // that the completion signal carries accurate byte counts.
-    let actual_total = if info.total_bytes > 0 {
-        info.total_bytes
+    let actual_total = if effective_total_bytes > 0 {
+        effective_total_bytes
     } else {
         match tokio::fs::metadata(&temp_path).await {
             Ok(m) => m.len() as i64,
@@ -1550,9 +1618,11 @@ async fn download_single(
         Err(_) => 0,
     };
 
-    // Resume only if server supports Range and we have a partial file that is
-    // smaller than total (or total is unknown)
-    let resume =
+    // Attempt a Range resume when:
+    //   • The caller says the server supports Range (from probe or from DB history), AND
+    //   • We have a non-empty partial file on disk, AND
+    //   • The partial file is smaller than the known total (or total is unknown)
+    let want_resume =
         supports_range && existing_len > 0 && (total_bytes == 0 || existing_len < total_bytes);
 
     let mut downloaded: i64;
@@ -1566,8 +1636,34 @@ async fn download_single(
         req = req.header(reqwest::header::REFERER, referrer);
     }
     req = apply_extra_headers(req, extra_headers);
-    if resume {
+    if want_resume {
         req = req.header("Range", format!("bytes={}-", existing_len));
+    }
+
+    let resp = req.send().await?.error_for_status()?;
+
+    // Verify the server actually honoured the Range request.
+    // Some servers (or CDN edge nodes) silently ignore Range and return 200 OK
+    // with the full file.  If we appended to the partial file in that case we
+    // would produce a corrupt result.  Detect this and fall back to a clean
+    // full download.
+    //
+    // HTTP 206 Partial Content  → server honoured Range → safe to append
+    // HTTP 200 OK               → server ignored Range  → must restart from 0
+    // Any other 2xx             → treat as non-resumable for safety
+    let actual_resume = want_resume && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+
+    if want_resume && !actual_resume {
+        log_info!(
+            "[download-single] task {} server returned {} instead of 206; \
+             falling back to full download (existing_len={} discarded)",
+            task_id,
+            resp.status(),
+            existing_len
+        );
+    }
+
+    if actual_resume {
         downloaded = existing_len;
         let mut raw_file = OpenOptions::new().write(true).open(dest).await?;
         raw_file.seek(std::io::SeekFrom::End(0)).await?;
@@ -1578,8 +1674,6 @@ async fn download_single(
         // Reset DB progress so the UI doesn't show stale values
         let _ = db.update_task_progress(task_id, 0).await;
     }
-
-    let resp = req.send().await?.error_for_status()?;
 
     // Try extracting a better filename from the actual download response.
     // This is the ultimate fallback — the real GET may have Content-Disposition
@@ -1726,24 +1820,17 @@ async fn download_multi_segment(
         tokio::fs::create_dir_all(parent).await?;
     }
 
-    // Check if total_bytes changed since segments were created (server updated
-    // the file).  If so, discard old segments — the coordinator will recreate.
-    let existing_segments = db.load_segments(task_id).await?;
-    if !existing_segments.is_empty() {
-        let last_seg = existing_segments.iter().max_by_key(|s| s.index);
-        if let Some(last) = last_seg {
-            let expected_end = total_bytes - 1;
-            if last.end_byte != expected_end {
-                log_info!(
-                    "[download] task {} total_bytes changed: segment end_byte={}, expected={}. Discarding old segments.",
-                    task_id,
-                    last.end_byte,
-                    expected_end
-                );
-                db.delete_segments(task_id).await?;
-            }
-        }
-    }
+    // NOTE: total_bytes arriving here is already the *effective* value returned
+    // by update_task_file_info_resume — it is consistent with the stored segment
+    // boundaries (small CDN drift has been filtered out).  The coordinator's own
+    // effective_total_bytes logic (db_total vs probe) provides a second layer of
+    // protection.  The pre-check below is therefore intentionally removed: it
+    // compared the raw probed total_bytes against segment end_byte, which caused
+    // false positives (CDN rounding) that silently wiped all progress.
+    //
+    // The coordinator itself handles the two genuine cases:
+    //   • db_total <= probe_total  → trust DB segments, correct tasks.total_bytes
+    //   • db_total >  probe_total  → file genuinely shrank, rebuild segments
 
     // Delegate to the IDM-style dynamic segment coordinator.
     crate::segment_coordinator::run_coordinated_download(

@@ -74,7 +74,21 @@ fn log_path() -> Option<std::path::PathBuf> {
             .ok()
             .map(|tmp| Path::new(&tmp).join("fluxdown_nmh.log"))
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        // On macOS, Chrome launches NMH via launchd which may not set $HOME.
+        // Use home_dir() which falls back to getpwuid when $HOME is absent.
+        if let Some(home) = home_dir() {
+            let dir = home
+                .join("Library")
+                .join("Application Support")
+                .join("fluxdown");
+            let _ = std::fs::create_dir_all(&dir);
+            return Some(dir.join("fluxdown_nmh.log"));
+        }
+        Some(Path::new("/tmp").join("fluxdown_nmh.log"))
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
     {
         // Prefer XDG_RUNTIME_DIR (user-private); fall back to /tmp.
         if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
@@ -123,6 +137,63 @@ fn chrono_free_timestamp() -> String {
     let m = (secs / 60) % 60;
     let h = (secs / 3600) % 24;
     format!("{:02}:{:02}:{:02}", h, m, s)
+}
+
+// ---------------------------------------------------------------------------
+// Home directory resolution (macOS: getpwuid fallback for launchd env)
+// ---------------------------------------------------------------------------
+
+/// Returns the current user's home directory.
+///
+/// On macOS, Chrome/Firefox launch the NMH process via launchd, which may
+/// strip $HOME from the environment. Fall back to the passwd database via
+/// getpwuid(getuid()) to get the correct home directory in all cases.
+#[cfg(target_os = "macos")]
+fn home_dir() -> Option<PathBuf> {
+    // Fast path: $HOME is set (terminal / direct invocation).
+    if let Ok(h) = std::env::var("HOME") {
+        if !h.is_empty() {
+            return Some(PathBuf::from(h));
+        }
+    }
+
+    // Slow path: query the passwd database. Safe to call from any thread
+    // because we use the re-entrant getpwuid_r variant.
+    use std::ffi::CStr;
+    let uid = unsafe { libc::getuid() };
+    let buf_size = unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) };
+    let buf_size = if buf_size > 0 {
+        buf_size as usize
+    } else {
+        1024
+    };
+    let mut buf = vec![0i8; buf_size];
+    let mut pwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
+    let mut result: *mut libc::passwd = std::ptr::null_mut();
+
+    let ret = unsafe {
+        libc::getpwuid_r(
+            uid,
+            pwd.as_mut_ptr(),
+            buf.as_mut_ptr(),
+            buf_size,
+            &mut result,
+        )
+    };
+
+    if ret == 0 && !result.is_null() {
+        let pwd = unsafe { pwd.assume_init() };
+        if !pwd.pw_dir.is_null() {
+            let cstr = unsafe { CStr::from_ptr(pwd.pw_dir) };
+            if let Ok(s) = cstr.to_str() {
+                if !s.is_empty() {
+                    return Some(PathBuf::from(s));
+                }
+            }
+        }
+    }
+
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -223,6 +294,22 @@ mod pipe {
     /// Resolve the Unix socket path that the FluxDown app is listening on.
     /// Must match the path used in native/hub/src/native_messaging.rs.
     fn socket_path() -> std::path::PathBuf {
+        #[cfg(target_os = "macos")]
+        {
+            // macOS: ~/Library/Application Support/fluxdown/fluxdown.sock
+            // Must match native/hub/src/native_messaging.rs socket_path().
+            // Use home_dir() (getpwuid fallback) instead of $HOME directly,
+            // because Chrome/Firefox launch NMH via launchd which strips $HOME.
+            if let Some(home) = super::home_dir() {
+                let dir = home
+                    .join("Library")
+                    .join("Application Support")
+                    .join("fluxdown");
+                let _ = std::fs::create_dir_all(&dir);
+                return dir.join("fluxdown.sock");
+            }
+        }
+        // Linux (and any other Unix-like fallback)
         if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
             std::path::Path::new(&dir).join("fluxdown.sock")
         } else {
@@ -290,9 +377,7 @@ fn find_app_exe() -> Option<PathBuf> {
 
     // 2. Flutter build output (development fallback)
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let workspace_root = Path::new(manifest_dir)
-        .parent()
-        .and_then(|p| p.parent());
+    let workspace_root = Path::new(manifest_dir).parent().and_then(|p| p.parent());
 
     if let Some(ws) = workspace_root {
         for arch in &["x64", "arm64"] {
@@ -314,7 +399,58 @@ fn find_app_exe() -> Option<PathBuf> {
     None
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn find_app_exe() -> Option<PathBuf> {
+    // macOS app exe name depends on PRODUCT_NAME in Xcode / AppInfo.xcconfig.
+    // flutter run / flutter build macos uses the display name ("FluxDown"),
+    // while production archives may differ. Search both variants.
+    const APP_EXE_CANDIDATES: &[&str] = &["FluxDown", "flux_down"];
+    const APP_BUNDLE_CANDIDATES: &[&str] = &["FluxDown.app", "flux_down.app"];
+
+    // 1. Same directory as NMH binary (inside .app bundle: Contents/MacOS/)
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        for name in APP_EXE_CANDIDATES {
+            let candidate = dir.join(name);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    // 2. Flutter build output (development — flutter build macos / flutter run)
+    //    build/macos/Build/Products/{Debug,Release,Profile}/<AppName>.app/Contents/MacOS/<AppName>
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let workspace_root = Path::new(manifest_dir).parent().and_then(|p| p.parent());
+
+    if let Some(ws) = workspace_root {
+        for profile_cap in &["Debug", "Release", "Profile"] {
+            let products = ws
+                .join("build")
+                .join("macos")
+                .join("Build")
+                .join("Products")
+                .join(profile_cap);
+            for bundle in APP_BUNDLE_CANDIDATES {
+                for exe_name in APP_EXE_CANDIDATES {
+                    let candidate = products
+                        .join(bundle)
+                        .join("Contents")
+                        .join("MacOS")
+                        .join(exe_name);
+                    if candidate.exists() {
+                        return Some(candidate);
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
 fn find_app_exe() -> Option<PathBuf> {
     // 1. Same directory as NMH binary (production deployment)
     if let Ok(exe) = std::env::current_exe()
@@ -328,9 +464,7 @@ fn find_app_exe() -> Option<PathBuf> {
 
     // 2. Flutter build output (development — flutter run / flutter build linux)
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let workspace_root = Path::new(manifest_dir)
-        .parent()
-        .and_then(|p| p.parent());
+    let workspace_root = Path::new(manifest_dir).parent().and_then(|p| p.parent());
 
     if let Some(ws) = workspace_root {
         for profile in &["debug", "release", "profile"] {

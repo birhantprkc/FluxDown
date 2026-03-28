@@ -203,16 +203,44 @@ struct QueuedTask {
     extra_headers: std::collections::HashMap<String, String>,
 }
 
+/// All state associated with a single actively-running download task.
+///
+/// Consolidates the five parallel maps that previously tracked per-task state
+/// (`active_tokens`, `active_handles`, `bt_task_ids`, `hls_quality_senders`,
+/// `active_task_queue`) into one place so every insert/remove is atomic.
+struct ActiveTaskEntry {
+    /// Cancellation token — call `.cancel()` to request graceful shutdown.
+    token: CancellationToken,
+    /// Monotonic spawn generation — used to ignore stale `TaskDone` signals.
+    generation: u64,
+    /// JoinHandle for the spawned tokio task.  `None` until the task is
+    /// spawned (the field is filled in at the very end of `do_start_task` /
+    /// `do_resume_task` after the `tokio::spawn` call).
+    handle: Option<JoinHandle<()>>,
+    /// `true` when this is a BitTorrent download (magnet / .torrent).
+    /// Used to exclude BT tasks from the HTTP/FTP concurrency counter.
+    is_bt: bool,
+    /// Oneshot sender for HLS/DASH quality selection.  `None` for all other
+    /// protocols; consumed by `send_hls_quality_selection`.
+    hls_quality_tx: Option<oneshot::Sender<i32>>,
+    /// Named queue this task belongs to (empty string = default queue).
+    /// Used for per-queue concurrency counting.
+    queue_id: String,
+}
+
 pub struct DownloadManager {
     db: Db,
     client: Client,
     /// Current proxy configuration — used to rebuild Client on config change.
     proxy_config: ProxyConfig,
-    active_tokens: HashMap<String, (CancellationToken, u64)>,
-    /// JoinHandles for spawned download tasks — used by `delete_task` to await
-    /// task exit, ensuring file handles and network connections are released
-    /// before we attempt to remove files from disk.
-    active_handles: HashMap<String, JoinHandle<()>>,
+    /// All state for every actively-running download, keyed by task_id.
+    /// Replaces the five separate maps that previously tracked the same set:
+    ///   • active_tokens   (CancellationToken + generation)
+    ///   • active_handles  (JoinHandle)
+    ///   • bt_task_ids     (HashSet membership flag)
+    ///   • hls_quality_senders (oneshot::Sender)
+    ///   • active_task_queue   (queue_id string)
+    active_tasks: HashMap<String, ActiveTaskEntry>,
     /// Monotonically increasing counter to distinguish different spawns of
     /// the same task_id.  Prevents a stale `TaskDone` from an old spawn
     /// from accidentally removing the token of a newer spawn.
@@ -229,9 +257,6 @@ pub struct DownloadManager {
     /// FIFO queue of tasks waiting for a free slot (HTTP/FTP only — BT tasks
     /// bypass the queue entirely).
     pending_queue: VecDeque<QueuedTask>,
-    /// Set of task_ids that are BT (magnet) downloads.  Used to exclude BT
-    /// tasks from the HTTP/FTP concurrency limit in `has_capacity()`.
-    bt_task_ids: HashSet<String>,
     /// Global speed limiter shared with all HTTP/FTP download tasks.
     speed_limiter: SpeedLimiter,
     /// Shared BT session — lazily initialised on first BT download.
@@ -245,10 +270,6 @@ pub struct DownloadManager {
     app_data_dir: String,
     /// User-configurable BT settings (DHT, UPnP, ports, custom trackers).
     bt_config: BtConfig,
-    /// Pending HLS quality selections: task_id → oneshot sender.
-    /// Populated when an HLS download starts; consumed when Dart sends
-    /// `SelectHlsQuality`.
-    hls_quality_senders: HashMap<String, oneshot::Sender<i32>>,
     /// Globally configured user-agent string. Empty = use built-in Chrome UA.
     global_user_agent: String,
     /// Global default segment count from settings. 0 = defer to segment_advisor.
@@ -259,8 +280,6 @@ pub struct DownloadManager {
     /// Per-queue speed limiters (queue_id → SpeedLimiter).
     /// Created on demand for queues that have speed_limit_kbps > 0.
     queue_limiters: HashMap<String, SpeedLimiter>,
-    /// Maps active task_id → queue_id for per-queue concurrency counting.
-    active_task_queue: HashMap<String, String>,
     /// 是否已完成启动时的 reset_incomplete_tasks_to_paused 矫正。
     /// 该矫正仅需在第一次 load_and_send_all_tasks 时执行一次，
     /// 后续由 create_task / batch_create 触发时不得重复重置。
@@ -314,8 +333,7 @@ impl DownloadManager {
             db,
             client,
             proxy_config,
-            active_tokens: HashMap::new(),
-            active_handles: HashMap::new(),
+            active_tasks: HashMap::new(),
             generation: 0,
             progress_tx: tx,
             progress_rx: Some(rx),
@@ -323,10 +341,8 @@ impl DownloadManager {
             done_rx: Some(done_rx),
             max_concurrent,
             pending_queue: VecDeque::new(),
-            bt_task_ids: HashSet::new(),
             speed_limiter: limiter,
             bt_session: None,
-            hls_quality_senders: HashMap::new(),
             default_save_dir,
             app_data_dir,
             bt_config,
@@ -334,7 +350,6 @@ impl DownloadManager {
             global_default_segments: 0,
             queues: HashMap::new(),
             queue_limiters: HashMap::new(),
-            active_task_queue: HashMap::new(),
             startup_reset_done: false,
             priority_task_id: None,
             auto_paused_ids: HashSet::new(),
@@ -542,13 +557,7 @@ impl DownloadManager {
         if self.max_concurrent == 0 {
             return true;
         }
-        // Use saturating_sub to guard against underflow if bt_task_ids
-        // temporarily contains an entry not yet cleaned from active_tokens
-        // (e.g. generation mismatch in on_task_done).
-        let http_ftp_active = self
-            .active_tokens
-            .len()
-            .saturating_sub(self.bt_task_ids.len());
+        let http_ftp_active = self.active_tasks.values().filter(|e| !e.is_bt).count();
         http_ftp_active < self.max_concurrent
     }
 
@@ -570,9 +579,9 @@ impl DownloadManager {
             return true;
         }
         let active_in_queue = self
-            .active_task_queue
+            .active_tasks
             .values()
-            .filter(|qid| qid.as_str() == queue_id)
+            .filter(|e| e.queue_id.as_str() == queue_id)
             .count();
         active_in_queue < queue_max
     }
@@ -619,7 +628,7 @@ impl DownloadManager {
             }
             // Edge case: task was resumed/cancelled while queued.
             if self
-                .active_tokens
+                .active_tasks
                 .contains_key(&self.pending_queue[i].task_id)
             {
                 self.pending_queue.remove(i);
@@ -653,18 +662,14 @@ impl DownloadManager {
     /// Only removes the entry if the generation matches, preventing a stale
     /// `TaskDone` from an old spawn from accidentally removing a newer token.
     pub async fn on_task_done(&mut self, task_id: &str, generation: u64) {
-        let generation_matched = if let Some((_, stored_gen)) = self.active_tokens.get(task_id) {
-            *stored_gen == generation
-        } else {
-            false
-        };
+        let generation_matched = self
+            .active_tasks
+            .get(task_id)
+            .map(|e| e.generation == generation)
+            .unwrap_or(false);
 
         if generation_matched {
-            self.active_tokens.remove(task_id);
-            self.active_handles.remove(task_id);
-            self.bt_task_ids.remove(task_id);
-            self.hls_quality_senders.remove(task_id);
-            self.active_task_queue.remove(task_id);
+            self.active_tasks.remove(task_id);
 
             // Boost 模式：优先任务完成后自动恢复其他任务。
             // 仅在 generation 匹配时触发，防止旧 spawn 发来的 stale TaskDone
@@ -675,6 +680,10 @@ impl DownloadManager {
         }
 
         // A slot freed up — try to start queued tasks.
+        // SAFETY (current_thread): `remove` + `drain_queue` have no `.await` between
+        // them at this point, so no other task can observe the partially-updated state.
+        // If this code is ever ported to a multi-threaded runtime, a lock around
+        // `active_tokens` modifications would be required.
         self.drain_queue().await;
 
         // ----- Auto-retry for retriable network errors ----------------------
@@ -726,7 +735,7 @@ impl DownloadManager {
     /// nothing queued) so the WAL file doesn't linger and cause sporadic disk
     /// I/O in the background.
     async fn maybe_wal_checkpoint(&self) {
-        if self.active_tokens.is_empty()
+        if self.active_tasks.is_empty()
             && self.pending_queue.is_empty()
             && let Err(e) = self.db.wal_checkpoint().await
         {
@@ -745,7 +754,7 @@ impl DownloadManager {
             return;
         }
         // Keep the session alive if any BT tasks are actively downloading.
-        if !self.bt_task_ids.is_empty() {
+        if self.active_tasks.values().any(|e| e.is_bt) {
             return;
         }
         // BT tasks bypass the pending queue, so this guard is purely
@@ -778,9 +787,13 @@ impl DownloadManager {
 
     /// Forward a quality selection from Dart to the waiting HLS download task.
     pub fn send_hls_quality_selection(&mut self, task_id: &str, selected_index: i32) {
-        if let Some(tx) = self.hls_quality_senders.remove(task_id) {
-            let _ = tx.send(selected_index);
-        } else {
+        if let Some(entry) = self.active_tasks.get_mut(task_id) {
+            if let Some(tx) = entry.hls_quality_tx.take() {
+                let _ = tx.send(selected_index);
+                return;
+            }
+        }
+        {
             log_info!(
                 "[manager] no pending HLS quality selection for task {}",
                 task_id
@@ -941,7 +954,7 @@ impl DownloadManager {
             log_info!(
                 "[manager] queuing task {} (active={}, max={}, queue={})",
                 queued.task_id,
-                self.active_tokens.len(),
+                self.active_tasks.len(),
                 self.max_concurrent,
                 queued.queue_id
             );
@@ -955,10 +968,15 @@ impl DownloadManager {
             // Spawn 元数据探测（后台，非阻塞）
             let probe_client = self.client.clone();
             let probe_db = self.db.clone();
+            let probe_proxy = self.proxy_config.clone();
             tokio::spawn(async move {
-                let (name, size) =
-                    crate::meta_prober::probe_task_meta(&probe_url, &probe_name, &probe_client)
-                        .await;
+                let (name, size) = crate::meta_prober::probe_task_meta(
+                    &probe_url,
+                    &probe_name,
+                    &probe_client,
+                    &probe_proxy,
+                )
+                .await;
                 if !name.is_empty() || size > 0 {
                     if !name.is_empty() {
                         let _ = probe_db.update_task_file_name(&probe_tid, &name).await;
@@ -1031,22 +1049,28 @@ impl DownloadManager {
         self.generation += 1;
         let spawn_gen = self.generation;
         let cancel_token = CancellationToken::new();
-        self.active_tokens
-            .insert(task_id.clone(), (cancel_token.clone(), spawn_gen));
-        // Track which queue this task belongs to for per-queue concurrency counting.
-        self.active_task_queue
-            .insert(task_id.clone(), queue_id.clone());
-        // Select speed limiter: queue-specific if the queue has a limit, global otherwise.
-        let speed_limiter = self.queue_limiter_for(&queue_id);
 
         let use_ftp = is_ftp_url(&url);
         let use_hls = hls_downloader::is_hls_url(&url);
         let use_dash = dash_downloader::is_dash_url(&url);
         let use_bt = is_magnet(&url) || !torrent_file_bytes.is_empty() || is_torrent_file_url(&url);
 
-        if use_bt {
-            self.bt_task_ids.insert(task_id.clone());
-        }
+        // Insert a placeholder entry now so capacity/queue checks are correct
+        // for any reentrant calls that may occur during BT session init below.
+        // The `handle` field is filled in after tokio::spawn.
+        self.active_tasks.insert(
+            task_id.clone(),
+            ActiveTaskEntry {
+                token: cancel_token.clone(),
+                generation: spawn_gen,
+                handle: None,
+                is_bt: use_bt,
+                hls_quality_tx: None, // filled below for HLS/DASH
+                queue_id: queue_id.clone(),
+            },
+        );
+        // Select speed limiter: queue-specific if the queue has a limit, global otherwise.
+        let speed_limiter = self.queue_limiter_for(&queue_id);
 
         let done_tx = self.done_tx.clone();
         let panic_progress_tx = self.progress_tx.clone();
@@ -1073,14 +1097,13 @@ impl DownloadManager {
                         segment_details: None,
                     })
                     .await;
-                self.active_tokens.remove(&task_id);
-                self.bt_task_ids.remove(&task_id);
+                self.active_tasks.remove(&task_id);
                 return;
             }
             // bt_session is guaranteed to be Some after ensure_bt_session().
             let Some(bt_ref) = self.bt_session.as_ref() else {
                 log_info!("[manager] BUG: bt_session is None after ensure_bt_session succeeded");
-                self.active_tokens.remove(&task_id);
+                self.active_tasks.remove(&task_id);
                 return;
             };
 
@@ -1166,7 +1189,9 @@ impl DownloadManager {
 
             let hls_quality_rx = if use_hls || use_dash {
                 let (tx, rx) = oneshot::channel();
-                self.hls_quality_senders.insert(task_id.clone(), tx);
+                if let Some(entry) = self.active_tasks.get_mut(&task_id) {
+                    entry.hls_quality_tx = Some(tx);
+                }
                 Some(rx)
             } else {
                 None
@@ -1225,7 +1250,9 @@ impl DownloadManager {
                     .await;
             })
         };
-        self.active_handles.insert(task_id, handle);
+        if let Some(entry) = self.active_tasks.get_mut(&task_id) {
+            entry.handle = Some(handle);
+        }
     }
 
     pub async fn pause_task(&mut self, task_id: &str) {
@@ -1252,11 +1279,8 @@ impl DownloadManager {
             return;
         }
 
-        if let Some((token, _gen)) = self.active_tokens.remove(task_id) {
-            token.cancel();
-            self.bt_task_ids.remove(task_id);
-            self.hls_quality_senders.remove(task_id);
-            self.active_task_queue.remove(task_id);
+        if let Some(entry) = self.active_tasks.remove(task_id) {
+            entry.token.cancel();
 
             // For BT tasks, explicitly pause the torrent in the session so
             // that the handle stays cached for fast resume.  This is a
@@ -1303,7 +1327,7 @@ impl DownloadManager {
         // 用户手动恢复时重置自动重试计数，让下次失败重新获得完整重试配额。
         self.auto_retry_counts.remove(task_id);
 
-        if self.active_tokens.contains_key(task_id) {
+        if self.active_tasks.contains_key(task_id) {
             // A task can be in active_tokens but already terminal in the DB:
             // this happens when the download task has finished (status=3/4
             // written to DB) but the done_tx hasn't been consumed by the
@@ -1327,14 +1351,10 @@ impl DownloadManager {
                 return; // truly still active — do not interrupt
             }
             log_info!(
-                "[manager] resume_task {}: stale active_tokens entry (terminal in DB) — force-removing",
+                "[manager] resume_task {}: stale active_tasks entry (terminal in DB) — force-removing",
                 task_id
             );
-            self.active_tokens.remove(task_id);
-            self.active_handles.remove(task_id);
-            self.bt_task_ids.remove(task_id);
-            self.hls_quality_senders.remove(task_id);
-            self.active_task_queue.remove(task_id);
+            self.active_tasks.remove(task_id);
             // Do NOT drain_queue here — we are about to occupy the freed slot.
         }
 
@@ -1363,7 +1383,7 @@ impl DownloadManager {
             log_info!(
                 "[manager] queuing resume for task {} (active={}, max={}, queue={})",
                 task_id,
-                self.active_tokens.len(),
+                self.active_tasks.len(),
                 self.max_concurrent,
                 queue_id
             );
@@ -1452,21 +1472,26 @@ impl DownloadManager {
         self.generation += 1;
         let spawn_gen = self.generation;
         let cancel_token = CancellationToken::new();
-        self.active_tokens
-            .insert(task_id.to_string(), (cancel_token.clone(), spawn_gen));
-        // Track queue membership and select the appropriate speed limiter.
-        self.active_task_queue
-            .insert(task_id.to_string(), task.queue_id.clone());
-        let speed_limiter = self.queue_limiter_for(&task.queue_id);
 
         let use_ftp = is_ftp_url(&task.url);
         let use_hls = hls_downloader::is_hls_url(&task.url);
         let use_dash = dash_downloader::is_dash_url(&task.url);
         let use_bt = is_bt_url(&task.url);
 
-        if use_bt {
-            self.bt_task_ids.insert(task_id.to_string());
-        }
+        // Insert placeholder entry (handle filled in after tokio::spawn).
+        self.active_tasks.insert(
+            task_id.to_string(),
+            ActiveTaskEntry {
+                token: cancel_token.clone(),
+                generation: spawn_gen,
+                handle: None,
+                is_bt: use_bt,
+                hls_quality_tx: None,
+                queue_id: task.queue_id.clone(),
+            },
+        );
+        // Track queue membership and select the appropriate speed limiter.
+        let speed_limiter = self.queue_limiter_for(&task.queue_id);
 
         let tid = task_id.to_string();
         let done_tx = self.done_tx.clone();
@@ -1491,14 +1516,13 @@ impl DownloadManager {
                         segment_details: None,
                     })
                     .await;
-                self.active_tokens.remove(task_id);
-                self.bt_task_ids.remove(task_id);
+                self.active_tasks.remove(task_id);
                 return;
             }
             // bt_session is guaranteed to be Some after ensure_bt_session().
             let Some(bt_ref) = self.bt_session.as_ref() else {
                 log_info!("[manager] BUG: bt_session is None after ensure_bt_session succeeded");
-                self.active_tokens.remove(task_id);
+                self.active_tasks.remove(task_id);
                 return;
             };
 
@@ -1551,8 +1575,7 @@ impl DownloadManager {
                     );
                     let msg = "torrent file bytes lost — cannot resume";
                     let _ = self.db.update_task_status(task_id, 4, msg).await;
-                    self.active_tokens.remove(task_id);
-                    self.bt_task_ids.remove(task_id);
+                    self.active_tasks.remove(task_id);
                     return;
                 }
                 TorrentSource::TorrentFileBytes(bytes)
@@ -1614,7 +1637,9 @@ impl DownloadManager {
 
             let hls_quality_rx = if use_hls || use_dash {
                 let (tx, rx) = oneshot::channel();
-                self.hls_quality_senders.insert(tid.clone(), tx);
+                if let Some(entry) = self.active_tasks.get_mut(task_id) {
+                    entry.hls_quality_tx = Some(tx);
+                }
                 Some(rx)
             } else {
                 None
@@ -1673,7 +1698,9 @@ impl DownloadManager {
                     .await;
             })
         };
-        self.active_handles.insert(tid, handle);
+        if let Some(entry) = self.active_tasks.get_mut(task_id) {
+            entry.handle = Some(handle);
+        }
     }
 
     pub async fn cancel_task(&mut self, task_id: &str) {
@@ -1682,21 +1709,21 @@ impl DownloadManager {
             self.pending_queue.remove(pos);
         }
 
-        if let Some((token, _gen)) = self.active_tokens.remove(task_id) {
-            token.cancel();
-            self.bt_task_ids.remove(task_id);
-            self.hls_quality_senders.remove(task_id);
-            self.active_task_queue.remove(task_id);
-
+        if let Some(entry) = self.active_tasks.remove(task_id) {
+            entry.token.cancel();
             // For BT tasks, explicitly pause the torrent in the session so
             // that fast-resume data is preserved and the user can resume later.
             // This mirrors what pause_task does for BT tasks.
-            if let Some(ref bt) = self.bt_session {
-                let _ = bt.pause_task(task_id).await;
+            if entry.is_bt {
+                if let Some(ref bt) = self.bt_session {
+                    let _ = bt.pause_task(task_id).await;
+                }
+            }
+            // Clean up the JoinHandle so it doesn't linger after cancellation.
+            if let Some(handle) = entry.handle {
+                drop(handle);
             }
         }
-        // Clean up the JoinHandle so it doesn't linger after cancellation.
-        self.active_handles.remove(task_id);
 
         let _ = self.db.update_task_status(task_id, 4, "cancelled").await;
 
@@ -1740,13 +1767,13 @@ impl DownloadManager {
 
         // Cancel the active download (if any) and wait for the spawned task
         // to exit, ensuring all network sockets and file handles are closed.
-        if let Some((token, _gen)) = self.active_tokens.remove(task_id) {
-            token.cancel();
-            self.bt_task_ids.remove(task_id);
-            self.hls_quality_senders.remove(task_id);
-            self.active_task_queue.remove(task_id);
-        }
-        let handle_timed_out = if let Some(handle) = self.active_handles.remove(task_id) {
+        let maybe_handle = if let Some(entry) = self.active_tasks.remove(task_id) {
+            entry.token.cancel();
+            entry.handle
+        } else {
+            None
+        };
+        let handle_timed_out = if let Some(handle) = maybe_handle {
             // Timeout guard: don't block forever if the task misbehaves.
             tokio::time::timeout(std::time::Duration::from_secs(5), handle)
                 .await
@@ -1944,14 +1971,11 @@ impl DownloadManager {
         //    than waiting for ALL handles before starting any cleanup.
         let mut handle_map: HashMap<String, JoinHandle<()>> = HashMap::new();
         for tid in task_ids {
-            if let Some((token, _gen)) = self.active_tokens.remove(tid.as_str()) {
-                token.cancel();
-                self.bt_task_ids.remove(tid.as_str());
-                self.hls_quality_senders.remove(tid.as_str());
-                self.active_task_queue.remove(tid.as_str());
-            }
-            if let Some(h) = self.active_handles.remove(tid.as_str()) {
-                handle_map.insert(tid.clone(), h);
+            if let Some(entry) = self.active_tasks.remove(tid.as_str()) {
+                entry.token.cancel();
+                if let Some(h) = entry.handle {
+                    handle_map.insert(tid.clone(), h);
+                }
             }
         }
 
@@ -2002,7 +2026,9 @@ impl DownloadManager {
                         }
                         // BT file cleanup
                         if delete_files && safe {
-                            let _permit = sem.acquire().await.unwrap();
+                            let Ok(_permit) = sem.acquire().await else {
+                                return;
+                            };
                             if path.is_dir() {
                                 let _ = tokio::fs::remove_dir_all(&path).await;
                             } else {
@@ -2031,7 +2057,7 @@ impl DownloadManager {
                             let _ =
                                 tokio::time::timeout(std::time::Duration::from_secs(10), h).await;
                         }
-                        let _permit = sem.acquire().await.unwrap();
+                        let Ok(_permit) = sem.acquire().await else { return; };
                         // Remove temp file
                         let temp_path = PathBuf::from(format!(
                             "{}{}",
@@ -2166,20 +2192,16 @@ impl DownloadManager {
 
     /// Resume a task using a pre-loaded TaskInfo row (avoids redundant DB query).
     async fn resume_task_with_row(&mut self, task_id: &str, task_row: TaskInfo) {
-        if self.active_tokens.contains_key(task_id) {
+        if self.active_tasks.contains_key(task_id) {
             let is_terminal = task_row.status == 3 || task_row.status == 4;
             if !is_terminal {
                 return; // truly still active — do not interrupt
             }
             log_info!(
-                "[manager] resume_task {}: stale active_tokens entry (terminal in DB) — force-removing",
+                "[manager] resume_task {}: stale active_tasks entry (terminal in DB) — force-removing",
                 task_id
             );
-            self.active_tokens.remove(task_id);
-            self.active_handles.remove(task_id);
-            self.bt_task_ids.remove(task_id);
-            self.hls_quality_senders.remove(task_id);
-            self.active_task_queue.remove(task_id);
+            self.active_tasks.remove(task_id);
         }
 
         if self.pending_queue.iter().any(|q| q.task_id == task_id) {
@@ -2196,7 +2218,7 @@ impl DownloadManager {
             log_info!(
                 "[manager] queuing resume for task {} (active={}, max={}, queue={})",
                 task_id,
-                self.active_tokens.len(),
+                self.active_tasks.len(),
                 self.max_concurrent,
                 queue_id
             );
@@ -2243,10 +2265,9 @@ impl DownloadManager {
 impl Drop for DownloadManager {
     fn drop(&mut self) {
         // Cancel all active downloads (non-blocking, just sets atomic flags).
-        for (_tid, (token, _gen)) in self.active_tokens.drain() {
-            token.cancel();
+        for (_tid, entry) in self.active_tasks.drain() {
+            entry.token.cancel();
         }
-        self.bt_task_ids.clear();
         self.pending_queue.clear();
 
         // Shut down the BT session on a dedicated thread to avoid deadlock.
@@ -2398,9 +2419,8 @@ impl DownloadManager {
         // If the task is currently active, update its tracked queue.
         // Note: the existing speed limiter runs to completion; the new
         // queue limiter takes effect on next resume.
-        if self.active_task_queue.contains_key(&task_id) {
-            self.active_task_queue
-                .insert(task_id.clone(), queue_id.clone());
+        if let Some(entry) = self.active_tasks.get_mut(&task_id) {
+            entry.queue_id = queue_id.clone();
         }
         log_info!("[manager] moved task {} to queue '{}'", task_id, queue_id);
         self.send_all_queues().await;
@@ -2450,7 +2470,7 @@ impl DownloadManager {
         // Note: each pause_task() call invokes drain_queue(), which could promote a
         // queued task to active.  We collect active IDs first, then pause them.
         let active_ids: Vec<String> = self
-            .active_tokens
+            .active_tasks
             .keys()
             .filter(|id| id.as_str() != task_id.as_str())
             .cloned()
@@ -2475,7 +2495,7 @@ impl DownloadManager {
         // Step 4: Mop up — drain_queue() calls in step 2/3 may have promoted additional
         // tasks to active.  Pause anything that slipped through.
         let stray_active: Vec<String> = self
-            .active_tokens
+            .active_tasks
             .keys()
             .filter(|id| id.as_str() != task_id.as_str() && !self.auto_paused_ids.contains(*id))
             .cloned()
@@ -2491,7 +2511,7 @@ impl DownloadManager {
         // For a previously-queued target: it was removed from pending_queue in step 1
         // so resume_task() will proceed normally (no early-return guard).
         // For an already-active target: nothing to do.
-        if !self.active_tokens.contains_key(&task_id) {
+        if !self.active_tasks.contains_key(&task_id) {
             // Remove from auto_paused_ids so clear_priority won't try to resume
             // the task that's already running as priority.
             self.auto_paused_ids.remove(&task_id);
@@ -2510,7 +2530,7 @@ impl DownloadManager {
         // 若 do_resume_task / resume_task 内部出错（DB 读取失败、BT 初始化失败等），
         // 任务不会出现在 active_tokens 中。此时必须取消 boost 并恢复已暂停的任务，
         // 否则 Dart 侧会显示 boost 激活但实际无任务下载，产生莫名其妙的结果。
-        if !self.active_tokens.contains_key(&task_id) {
+        if !self.active_tasks.contains_key(&task_id) {
             log_info!(
                 "[manager] boost: target task {} failed to start — cancelling boost mode",
                 task_id

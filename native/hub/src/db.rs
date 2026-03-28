@@ -32,7 +32,7 @@ impl Db {
              PRAGMA cache_size=-512;\
              PRAGMA temp_store=MEMORY;\
              PRAGMA mmap_size=0;\
-             PRAGMA wal_autocheckpoint=0;",
+             PRAGMA wal_autocheckpoint=1000;",
         )?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS tasks (
@@ -81,28 +81,25 @@ impl Db {
         // Phase 2: per-task proxy URL column
         // ALTER TABLE … ADD COLUMN fails with "duplicate column" if already exists,
         // so we silently ignore that specific error.
-        let _ = conn.execute_batch(
-            "ALTER TABLE tasks ADD COLUMN proxy_url TEXT NOT NULL DEFAULT '';"
-        );
+        let _ =
+            conn.execute_batch("ALTER TABLE tasks ADD COLUMN proxy_url TEXT NOT NULL DEFAULT '';");
 
         // Phase 3: named queue assignment column
-        let _ = conn.execute_batch(
-            "ALTER TABLE tasks ADD COLUMN queue_id TEXT NOT NULL DEFAULT '';"
-        );
+        let _ =
+            conn.execute_batch("ALTER TABLE tasks ADD COLUMN queue_id TEXT NOT NULL DEFAULT '';");
 
         // Phase 4: per-queue default segment count
         let _ = conn.execute_batch(
-            "ALTER TABLE queues ADD COLUMN default_segments INTEGER NOT NULL DEFAULT 0;"
+            "ALTER TABLE queues ADD COLUMN default_segments INTEGER NOT NULL DEFAULT 0;",
         );
 
         // Phase 5: per-task checksum for integrity verification
-        let _ = conn.execute_batch(
-            "ALTER TABLE tasks ADD COLUMN checksum TEXT NOT NULL DEFAULT '';"
-        );
+        let _ =
+            conn.execute_batch("ALTER TABLE tasks ADD COLUMN checksum TEXT NOT NULL DEFAULT '';");
 
         // Phase 6: per-queue default user-agent
         let _ = conn.execute_batch(
-            "ALTER TABLE queues ADD COLUMN default_user_agent TEXT NOT NULL DEFAULT '';"
+            "ALTER TABLE queues ADD COLUMN default_user_agent TEXT NOT NULL DEFAULT '';",
         );
 
         Ok(Self {
@@ -202,8 +199,87 @@ impl Db {
         .await?
     }
 
+    /// Resume-safe variant of `update_task_file_info`.
+    ///
+    /// Always updates `file_name`.  Only updates `total_bytes` when the newly
+    /// probed size differs **significantly** from the stored value, which
+    /// indicates the remote file genuinely changed size (not just CDN rounding
+    /// or dynamic Content-Length drift).
+    ///
+    /// The threshold is 1 % of the stored size or 1 MiB, whichever is smaller,
+    /// with a hard floor of 1 byte so equality is still respected.
+    ///
+    /// When `total_bytes` is kept unchanged the function returns the **stored**
+    /// value so callers can build correct progress updates even when the probe
+    /// returned a slightly different number.
+    ///
+    /// Returns `(effective_total_bytes, total_bytes_was_updated)`.
+    pub async fn update_task_file_info_resume(
+        &self,
+        id: &str,
+        file_name: &str,
+        probed_total_bytes: i64,
+    ) -> Result<(i64, bool), DbError> {
+        let conn = self.conn.clone();
+        let id = id.to_owned();
+        let file_name = file_name.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().map_err(|_| DbError::LockPoisoned)?;
+
+            // Read the currently stored total_bytes.
+            let stored_total: i64 = match conn.query_row(
+                "SELECT total_bytes FROM tasks WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            ) {
+                Ok(v) => v,
+                Err(rusqlite::Error::QueryReturnedNoRows) => 0,
+                Err(e) => return Err(DbError::Sqlite(e)),
+            };
+
+            // Decide whether the probed size represents a genuine file change.
+            //
+            // Threshold: 1 % of stored size, capped at 1 MiB, floor 1 byte.
+            // A CDN may pad/trim Content-Length by a few hundred bytes due to
+            // transfer-encoding overhead or dynamic header injection; those
+            // small deltas must NOT invalidate existing segment boundaries.
+            let threshold: i64 = if stored_total > 0 {
+                (stored_total / 100).clamp(1, 1_048_576)
+            } else {
+                1
+            };
+
+            let delta = (probed_total_bytes - stored_total).abs();
+            let size_changed = delta > threshold;
+
+            let effective_total = if size_changed || stored_total == 0 {
+                // Genuine size change (or first-time probe) — update both fields.
+                conn.execute(
+                    "UPDATE tasks SET file_name = ?1, total_bytes = ?2 WHERE id = ?3",
+                    params![file_name, probed_total_bytes, id],
+                )?;
+                probed_total_bytes
+            } else {
+                // Only update file_name; preserve existing total_bytes so that
+                // segment end_byte boundaries remain consistent.
+                conn.execute(
+                    "UPDATE tasks SET file_name = ?1 WHERE id = ?2",
+                    params![file_name, id],
+                )?;
+                stored_total
+            };
+
+            Ok((effective_total, size_changed || stored_total == 0))
+        })
+        .await?
+    }
+
     /// 更新任务文件名（仅当任务文件名为空时，防止覆盖用户自定义名称）
-    pub async fn update_task_file_name(&self, task_id: &str, file_name: &str) -> Result<(), DbError> {
+    pub async fn update_task_file_name(
+        &self,
+        task_id: &str,
+        file_name: &str,
+    ) -> Result<(), DbError> {
         let conn = self.conn.clone();
         let id = task_id.to_owned();
         let name = file_name.to_owned();
@@ -224,10 +300,8 @@ impl Db {
         let conn = self.conn.clone();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|_| DbError::LockPoisoned)?;
-            let affected = conn.execute(
-                "UPDATE tasks SET status = 2 WHERE status IN (0, 1, 5)",
-                [],
-            )?;
+            let affected =
+                conn.execute("UPDATE tasks SET status = 2 WHERE status IN (0, 1, 5)", [])?;
             Ok(affected as u64)
         })
         .await?
@@ -396,10 +470,7 @@ impl Db {
                 );
                 conn.execute(&sql, params.as_slice())?;
 
-                let sql = format!(
-                    "DELETE FROM tasks WHERE id IN ({})",
-                    placeholders
-                );
+                let sql = format!("DELETE FROM tasks WHERE id IN ({})", placeholders);
                 conn.execute(&sql, params.as_slice())?;
             }
             conn.execute_batch("COMMIT")?;
@@ -434,10 +505,7 @@ impl Db {
     }
 
     /// Load raw .torrent file bytes for a task (used when resuming).
-    pub async fn load_torrent_file_bytes(
-        &self,
-        task_id: &str,
-    ) -> Result<Option<Vec<u8>>, DbError> {
+    pub async fn load_torrent_file_bytes(&self, task_id: &str) -> Result<Option<Vec<u8>>, DbError> {
         let conn = self.conn.clone();
         let task_id = task_id.to_owned();
         tokio::task::spawn_blocking(move || {
@@ -479,10 +547,7 @@ impl Db {
         .await?
     }
 
-    pub async fn load_segments(
-        &self,
-        task_id: &str,
-    ) -> Result<Vec<SegmentInfo>, DbError> {
+    pub async fn load_segments(&self, task_id: &str) -> Result<Vec<SegmentInfo>, DbError> {
         let conn = self.conn.clone();
         let task_id = task_id.to_owned();
         tokio::task::spawn_blocking(move || {
@@ -534,7 +599,7 @@ impl Db {
     pub async fn flush_segments_progress(
         &self,
         task_id: &str,
-        updates: Vec<(i32, i64)>,  // (segment_index, downloaded_bytes)
+        updates: Vec<(i32, i64)>, // (segment_index, downloaded_bytes)
     ) -> Result<(), DbError> {
         let conn = self.conn.clone();
         let task_id = task_id.to_owned();
@@ -985,11 +1050,7 @@ impl Db {
         let conn = self.conn.clone();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|_| DbError::LockPoisoned)?;
-            let count: i32 = conn.query_row(
-                "SELECT COUNT(*) FROM queues",
-                [],
-                |row| row.get(0),
-            )?;
+            let count: i32 = conn.query_row("SELECT COUNT(*) FROM queues", [], |row| row.get(0))?;
             Ok(count)
         })
         .await?
@@ -1027,17 +1088,26 @@ mod tests {
     /// Returns (Db, dir_path) — caller should remove the dir when done.
     fn open_test_db() -> (Db, std::path::PathBuf) {
         let n = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir()
-            .join(format!("fluxdown_test_{}_{}", std::process::id(), n));
+        let dir = std::env::temp_dir().join(format!("fluxdown_test_{}_{}", std::process::id(), n));
         std::fs::create_dir_all(&dir).expect("create temp dir");
         let db = Db::open(&dir).expect("open test db");
         (db, dir)
     }
 
     async fn insert_task(db: &Db, id: &str) {
-        db.insert_task(id, "http://example.com/file.bin", "file.bin", "/tmp", 1, 0, "", "", "")
-            .await
-            .expect("insert task");
+        db.insert_task(
+            id,
+            "http://example.com/file.bin",
+            "file.bin",
+            "/tmp",
+            1,
+            0,
+            "",
+            "",
+            "",
+        )
+        .await
+        .expect("insert task");
     }
 
     // -----------------------------------------------------------------------
@@ -1086,7 +1156,10 @@ mod tests {
 
         db.delete_task("t1").await.expect("first delete");
         let result = db.delete_task("t1").await;
-        assert!(result.is_ok(), "second delete of already-deleted task must succeed");
+        assert!(
+            result.is_ok(),
+            "second delete of already-deleted task must succeed"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1177,9 +1250,7 @@ mod tests {
 
         let start = std::time::Instant::now();
         for i in 0..N {
-            db.delete_task(&format!("bench-{i}"))
-                .await
-                .expect("delete");
+            db.delete_task(&format!("bench-{i}")).await.expect("delete");
         }
         let elapsed = start.elapsed();
 
@@ -1226,6 +1297,251 @@ mod tests {
         }
         let result = db.wal_checkpoint().await;
         assert!(result.is_ok(), "wal_checkpoint must succeed after writes");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // update_task_file_info_resume
+    // -----------------------------------------------------------------------
+
+    /// Helper: insert a task with a specific total_bytes value.
+    async fn insert_task_with_size(db: &Db, id: &str, total_bytes: i64) {
+        db.insert_task(
+            id,
+            "http://example.com/file.bin",
+            "file.bin",
+            "/tmp",
+            1,
+            total_bytes,
+            "",
+            "",
+            "",
+        )
+        .await
+        .expect("insert task with size");
+    }
+
+    /// CDN drift within 1 % tolerance must NOT update total_bytes.
+    #[tokio::test]
+    async fn resume_file_info_cdn_drift_within_tolerance_preserves_total_bytes() {
+        let (db, dir) = open_test_db();
+        let stored: i64 = 100_000_000; // 100 MB
+        insert_task_with_size(&db, "r1", stored).await;
+
+        // Probe returns stored + 500 KB — well within 1 % (= 1 MB).
+        let probed = stored + 512_000;
+        let (effective, updated) = db
+            .update_task_file_info_resume("r1", "file.bin", probed)
+            .await
+            .expect("resume update");
+
+        assert!(!updated, "updated flag must be false for CDN drift");
+        assert_eq!(
+            effective, stored,
+            "effective total_bytes must equal stored value, not probed"
+        );
+
+        // DB must still hold the original value.
+        let task = db
+            .load_task_by_id("r1")
+            .await
+            .expect("load")
+            .expect("task exists");
+        assert_eq!(
+            task.total_bytes, stored,
+            "DB total_bytes must be unchanged after CDN drift"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A delta exceeding 1 % must update total_bytes (genuine file change).
+    #[tokio::test]
+    async fn resume_file_info_genuine_size_change_updates_total_bytes() {
+        let (db, dir) = open_test_db();
+        let stored: i64 = 100_000_000; // 100 MB
+        insert_task_with_size(&db, "r2", stored).await;
+
+        // Probe returns stored + 5 MB — exceeds 1 % (= 1 MB).
+        let probed = stored + 5_000_000;
+        let (effective, updated) = db
+            .update_task_file_info_resume("r2", "file.bin", probed)
+            .await
+            .expect("resume update");
+
+        assert!(updated, "updated flag must be true for genuine size change");
+        assert_eq!(
+            effective, probed,
+            "effective total_bytes must equal probed value after genuine change"
+        );
+
+        let task = db
+            .load_task_by_id("r2")
+            .await
+            .expect("load")
+            .expect("task exists");
+        assert_eq!(
+            task.total_bytes, probed,
+            "DB total_bytes must be updated after genuine file size change"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// When stored total_bytes is 0 (first probe), always update.
+    #[tokio::test]
+    async fn resume_file_info_zero_stored_always_updates() {
+        let (db, dir) = open_test_db();
+        insert_task_with_size(&db, "r3", 0).await;
+
+        let probed: i64 = 50_000_000;
+        let (effective, updated) = db
+            .update_task_file_info_resume("r3", "file.bin", probed)
+            .await
+            .expect("resume update");
+
+        assert!(updated, "must update when stored total_bytes is 0");
+        assert_eq!(effective, probed);
+
+        let task = db
+            .load_task_by_id("r3")
+            .await
+            .expect("load")
+            .expect("task exists");
+        assert_eq!(task.total_bytes, probed);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Even when total_bytes is preserved, file_name must always be updated.
+    #[tokio::test]
+    async fn resume_file_info_always_updates_file_name() {
+        let (db, dir) = open_test_db();
+        let stored: i64 = 100_000_000;
+        insert_task_with_size(&db, "r4", stored).await;
+
+        // Probe returns same size — no total_bytes update.
+        let (_, updated) = db
+            .update_task_file_info_resume("r4", "renamed_file.bin", stored)
+            .await
+            .expect("resume update");
+
+        assert!(
+            !updated,
+            "total_bytes update flag must be false for same size"
+        );
+
+        let task = db
+            .load_task_by_id("r4")
+            .await
+            .expect("load")
+            .expect("task exists");
+        assert_eq!(
+            task.file_name, "renamed_file.bin",
+            "file_name must be updated even when total_bytes is preserved"
+        );
+        assert_eq!(
+            task.total_bytes, stored,
+            "total_bytes must remain unchanged"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Exact byte-for-byte equality → no update, returns stored value.
+    #[tokio::test]
+    async fn resume_file_info_exact_match_no_update() {
+        let (db, dir) = open_test_db();
+        let stored: i64 = 42_000_000;
+        insert_task_with_size(&db, "r5", stored).await;
+
+        let (effective, updated) = db
+            .update_task_file_info_resume("r5", "file.bin", stored)
+            .await
+            .expect("resume update");
+
+        assert!(!updated);
+        assert_eq!(effective, stored);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Probe returns a *smaller* value beyond tolerance — must update.
+    #[tokio::test]
+    async fn resume_file_info_server_reports_smaller_file_updates() {
+        let (db, dir) = open_test_db();
+        let stored: i64 = 100_000_000;
+        insert_task_with_size(&db, "r6", stored).await;
+
+        // Server now reports 80 MB — 20 % smaller, well beyond tolerance.
+        let probed: i64 = 80_000_000;
+        let (effective, updated) = db
+            .update_task_file_info_resume("r6", "file.bin", probed)
+            .await
+            .expect("resume update");
+
+        assert!(
+            updated,
+            "must update when server reports genuinely smaller file"
+        );
+        assert_eq!(effective, probed);
+
+        let task = db
+            .load_task_by_id("r6")
+            .await
+            .expect("load")
+            .expect("task exists");
+        assert_eq!(task.total_bytes, probed);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Tolerance cap: for a 10 GB file the threshold is capped at 1 MiB,
+    /// so a 2 MiB drift must be treated as a genuine change.
+    #[tokio::test]
+    async fn resume_file_info_threshold_capped_at_1mib_for_large_files() {
+        let (db, dir) = open_test_db();
+        let stored: i64 = 10 * 1024 * 1024 * 1024; // 10 GiB
+        insert_task_with_size(&db, "r7", stored).await;
+
+        // 1 % of 10 GiB = 100 MiB, but threshold is capped at 1 MiB.
+        // A 2 MiB drift must trigger an update.
+        let probed = stored + 2 * 1024 * 1024;
+        let (effective, updated) = db
+            .update_task_file_info_resume("r7", "file.bin", probed)
+            .await
+            .expect("resume update");
+
+        assert!(
+            updated,
+            "2 MiB drift on 10 GiB file must exceed the 1 MiB cap and trigger update"
+        );
+        assert_eq!(effective, probed);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A drift of exactly 1 byte beyond the threshold floor must update.
+    #[tokio::test]
+    async fn resume_file_info_small_file_1byte_drift_updates() {
+        let (db, dir) = open_test_db();
+        // For a 100-byte file, threshold = max(1, min(1, 1_048_576)) = 1 byte.
+        // A delta of 2 bytes must trigger an update.
+        let stored: i64 = 100;
+        insert_task_with_size(&db, "r8", stored).await;
+
+        let probed = stored + 2;
+        let (effective, updated) = db
+            .update_task_file_info_resume("r8", "file.bin", probed)
+            .await
+            .expect("resume update");
+
+        assert!(
+            updated,
+            "2-byte drift on 100-byte file must exceed 1-byte floor threshold"
+        );
+        assert_eq!(effective, probed);
+
         let _ = std::fs::remove_dir_all(dir);
     }
 }

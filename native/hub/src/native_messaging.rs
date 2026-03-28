@@ -266,9 +266,71 @@ mod server {
     use super::{DownloadRequest, MAX_MESSAGE_SIZE, PipeMessage, PipeResponse};
     use crate::logger::log_info;
 
+    /// Returns the current user's home directory.
+    ///
+    /// Prefers `$HOME` but falls back to the passwd database via `getpwuid_r`
+    /// so that the correct path is returned even when the process is launched
+    /// by a system service (launchd on macOS) that may not set `$HOME`.
+    #[cfg(target_os = "macos")]
+    fn home_dir() -> Option<std::path::PathBuf> {
+        if let Ok(h) = std::env::var("HOME") {
+            if !h.is_empty() {
+                return Some(std::path::PathBuf::from(h));
+            }
+        }
+        use std::ffi::CStr;
+        let uid = unsafe { libc::getuid() };
+        let buf_size = unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) };
+        let buf_size = if buf_size > 0 {
+            buf_size as usize
+        } else {
+            1024
+        };
+        let mut buf = vec![0i8; buf_size];
+        let mut pwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
+        let mut result: *mut libc::passwd = std::ptr::null_mut();
+        let ret = unsafe {
+            libc::getpwuid_r(
+                uid,
+                pwd.as_mut_ptr(),
+                buf.as_mut_ptr(),
+                buf_size,
+                &mut result,
+            )
+        };
+        if ret == 0 && !result.is_null() {
+            let pwd = unsafe { pwd.assume_init() };
+            if !pwd.pw_dir.is_null() {
+                let cstr = unsafe { CStr::from_ptr(pwd.pw_dir) };
+                if let Ok(s) = cstr.to_str() {
+                    if !s.is_empty() {
+                        return Some(std::path::PathBuf::from(s));
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Returns the Unix socket path for the NMH relay to connect to.
-    /// Prefer $XDG_RUNTIME_DIR (user-private, cleaned on logout) over /tmp.
+    ///
+    /// - macOS: `~/Library/Application Support/fluxdown/fluxdown.sock`
+    ///   (avoids /tmp sandbox isolation and $TMPDIR per-app randomisation;
+    ///    uses getpwuid fallback so launchd-launched NMH also finds it)
+    /// - Linux:  `$XDG_RUNTIME_DIR/fluxdown.sock` → `/tmp/fluxdown.sock`
     pub fn socket_path() -> std::path::PathBuf {
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(home) = home_dir() {
+                let dir = home
+                    .join("Library")
+                    .join("Application Support")
+                    .join("fluxdown");
+                let _ = std::fs::create_dir_all(&dir);
+                return dir.join("fluxdown.sock");
+            }
+        }
+        // Linux (and any other Unix-like fallback)
         if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
             std::path::Path::new(&dir).join("fluxdown.sock")
         } else {

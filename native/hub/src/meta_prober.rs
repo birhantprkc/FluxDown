@@ -22,6 +22,7 @@ pub async fn probe_task_meta(
     url: &str,
     file_name: &str, // DB 中已有的文件名；非空则跳过名称探测
     client: &reqwest::Client,
+    proxy_config: &crate::proxy_config::ProxyConfig,
 ) -> (String, i64) {
     // torrent-file:// 任务的名称由 librqbit 元数据解析后上报，跳过探测
     if url.starts_with("torrent-file://") {
@@ -46,7 +47,7 @@ pub async fn probe_task_meta(
 
     // ftp:// — 使用现有 FTP 解析逻辑
     if lower_prefix.starts_with("ftp://") {
-        return probe_ftp_meta(url).await;
+        return probe_ftp_meta(url, proxy_config).await;
     }
 
     // HTTP / HTTPS
@@ -100,11 +101,13 @@ fn url_decode(s: &str) -> String {
 // FTP 探测（复用 ftp_downloader 的解析逻辑）
 // ---------------------------------------------------------------------------
 
-async fn probe_ftp_meta(url: &str) -> (String, i64) {
-    let proxy = crate::proxy_config::ProxyConfig::default();
+async fn probe_ftp_meta(
+    url: &str,
+    proxy_config: &crate::proxy_config::ProxyConfig,
+) -> (String, i64) {
     let result = tokio::time::timeout(
         Duration::from_secs(PROBE_TIMEOUT_SECS),
-        crate::ftp_downloader::resolve_ftp_file_info(url, &proxy),
+        crate::ftp_downloader::resolve_ftp_file_info(url, proxy_config),
     )
     .await;
     match result {

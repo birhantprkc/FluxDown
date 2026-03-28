@@ -26,7 +26,10 @@ class AnalyticsService {
   bool _enabled = true;
 
   static const _serverUrl = 'https://countly.zerx.dev';
-  static const _appKey = '***REMOVED***';
+  static const _appKey = String.fromEnvironment(
+    'ANALYTICS_APP_KEY',
+    defaultValue: '***REMOVED***',
+  );
 
   /// 失败请求重试队列上限
   static const _maxRetryQueue = 20;

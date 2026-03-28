@@ -38,6 +38,10 @@ class SettingsProvider extends ChangeNotifier {
   String _proxyPassword = '';
   String _proxyNoList = ''; // 逗号分隔的排除列表
 
+  // 代理防抖支持
+  Timer? _proxyDebounceTimer;
+  final Set<String> _pendingProxyKeys = {};
+
   // BT 设置
   bool _btEnableDht = true; // DHT 分布式哈希表
   bool _btEnableUpnp = true; // UPnP 端口映射
@@ -75,6 +79,7 @@ class SettingsProvider extends ChangeNotifier {
   @override
   void dispose() {
     logInfo('Settings', 'dispose');
+    _proxyDebounceTimer?.cancel();
     _configSub?.cancel();
     _fileAssocSub?.cancel();
     if (globalInstance == this) {
@@ -199,49 +204,49 @@ class SettingsProvider extends ChangeNotifier {
     if (_proxyMode == value) return;
     _proxyMode = value;
     notifyListeners();
-    _saveToRust('proxy_mode', value);
+    _saveProxyConfig('proxy_mode', value);
   }
 
   void setProxyType(String value) {
     if (_proxyType == value) return;
     _proxyType = value;
     notifyListeners();
-    _saveToRust('proxy_type', value);
+    _saveProxyConfig('proxy_type', value);
   }
 
   void setProxyHost(String value) {
     if (_proxyHost == value) return;
     _proxyHost = value;
     notifyListeners();
-    _saveToRust('proxy_host', value);
+    _saveProxyConfig('proxy_host', value);
   }
 
   void setProxyPort(String value) {
     if (_proxyPort == value) return;
     _proxyPort = value;
     notifyListeners();
-    _saveToRust('proxy_port', value);
+    _saveProxyConfig('proxy_port', value);
   }
 
   void setProxyUsername(String value) {
     if (_proxyUsername == value) return;
     _proxyUsername = value;
     notifyListeners();
-    _saveToRust('proxy_username', value);
+    _saveProxyConfig('proxy_username', value);
   }
 
   void setProxyPassword(String value) {
     if (_proxyPassword == value) return;
     _proxyPassword = value;
     notifyListeners();
-    _saveToRust('proxy_password', value);
+    _saveProxyConfig('proxy_password', value);
   }
 
   void setProxyNoList(String value) {
     if (_proxyNoList == value) return;
     _proxyNoList = value;
     notifyListeners();
-    _saveToRust('proxy_no_list', value);
+    _saveProxyConfig('proxy_no_list', value);
   }
 
   // BT 设置 Setters
@@ -457,6 +462,32 @@ class SettingsProvider extends ChangeNotifier {
   void _saveToRust(String key, String value) {
     SaveConfig(key: key, value: value).sendSignalToRust();
   }
+
+  /// 代理配置防抖保存：200ms 内的多次变更合并为一次批量发送，
+  /// 避免用户连续输入时触发多次 reqwest Client 重建。
+  void _saveProxyConfig(String key, String value) {
+    _pendingProxyKeys.add(key);
+    _proxyDebounceTimer?.cancel();
+    _proxyDebounceTimer = Timer(const Duration(milliseconds: 200), () {
+      for (final k in _pendingProxyKeys) {
+        _saveToRust(k, _proxyValueForKey(k));
+      }
+      _pendingProxyKeys.clear();
+      _proxyDebounceTimer = null;
+    });
+  }
+
+  /// 从当前内存状态读取代理字段值（供防抖 timer 回调使用）。
+  String _proxyValueForKey(String key) => switch (key) {
+    'proxy_mode' => _proxyMode,
+    'proxy_type' => _proxyType,
+    'proxy_host' => _proxyHost,
+    'proxy_port' => _proxyPort,
+    'proxy_username' => _proxyUsername,
+    'proxy_password' => _proxyPassword,
+    'proxy_no_list' => _proxyNoList,
+    _ => '',
+  };
 
   /// 启动时同步开机启动状态（从系统注册表读取实际状态）
   Future<void> _syncAutoStartupState() async {

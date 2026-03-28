@@ -289,9 +289,7 @@ class DownloadTask {
     final newStatus = taskStatusFromInt(p.status);
     // Rust 端已通过固定窗口采样 + 单层 EMA 充分平滑，Dart 直接使用。
     // 非下载状态强制归零，防止残留值。
-    final int displaySpeed = newStatus == TaskStatus.downloading
-        ? p.speed.clamp(0, p.speed)
-        : 0;
+    final int displaySpeed = newStatus == TaskStatus.downloading ? p.speed : 0;
 
     return copyWith(
       status: newStatus,
@@ -460,7 +458,7 @@ enum TimeGroup {
     final today = DateTime(now.year, now.month, now.day);
     final yesterday = today.subtract(const Duration(days: 1));
     final weekAgo = today.subtract(const Duration(days: 7));
-    final monthAgo = DateTime(now.year, now.month - 1, now.day);
+    final monthAgo = today.subtract(const Duration(days: 30));
 
     if (createdAt.isAfter(today)) return TimeGroup.today;
     if (createdAt.isAfter(yesterday)) return TimeGroup.yesterday;
