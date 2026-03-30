@@ -12,6 +12,11 @@ export default defineConfig({
   adapter: node({ mode: "standalone" }),
   integrations: [react(), sitemap()],
 
+  // 关闭 CSRF 保护，允许前端 fetch 调用 API 端点
+  security: {
+    checkOrigin: false,
+  },
+
   vite: {
     plugins: [tailwindcss()],
   },
