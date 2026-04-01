@@ -9,18 +9,67 @@ jobs:
     name: Auto Triage
     runs-on: ubuntu-latest
     if: "contains(github.event.issue.labels.*.name, 'user-feedback')"
+    permissions:
+      contents: read
+      issues: write
+      id-token: write
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-      - name: Run triage
+      - name: Triage with Claude
+        uses: anthropics/claude-code-action@v1
         env:
-          ANTHROPIC_API_KEY: "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}"
-          PROJECT_TOKEN: "${{ secrets.PROJECT_TOKEN }}"
-          ISSUE_TITLE: "${{ github.event.issue.title }}"
-          ISSUE_BODY: "${{ github.event.issue.body }}"
-          ISSUE_NODE_ID: "${{ github.event.issue.node_id }}"
-          ISSUE_NUMBER: "${{ github.event.issue.number }}"
-          ISSUE_LABELS: "${{ join(github.event.issue.labels.*.name, ',') }}"
-          REPO: "${{ github.repository }}"
-        run: python3 .github/scripts/triage.py
+          PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            You are triaging a new GitHub issue for FluxDown, a Rust+Flutter download manager (IDM alternative).
+
+            New issue #${{ github.event.issue.number }}: "${{ github.event.issue.title }}"
+
+            === STEP 1: DUPLICATE CHECK ===
+            Run this to get existing open user-feedback issues:
+              gh issue list --repo ${{ github.repository }} --label user-feedback --state open --limit 100 --json number,title
+
+            Is this new issue describing the EXACT same problem or feature request as any existing one?
+            Be conservative: similar topics are NOT duplicates (e.g. two different BT issues are not duplicates unless they describe the same specific problem).
+
+            === STEP 2A: IF DUPLICATE ===
+            - Add label:   gh issue edit ${{ github.event.issue.number }} --repo ${{ github.repository }} --add-label duplicate
+            - Comment (in Chinese, referencing the original issue number):
+                           gh issue comment ${{ github.event.issue.number }} --repo ${{ github.repository }} --body "..."
+            - Close:       gh issue close ${{ github.event.issue.number }} --repo ${{ github.repository }} --reason "not planned"
+
+            === STEP 2B: IF NOT DUPLICATE — Add to Project Board ===
+            Use PROJECT_TOKEN env var for all GraphQL project operations.
+
+            First, query project fields to get IDs:
+              gh api graphql --header "Authorization: Bearer $PROJECT_TOKEN" -f query='
+                { user(login:"zerx-lab") { projectV2(number:4) {
+                    id
+                    fields(first:20) { nodes {
+                      ... on ProjectV2SingleSelectField { id name options { id name } }
+                    }}
+                }}}'
+
+            Then:
+            1. Add issue to project (use addProjectV2ItemById mutation with issue node_id: ${{ github.event.issue.node_id }})
+            2. Set Status = "Todo"
+            3. Classify and set Priority:
+               - P0 Critical: crash / data loss / app won't start / download corrupted
+               - P1 High: major feature broken, many users affected
+               - P2 Medium: normal bug or feature request
+               - P3 Low: minor UX, cosmetic, niche
+            4. Classify and set Module (pick the most relevant one):
+               - Rust Engine: download speed, segmentation, HTTP core, resume, speed limiter
+               - Flutter UI: UI layout, theme, dialog, buttons, font, window
+               - Extension: Chrome/Firefox/Edge extension, NMH, download interception
+               - BT: BitTorrent, magnet links, DHT, tracker
+               - HLS/DASH: M3U8, streaming, media sniffing
+               - FTP: FTP protocol
+               - Website: official site, feedback page, changelog
+               - Infra: installer, startup, auto-update, env/dependency issues
