@@ -26,6 +26,7 @@ interface ViewConfig {
   layout: "TABLE_LAYOUT" | "BOARD_LAYOUT";
   filter: string;
   visibleFields: string[];
+  groupByField: string | null;
 }
 
 interface BoardItem {
@@ -40,6 +41,7 @@ interface BoardItem {
   comments: number;
   statusId: string | null;
   statusName: string | null;
+  fieldValues: Record<string, { optionId: string; optionName: string }>;
 }
 
 interface BoardColumn {
@@ -57,6 +59,11 @@ interface BoardData {
   totalItems: number;
   projectTitle: string;
   cachedAt: string;
+  singleSelectFields: Array<{
+    id: string;
+    name: string;
+    options: Array<{ id: string; name: string; color: string }>;
+  }>;
 }
 
 interface ProjectBoardSectionProps {
@@ -792,31 +799,74 @@ function BoardView({
 }) {
   const { t } = useLocale();
 
-  const allColumns: BoardColumn[] = useMemo(() => {
-    return [
-      ...data.columns,
-      ...(data.noStatusItems.length > 0
-        ? [
-            {
-              id: "none",
-              name: t("board.noStatus"),
-              color: "GRAY",
-              items: data.noStatusItems,
-            },
-          ]
-        : []),
-    ];
-  }, [data, t]);
+  // 确定分组字段：优先用 view.groupByField，fallback 到 "Status"
+  const groupByFieldName = view.groupByField ?? "Status";
 
-  const filteredColumns = useMemo(() => {
-    if (!view.filter) return allColumns;
-    return allColumns.map((col) => ({
-      ...col,
-      items: col.items.filter((item) => parseFilter(view.filter, item)),
+  // 从 data.singleSelectFields 找对应字段的 options
+  const groupField = data.singleSelectFields?.find(
+    (f) => f.name === groupByFieldName,
+  );
+
+  const groupColumns = useMemo(() => {
+    if (!groupField) {
+      // fallback: 用 data.columns（Status 字段）
+      const allCols: BoardColumn[] = [
+        ...data.columns,
+        ...(data.noStatusItems.length > 0
+          ? [
+              {
+                id: "none",
+                name: t("board.noStatus"),
+                color: "GRAY",
+                items: data.noStatusItems,
+              },
+            ]
+          : []),
+      ];
+      return allCols.map((col) => ({
+        id: col.id,
+        name: col.name,
+        color: col.color,
+        items: col.items.filter((item) => parseFilter(view.filter, item)),
+      }));
+    }
+
+    // 过滤 items
+    const filtered = data.allItems.filter((item) =>
+      parseFilter(view.filter, item),
+    );
+
+    // 按 groupField 的 options 顺序分组
+    const result: BoardColumn[] = groupField.options.map((opt) => ({
+      id: opt.id,
+      name: opt.name,
+      color: opt.color,
+      items: filtered.filter(
+        (item) =>
+          (item.fieldValues ?? {})[groupByFieldName]?.optionId === opt.id,
+      ),
     }));
-  }, [allColumns, view.filter]);
 
-  const totalFiltered = filteredColumns.reduce(
+    // 没有该字段值的 items 放"无分组"列
+    const assignedIds = new Set(
+      filtered.flatMap((item) =>
+        (item.fieldValues ?? {})[groupByFieldName] ? [item.id] : [],
+      ),
+    );
+    const unassigned = filtered.filter((item) => !assignedIds.has(item.id));
+    if (unassigned.length > 0) {
+      result.unshift({
+        id: "__none__",
+        name: t("board.noStatus"),
+        color: "GRAY",
+        items: unassigned,
+      });
+    }
+
+    return result;
+  }, [data, groupField, groupByFieldName, view.filter, t]);
+
+  const totalFiltered = groupColumns.reduce(
     (acc, c) => acc + c.items.length,
     0,
   );
@@ -831,7 +881,7 @@ function BoardView({
       {/* 横向滚动看板 */}
       <div className="overflow-x-auto scrollbar-none pb-4">
         <div className="flex gap-4 px-4 sm:px-8 w-max mx-auto">
-          {filteredColumns.map((column, colIndex) => {
+          {groupColumns.map((column, colIndex) => {
             const colColor =
               GITHUB_COLOR_MAP[column.color] ?? GITHUB_COLOR_MAP.GRAY;
             return (

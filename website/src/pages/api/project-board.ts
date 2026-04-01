@@ -40,6 +40,7 @@ interface ViewConfig {
   filter: string;
   /** 可见字段名列表 */
   visibleFields: string[];
+  groupByField: string | null;
 }
 
 interface ProjectMeta {
@@ -47,6 +48,7 @@ interface ProjectMeta {
   projectTitle: string;
   statusOptions: StatusOption[];
   views: ViewConfig[];
+  allSingleSelectFields: GQLSingleSelectField[];
 }
 
 interface ItemLabel {
@@ -68,6 +70,7 @@ interface BoardItem {
   statusId: string | null;
   /** 对应 Status 选项名称，无 Status 时为 null */
   statusName: string | null;
+  fieldValues: Record<string, { optionId: string; optionName: string }>;
 }
 
 interface BoardColumn {
@@ -85,6 +88,11 @@ interface BoardResponse {
   totalItems: number;
   projectTitle: string;
   cachedAt: string;
+  singleSelectFields: Array<{
+    id: string;
+    name: string;
+    options: Array<{ id: string; name: string; color: string }>;
+  }>;
 }
 
 // ── GraphQL 响应类型 ──
@@ -221,6 +229,7 @@ const QUERY_PROJECT_META_AND_VIEWS = `
                 }
               }
             }
+
           }
         }
       }
@@ -239,7 +248,7 @@ const QUERY_PROJECT_ITEMS = `
           }
           nodes {
             id
-            fieldValues(first: 10) {
+            fieldValues(first: 20) {
               nodes {
                 ... on ProjectV2ItemFieldSingleSelectValue {
                   optionId
@@ -292,12 +301,24 @@ function cleanTitle(title: string): string {
 }
 
 /** 将 GQLView 原始数据映射为 ViewConfig */
-function mapGQLViewToViewConfig(view: GQLView): ViewConfig {
+function mapGQLViewToViewConfig(
+  view: GQLView,
+  allSingleSelectFields: GQLSingleSelectField[],
+): ViewConfig {
   const visibleFields = view.fields.nodes
     .map((f) => f.name)
     .filter(
       (name): name is string => typeof name === "string" && name.length > 0,
     );
+
+  // groupBy 无法从 API 直接查询（GitHub 公开 schema 不暴露该字段）。
+  // 启发式推断：取 visibleFields 中第一个出现在 allSingleSelectFields 里、
+  // 且不是 "Status" 的字段名；若不存在则为 null（前端 fallback 到 Status）。
+  const singleSelectNames = new Set(allSingleSelectFields.map((f) => f.name));
+  const inferredGroupBy =
+    visibleFields.find(
+      (name) => singleSelectNames.has(name) && name !== "Status",
+    ) ?? null;
 
   return {
     id: view.id,
@@ -308,6 +329,7 @@ function mapGQLViewToViewConfig(view: GQLView): ViewConfig {
       : "TABLE_LAYOUT") as "TABLE_LAYOUT" | "BOARD_LAYOUT",
     filter: view.filter ?? "",
     visibleFields,
+    groupByField: inferredGroupBy,
   };
 }
 
@@ -381,13 +403,16 @@ async function fetchProjectMeta(
   }
 
   // 将 GQL 原始视图数据映射为 ViewConfig
-  const views: ViewConfig[] = project.views.nodes.map(mapGQLViewToViewConfig);
+  const views: ViewConfig[] = project.views.nodes.map((v) =>
+    mapGQLViewToViewConfig(v, singleSelectFields),
+  );
 
   return {
     projectId: project.id,
     projectTitle: project.title,
     statusOptions: statusField.options,
     views,
+    allSingleSelectFields: singleSelectFields,
   };
 }
 
@@ -462,6 +487,28 @@ async function buildBoardData(
       ? (statusOptionById.get(optionId) ?? null)
       : null;
 
+    const fieldValues: Record<
+      string,
+      { optionId: string; optionName: string }
+    > = {};
+    for (const fv of raw.fieldValues.nodes) {
+      if (
+        typeof fv.optionId === "string" &&
+        fv.optionId.length > 0 &&
+        typeof fv.field?.name === "string"
+      ) {
+        const ssField = meta.allSingleSelectFields.find(
+          (f) => f.name === fv.field!.name!,
+        );
+        const opt = ssField?.options.find((o) => o.id === fv.optionId);
+        if (opt)
+          fieldValues[fv.field.name] = {
+            optionId: fv.optionId,
+            optionName: opt.name,
+          };
+      }
+    }
+
     const boardItem: BoardItem = {
       id: raw.id,
       issueNumber: issue.number!,
@@ -476,6 +523,7 @@ async function buildBoardData(
       comments: issue.comments?.totalCount ?? 0,
       statusId: matchedOption?.id ?? null,
       statusName: matchedOption?.name ?? null,
+      fieldValues,
     };
 
     // 加入扁平全量列表
@@ -509,6 +557,11 @@ async function buildBoardData(
     totalItems,
     projectTitle: meta.projectTitle,
     cachedAt: new Date().toISOString(),
+    singleSelectFields: meta.allSingleSelectFields.map((f) => ({
+      id: f.id,
+      name: f.name,
+      options: f.options,
+    })),
   };
 }
 
