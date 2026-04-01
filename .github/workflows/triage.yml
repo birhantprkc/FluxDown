@@ -98,10 +98,11 @@ jobs:
                 gh issue close ${{ github.event.issue.number }} --repo ${{ github.repository }} --reason "not planned"
 
             Case B — Existing issue is LESS complete (close it, keep new):
+              IMPORTANT: The new issue number is #${{ github.event.issue.number }}. You MUST use this exact number in all comments. Do NOT invent or guess any issue number.
               gh issue edit <existing_number> --repo ${{ github.repository }} --add-label duplicate
-              gh issue comment <existing_number> --repo ${{ github.repository }} --body "与 #${{ github.event.issue.number }} 重复，且描述不如新 issue 完整，已关闭。"
+              gh issue comment <existing_number> --repo ${{ github.repository }} --body "与 #${{ github.event.issue.number }} 重复，且描述不如新 issue 完整，已关闭。保留 #${{ github.event.issue.number }} 作为更完整的报告。"
               gh issue close <existing_number> --repo ${{ github.repository }} --reason "not planned"
-              Also comment on new issue explaining it was kept as the more complete report.
+              gh issue comment ${{ github.event.issue.number }} --repo ${{ github.repository }} --body "已检测到与现有 issue 重复，但本 issue 描述更为完整，已保留本 issue 并关闭旧 issue。"
 
             In both cases: mention in comments which issue is being kept and why.
             [keep-open] override: if the issue to be closed has [keep-open] in its body, skip closing it and note this in the comment.
