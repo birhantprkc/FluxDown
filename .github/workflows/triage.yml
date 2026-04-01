@@ -1,163 +1,26 @@
 name: Auto Triage
 
-# 当新 issue 创建时触发（含 user-feedback 标签的都是用户反馈）
 on:
   issues:
     types: [opened]
 
 jobs:
   triage:
-    name: Claude Triage → Project
+    name: Auto Triage
     runs-on: ubuntu-latest
-    # 只处理带 user-feedback 标签的 issue（来自官网反馈表单）
     if: contains(github.event.issue.labels.*.name, 'user-feedback')
 
     steps:
-      - name: Classify & add to project
+      - uses: actions/checkout@v4
+
+      - name: Run triage
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GITHUB_PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_BODY: ${{ github.event.issue.body }}
           ISSUE_NODE_ID: ${{ github.event.issue.node_id }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_LABELS: ${{ join(github.event.issue.labels.*.name, ',') }}
-        run: |
-          python3 << 'EOF'
-          import os, json, urllib.request
-
-          title      = os.environ['ISSUE_TITLE']
-          body       = os.environ.get('ISSUE_BODY', '')[:1500]
-          labels     = os.environ.get('ISSUE_LABELS', '')
-          node_id    = os.environ['ISSUE_NODE_ID']
-
-          # ── Project 常量（Project #4）──
-          PROJECT_ID        = "PVT_kwHOCZ7LWM4BTV8N"
-          STATUS_FIELD_ID   = "PVTSSF_lAHOCZ7LWM4BTV8NzhAnJeA"
-          PRIORITY_FIELD_ID = "PVTSSF_lAHOCZ7LWM4BTV8NzhApA98"
-          MODULE_FIELD_ID   = "PVTSSF_lAHOCZ7LWM4BTV8NzhApA_8"
-
-          STATUS_TODO       = "f75ad846"
-
-          PRIORITY_IDS = {
-              "P0 Critical": "324fb307",
-              "P1 High":     "74b1faf4",
-              "P2 Medium":   "0276c177",
-              "P3 Low":      "bbadaf67",
-          }
-          MODULE_IDS = {
-              "Rust 引擎":  "b8a8a527",
-              "Flutter UI": "ee1be8bd",
-              "浏览器插件": "7d614306",
-              "BT/磁力":    "ab01394f",
-              "HLS/DASH":   "f7f5fead",
-              "FTP":        "686e53c7",
-              "官网":       "ba7293bd",
-              "基础架构":   "0e3ece63",
-          }
-
-          # ── 1. 调用 Claude 分类 ──
-          prompt = f"""You are triaging GitHub issues for FluxDown, a Rust+Flutter download manager.
-
-Issue title: {title}
-Issue body: {body}
-Labels: {labels}
-
-Classify this issue. Reply ONLY with JSON (no markdown fences):
-{{"priority": "<P0 Critical|P1 High|P2 Medium|P3 Low>", "module": "<Rust 引擎|Flutter UI|浏览器插件|BT/磁力|HLS/DASH|FTP|官网|基础架构>"}}
-
-Priority rules:
-- P0 Critical: crash / data loss / app won't start / download corrupted
-- P1 High: major feature broken, widely reported
-- P2 Medium: normal bug or feature request
-- P3 Low: minor UX, cosmetic, niche request
-
-Module rules (pick most relevant):
-- Rust 引擎: download speed, segmentation, HTTP/HTTPS core, resume
-- Flutter UI: UI layout, theme, dialog, button, font, window
-- 浏览器插件: Chrome/Firefox extension, interception, NMH
-- BT/磁力: BitTorrent, magnet links, DHT, tracker
-- HLS/DASH: M3U8, streaming, media sniffing
-- FTP: FTP protocol
-- 官网: website, feedback page, changelog
-- 基础架构: installer, startup, auto-update, crash on launch, env issues"""
-
-          try:
-              req = urllib.request.Request(
-                  "https://api.anthropic.com/v1/messages",
-                  data=json.dumps({
-                      "model": "claude-haiku-4-5",
-                      "max_tokens": 120,
-                      "messages": [{"role": "user", "content": prompt}]
-                  }).encode(),
-                  headers={
-                      "x-api-key": os.environ['ANTHROPIC_API_KEY'],
-                      "anthropic-version": "2023-06-01",
-                      "content-type": "application/json",
-                  }
-              )
-              with urllib.request.urlopen(req, timeout=30) as resp:
-                  raw = json.loads(resp.read())['content'][0]['text'].strip()
-              classification = json.loads(raw)
-              priority = classification.get("priority", "P2 Medium")
-              module   = classification.get("module",   "Flutter UI")
-          except Exception as e:
-              print(f"[warn] Claude failed ({e}), using defaults")
-              priority = "P2 Medium"
-              # 根据 label 做最基础的降级判断
-              module = "浏览器插件" if "extension" in title.lower() or "插件" in title else "Flutter UI"
-
-          # 防御：确保值在合法选项中
-          if priority not in PRIORITY_IDS:
-              priority = "P2 Medium"
-          if module not in MODULE_IDS:
-              module = "Flutter UI"
-
-          print(f"[triage] priority={priority}, module={module}")
-
-          # ── 2. GitHub GraphQL helper ──
-          def gql(query, variables=None):
-              payload = {"query": query}
-              if variables:
-                  payload["variables"] = variables
-              req = urllib.request.Request(
-                  "https://api.github.com/graphql",
-                  data=json.dumps(payload).encode(),
-                  headers={
-                      "Authorization": f"Bearer {os.environ['GITHUB_PROJECT_TOKEN']}",
-                      "Content-Type": "application/json",
-                  }
-              )
-              with urllib.request.urlopen(req, timeout=30) as resp:
-                  data = json.loads(resp.read())
-              if "errors" in data:
-                  raise RuntimeError(f"GraphQL error: {data['errors']}")
-              return data["data"]
-
-          def set_field(item_id, field_id, option_id):
-              gql("""
-              mutation($p: ID!, $i: ID!, $f: ID!, $o: String!) {
-                updateProjectV2ItemFieldValue(input: {
-                  projectId: $p, itemId: $i, fieldId: $f,
-                  value: { singleSelectOptionId: $o }
-                }) { projectV2Item { id } }
-              }
-              """, {"p": PROJECT_ID, "i": item_id, "f": field_id, "o": option_id})
-
-          # ── 3. 加入 Project ──
-          result = gql("""
-          mutation($p: ID!, $c: ID!) {
-            addProjectV2ItemById(input: {projectId: $p, contentId: $c}) {
-              item { id }
-            }
-          }
-          """, {"p": PROJECT_ID, "c": node_id})
-          item_id = result["addProjectV2ItemById"]["item"]["id"]
-          print(f"[triage] added to project, item={item_id}")
-
-          # ── 4. 设置字段 ──
-          set_field(item_id, STATUS_FIELD_ID,   STATUS_TODO)
-          set_field(item_id, PRIORITY_FIELD_ID, PRIORITY_IDS[priority])
-          set_field(item_id, MODULE_FIELD_ID,   MODULE_IDS[module])
-
-          print(f"[triage] done ✓ priority={priority} module={module}")
-          EOF
+          REPO: ${{ github.repository }}
+        run: python3 .github/scripts/triage.py

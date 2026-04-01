@@ -655,6 +655,26 @@ const en = {
     "Redirects to afdian.com — a trusted Chinese patronage platform",
   "sponsor.sponsors": "Our Sponsors",
   "sponsor.beFirst": "Become the first sponsor!",
+
+  // Project Board
+  "board.tabLabel": "Roadmap",
+  "board.loading": "Loading board...",
+  "board.error": "Failed to load board. Please try again.",
+  "board.noToken": "Board access not configured.",
+  "board.empty": "No items.",
+  "board.noStatus": "Uncategorized",
+  "board.issueCount": "{n} items",
+  "board.open": "Open",
+  "board.closed": "Closed",
+  "board.viewOnGithub": "View on GitHub",
+  "board.colorGray": "Gray",
+  "board.colorBlue": "Blue",
+  "board.colorGreen": "Green",
+  "board.colorYellow": "Yellow",
+  "board.colorOrange": "Orange",
+  "board.colorRed": "Red",
+  "board.colorPink": "Pink",
+  "board.colorPurple": "Purple",
 } as const;
 
 export type Messages = { [K in keyof typeof en]: string };

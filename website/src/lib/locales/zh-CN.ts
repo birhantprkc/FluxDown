@@ -627,6 +627,26 @@ const zhCN: Messages = {
   "footer.terms": "服务条款",
   "footer.copyright": "© {year} FluxDown. 保留所有权利。",
   "footer.builtWith": "Astro + React + Rust",
+
+  // Project Board（看板视图）
+  "board.tabLabel": "进度看板",
+  "board.loading": "加载看板数据...",
+  "board.error": "加载看板失败，请稍后重试。",
+  "board.noToken": "暂未配置看板访问权限。",
+  "board.empty": "暂无内容。",
+  "board.noStatus": "未分类",
+  "board.issueCount": "{n} 条",
+  "board.open": "待处理",
+  "board.closed": "已完成",
+  "board.viewOnGithub": "在 GitHub 查看",
+  "board.colorGray": "灰色",
+  "board.colorBlue": "蓝色",
+  "board.colorGreen": "绿色",
+  "board.colorYellow": "黄色",
+  "board.colorOrange": "橙色",
+  "board.colorRed": "红色",
+  "board.colorPink": "粉色",
+  "board.colorPurple": "紫色",
 };
 
 export default zhCN;

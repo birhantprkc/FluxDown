@@ -19,6 +19,9 @@ export default defineConfig({
 
   vite: {
     plugins: [tailwindcss()],
+    ssr: {
+      noExternal: ["@primer/react", "styled-components"],
+    },
   },
 
   env: {
@@ -32,6 +35,29 @@ export default defineConfig({
         context: "server",
         access: "secret",
         default: "user/x_down",
+      }),
+
+      // ── 可选：GitHub Projects 专用 Token（需要 read:project scope）──
+      // Classic token，在 https://github.com/settings/tokens 创建
+      // 勾选 read:project scope 即可，用于读取 Projects v2 看板数据
+      GITHUB_PROJECT_TOKEN: envField.string({
+        context: "server",
+        access: "secret",
+        optional: true,
+      }),
+      // GitHub Projects 看板编号（URL 末尾的数字，如 /projects/4 则填 4）
+      GITHUB_PROJECT_NUMBER: envField.number({
+        context: "server",
+        access: "secret",
+        default: 4,
+        optional: true,
+      }),
+      // Projects 所属账号（用户名或组织名，如 zerx-lab）
+      GITHUB_PROJECT_OWNER: envField.string({
+        context: "server",
+        access: "secret",
+        default: "zerx-lab",
+        optional: true,
       }),
 
       // ── 可选：Webhook 签名校验 ──

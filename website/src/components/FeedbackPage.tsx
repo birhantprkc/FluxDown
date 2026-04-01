@@ -1,17 +1,18 @@
 import { useState, useCallback } from "react";
 import type { Messages } from "@/lib/locales";
 import { motion } from "framer-motion";
-import { Plus, List } from "lucide-react";
+import { LayoutDashboard, Plus, List } from "lucide-react";
 import { useLocale } from "@/lib/i18n";
 import FeedbackSection from "./FeedbackSection";
 import FeedbackListSection from "./FeedbackListSection";
+import ProjectBoardSection from "./ProjectBoardSection";
 import IssueDetailModal from "./IssueDetailModal";
 
-type TabKey = "list" | "submit";
+type TabKey = "board" | "list" | "submit";
 
 export default function FeedbackPage() {
   const { t } = useLocale();
-  const [activeTab, setActiveTab] = useState<TabKey>("list");
+  const [activeTab, setActiveTab] = useState<TabKey>("board");
   const [selectedIssue, setSelectedIssue] = useState<number | null>(null);
   const [listRefreshKey, setListRefreshKey] = useState(0);
 
@@ -25,10 +26,11 @@ export default function FeedbackPage() {
 
   const handleFeedbackSuccess = useCallback(() => {
     setListRefreshKey((k) => k + 1);
-    setActiveTab("list");
+    setActiveTab("board");
   }, []);
 
   const tabs: { key: TabKey; icon: typeof List; labelKey: keyof Messages }[] = [
+    { key: "board", icon: LayoutDashboard, labelKey: "board.tabLabel" },
     { key: "list", icon: List, labelKey: "fbPage.tabList" },
     { key: "submit", icon: Plus, labelKey: "fbPage.tabSubmit" },
   ];
@@ -71,7 +73,9 @@ export default function FeedbackPage() {
       </div>
 
       {/* Tab Content */}
-      {activeTab === "list" ? (
+      {activeTab === "board" ? (
+        <ProjectBoardSection onIssueClick={handleIssueClick} />
+      ) : activeTab === "list" ? (
         <FeedbackListSection
           key={listRefreshKey}
           onIssueClick={handleIssueClick}
