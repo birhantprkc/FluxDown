@@ -23,6 +23,17 @@ import '../widgets/task_list_item.dart';
 import '../widgets/title_drag_area.dart';
 import 'settings_page.dart';
 
+/// macOS 应用菜单栏操作回调。
+/// HomePage 在 initState 中注册，main.dart 的 PlatformMenuBar 调用。
+class AppMenuCallbacks {
+  AppMenuCallbacks._();
+
+  static VoidCallback? newDownload;
+  static VoidCallback? openSettings;
+  static VoidCallback? find;
+  static VoidCallback? selectAll;
+}
+
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
@@ -45,6 +56,7 @@ class _HomePageState extends State<HomePage> {
   double _sidebarWidth = 224;
   static const double _sidebarMinWidth = 180;
   static const double _sidebarMaxWidth = 320;
+  bool _sidebarVisible = true;
 
   // Detail panel
   bool _isDetailOpen = false;
@@ -67,8 +79,12 @@ class _HomePageState extends State<HomePage> {
     _controller.addListener(_onControllerChanged);
     // 全局键盘快捷键
     HardwareKeyboard.instance.addHandler(_onGlobalKey);
+    // macOS 菜单栏回调
+    _registerMenuCallbacks();
     // 视图追踪
     AnalyticsService.instance.trackView('HomePage');
+    // 监听侧边栏区块可见性变化
+    _settingsProvider.addListener(_checkSidebarVisibility);
     // 首次启动 .torrent 文件关联提示（仅 Windows）
     if (Platform.isWindows) {
       _settingsProvider.addListener(_onSettingsLoadedForAssocPrompt);
@@ -78,7 +94,9 @@ class _HomePageState extends State<HomePage> {
   @override
   void dispose() {
     logInfo('HomePage', 'dispose');
+    _clearMenuCallbacks();
     HardwareKeyboard.instance.removeHandler(_onGlobalKey);
+    _settingsProvider.removeListener(_checkSidebarVisibility);
     _settingsProvider.removeListener(_onSettingsLoadedForAssocPrompt);
     _controller.removeListener(_onControllerChanged);
     _controller.onTaskCompleted = null;
@@ -89,7 +107,49 @@ class _HomePageState extends State<HomePage> {
     logInfo('HomePage', 'dispose done');
   }
 
+  /// macOS 菜单栏回调注册
+  void _registerMenuCallbacks() {
+    AppMenuCallbacks.newDownload = () {
+      if (!mounted || _showSettings) return;
+      showNewDownloadDialog(context, _controller, _settingsProvider);
+    };
+    AppMenuCallbacks.openSettings = () {
+      if (!mounted || _showSettings) return;
+      setState(() {
+        _showSettings = true;
+        AnalyticsService.instance.trackView('SettingsPage');
+      });
+    };
+    AppMenuCallbacks.find = () {
+      if (!mounted || _showSettings) return;
+      _headerBarKey.currentState?.focusSearch();
+    };
+    AppMenuCallbacks.selectAll = () {
+      if (!mounted || _showSettings) return;
+      if (!_controller.isManageMode) _controller.enterManageMode();
+      _controller.selectAllFiltered();
+    };
+  }
+
+  void _clearMenuCallbacks() {
+    AppMenuCallbacks.newDownload = null;
+    AppMenuCallbacks.openSettings = null;
+    AppMenuCallbacks.find = null;
+    AppMenuCallbacks.selectAll = null;
+  }
+
   /// 首次启动时，配置加载完毕后检查是否需要弹窗提示文件关联。
+  /// 当三个侧边栏区块全部关闭时，隐藏整个侧边栏
+  void _checkSidebarVisibility() {
+    final visible =
+        _settingsProvider.showSidebarStatus ||
+        _settingsProvider.showSidebarQueues ||
+        _settingsProvider.showSidebarCategory;
+    if (_sidebarVisible != visible) {
+      setState(() => _sidebarVisible = visible);
+    }
+  }
+
   /// 一旦触发（或不需要）就移除监听，避免重复弹窗。
   void _onSettingsLoadedForAssocPrompt() {
     if (!_settingsProvider.loaded) return;
@@ -174,16 +234,19 @@ class _HomePageState extends State<HomePage> {
     if (_showSettings) return false;
     if (ModalRoute.of(context)?.isCurrent == false) return false;
 
-    final isCtrl = HardwareKeyboard.instance.isControlPressed;
+    // macOS 使用 Cmd 键，Windows/Linux 使用 Ctrl 键
+    final isMod = Platform.isMacOS
+        ? HardwareKeyboard.instance.isMetaPressed
+        : HardwareKeyboard.instance.isControlPressed;
 
-    // Ctrl+F → 聚焦搜索框
-    if (isCtrl && event.logicalKey == LogicalKeyboardKey.keyF) {
+    // Cmd/Ctrl+F → 聚焦搜索框
+    if (isMod && event.logicalKey == LogicalKeyboardKey.keyF) {
       _headerBarKey.currentState?.focusSearch();
       return true;
     }
 
-    // Ctrl+A → 全选当前筛选列表（自动进入管理模式）
-    if (isCtrl && event.logicalKey == LogicalKeyboardKey.keyA) {
+    // Cmd/Ctrl+A → 全选当前筛选列表（自动进入管理模式）
+    if (isMod && event.logicalKey == LogicalKeyboardKey.keyA) {
       if (!_controller.isManageMode) {
         _controller.enterManageMode();
       }
@@ -198,10 +261,13 @@ class _HomePageState extends State<HomePage> {
       return true;
     }
 
-    // Del → 弹出批量删除确认（含删任务 / 删任务+文件 两个操作）
-    if (event.logicalKey == LogicalKeyboardKey.delete &&
-        _controller.isManageMode &&
-        _controller.checkedCount > 0) {
+    // Del / Cmd+Backspace → 弹出批量删除确认
+    final isDelete =
+        event.logicalKey == LogicalKeyboardKey.delete ||
+        (Platform.isMacOS &&
+            isMod &&
+            event.logicalKey == LogicalKeyboardKey.backspace);
+    if (isDelete && _controller.isManageMode && _controller.checkedCount > 0) {
       if (!mounted) return false;
       showBatchDeleteDialog(
         context,
@@ -326,30 +392,35 @@ class _HomePageState extends State<HomePage> {
             Row(
               children: [
                 // Sidebar（全高 — 自带 logo 区对齐 titlebar）
-                SizedBox(
-                  width: _sidebarWidth,
-                  child: Sidebar(controller: _controller),
-                ),
-                // Sidebar resize handle — header 区域保持 1px 静态边框，下方可交互
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Container(height: 48, width: 1, color: c.border),
-                    Expanded(
-                      child: _ResizeHandle(
-                        color: c.border,
-                        onDrag: (dx) {
-                          setState(() {
-                            _sidebarWidth = (_sidebarWidth + dx).clamp(
-                              _sidebarMinWidth,
-                              _sidebarMax(totalWidth),
-                            );
-                          });
-                        },
-                      ),
+                if (_sidebarVisible) ...[
+                  SizedBox(
+                    width: _sidebarWidth,
+                    child: Sidebar(
+                      controller: _controller,
+                      settingsProvider: _settingsProvider,
                     ),
-                  ],
-                ),
+                  ),
+                  // Sidebar resize handle — header 区域保持 1px 静态边框，下方可交互
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(height: 48, width: 1, color: c.border),
+                      Expanded(
+                        child: _ResizeHandle(
+                          color: c.border,
+                          onDrag: (dx) {
+                            setState(() {
+                              _sidebarWidth = (_sidebarWidth + dx).clamp(
+                                _sidebarMinWidth,
+                                _sidebarMax(totalWidth),
+                              );
+                            });
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
                 // Main content — 从 titlebar 下方开始
                 Expanded(
                   child: ColoredBox(
@@ -440,7 +511,7 @@ class _HomePageState extends State<HomePage> {
             // HeaderBar — 独立于内容区，不受 DetailPanel 宽度影响
             Positioned(
               top: 0,
-              left: _sidebarWidth + 1,
+              left: _sidebarVisible ? _sidebarWidth + 1 : 0,
               right: 0,
               height: 48,
               child: HeaderBar(

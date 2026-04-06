@@ -320,25 +320,18 @@ class S {
     'This torrent contains $count files. Select which files to download.',
   );
   String get btFileSelectAll => _t('全部文件', 'All Files');
-  String btFileSelectConfirm(int count, String size) => _t(
-    '下载 $count 个文件（$size）',
-    'Download $count file(s) ($size)',
-  );
+  String btFileSelectConfirm(int count, String size) =>
+      _t('下载 $count 个文件（$size）', 'Download $count file(s) ($size)');
   String get btResolvingMagnet =>
       _t('正在解析磁力链接，请稍候...', 'Resolving magnet link, please wait...');
-  String get btWaitingFiles => _t(
-    '请选择要下载的文件',
-    'Select files to download',
-  );
+  String get btWaitingFiles => _t('请选择要下载的文件', 'Select files to download');
   String get btProbing => _t('正在解析种子文件...', 'Parsing torrent file...');
   String get btProbeError => _t(
     '种子文件解析失败，将在下载开始后重新解析',
     'Failed to parse torrent file; will retry after download starts',
   );
-  String btStartWithSelection(int count, String size) => _t(
-    '下载 $count 个文件（$size）',
-    'Download $count file(s) ($size)',
-  );
+  String btStartWithSelection(int count, String size) =>
+      _t('下载 $count 个文件（$size）', 'Download $count file(s) ($size)');
 
   // ─────────────────────────────────────────────
   // StatusBar
@@ -407,6 +400,22 @@ class S {
     '任务完成时弹出系统通知，关闭后所有任务完成将不再通知',
     'Show a system notification when a task completes. When disabled, no completion notifications will be shown',
   );
+
+  // 侧边栏显示
+  String get sidebarVisibility => _t('侧边栏显示', 'Sidebar Sections');
+  String get sidebarVisibilityDesc =>
+      _t('选择在侧边栏中显示哪些区块', 'Choose which sections to show in the sidebar');
+  String get showSidebarStatus => _t('显示状态', 'Show Status');
+  String get showSidebarStatusDesc =>
+      _t('在侧边栏显示状态筛选区块', 'Show status filter section in sidebar');
+  String get showSidebarQueues => _t('显示队列', 'Show Queues');
+  String get showSidebarQueuesDesc =>
+      _t('在侧边栏显示队列区块', 'Show queues section in sidebar');
+  String get showSidebarCategory => _t('显示分类', 'Show Category');
+  String get showSidebarCategoryDesc =>
+      _t('在侧边栏显示分类区块', 'Show category section in sidebar');
+  String get hideSection => _t('隐藏此区块', 'Hide this section');
+
   String get settingFailed => _t('设置失败', 'Setting Failed');
   String get autoStartupFailedDesc => _t(
     '无法修改开机自启动设置，请检查系统权限。',
@@ -772,6 +781,10 @@ class S {
     '日志,导出,反馈,调试,排查,log',
     'log,export,feedback,debug,diagnostic',
   ).split(',')..addAll(['log', 'export', 'debug']);
+  List<String> get searchKeywordsSidebarVisibility => _t(
+    '侧边栏,显示,隐藏,区块,状态,队列,分类',
+    'sidebar,show,hide,section,status,queue,category',
+  ).split(',');
 
   // ─────────────────────────────────────────────
   // Feedback
@@ -829,6 +842,24 @@ class S {
 
   String get trayShowWindow => _t('显示主窗口', 'Show Window');
   String get trayExit => _t('退出', 'Exit');
+
+  // ─────────────────────────────────────────────
+  // macOS 应用菜单栏
+  // ─────────────────────────────────────────────
+
+  String get menuFile => _t('文件', 'File');
+  String get menuNewDownload => _t('新建下载…', 'New Download…');
+  String get menuCloseWindow => _t('关闭窗口', 'Close Window');
+  String get menuEdit => _t('编辑', 'Edit');
+  String get menuSelectAll => _t('全选', 'Select All');
+  String get menuFind => _t('查找', 'Find');
+  String get menuView => _t('视图', 'View');
+  String get menuWindow => _t('窗口', 'Window');
+  String get menuHelp => _t('帮助', 'Help');
+  String get menuCheckForUpdates => _t('检查更新…', 'Check for Updates…');
+  String get menuSettings => _t('设置…', 'Settings…');
+  String get menuWebsite => _t('FluxDown 官网', 'FluxDown Website');
+  String get menuFeedback => _t('发送反馈…', 'Send Feedback…');
 
   // ─────────────────────────────────────────────
   // DownloadCompleteWindow

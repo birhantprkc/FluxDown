@@ -29,26 +29,19 @@ class TrayService with TrayListener {
     if (_initialized) return;
     _initialized = true;
 
-    // 图标路径必须是相对于 exe 目录的路径或绝对路径
+    // 图标路径：Windows/Linux 使用绝对文件系统路径，macOS 使用 Flutter asset key
     // CMakeLists.txt 已配置将 app_icon.ico 复制到 exe 同级目录
     final exeDir = File(Platform.resolvedExecutable).parent.path;
     final String iconPath;
+    final bool isTemplate;
     if (Platform.isWindows) {
       iconPath = p.join(exeDir, 'app_icon.ico');
+      isTemplate = false;
     } else if (Platform.isMacOS) {
-      // macOS app bundle: exe is at .app/Contents/MacOS/FluxDown
-      // flutter_assets are at .app/Contents/Frameworks/App.framework/Resources/flutter_assets/
-      final contentsDir = File(Platform.resolvedExecutable).parent.parent.path;
-      iconPath = p.join(
-        contentsDir,
-        'Frameworks',
-        'App.framework',
-        'Resources',
-        'flutter_assets',
-        'assets',
-        'logo',
-        'fluxdown_logo.png',
-      );
+      // macOS: tray_manager 使用 rootBundle.load() 加载，需要 Flutter asset key
+      // 使用单色模板图标，macOS 自动适配亮色/暗色菜单栏
+      iconPath = 'assets/logo/tray_iconTemplate.png';
+      isTemplate = true;
     } else {
       // Linux: exe is at <prefix>/bin/, flutter_assets at <prefix>/data/flutter_assets/
       iconPath = p.join(
@@ -59,10 +52,11 @@ class TrayService with TrayListener {
         'logo',
         'fluxdown_logo.png',
       );
+      isTemplate = false;
     }
 
-    logInfo(_tag, 'setting icon: $iconPath');
-    await trayManager.setIcon(iconPath);
+    logInfo(_tag, 'setting icon: $iconPath (isTemplate=$isTemplate)');
+    await trayManager.setIcon(iconPath, isTemplate: isTemplate);
     // setToolTip is not implemented on Linux
     if (!Platform.isLinux) {
       await trayManager.setToolTip('FluxDown');

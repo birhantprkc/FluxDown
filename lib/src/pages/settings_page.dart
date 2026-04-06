@@ -122,6 +122,13 @@ List<SettingsSearchItem> get settingsSearchItems {
       icon: LucideIcons.bellRing,
     ),
     SettingsSearchItem(
+      category: SettingsCategory.general,
+      label: s.sidebarVisibility,
+      description: s.sidebarVisibilityDesc,
+      keywords: s.searchKeywordsSidebarVisibility,
+      icon: LucideIcons.panelLeft,
+    ),
+    SettingsSearchItem(
       category: SettingsCategory.appearance,
       label: s.language,
       description: s.languageDesc,
@@ -754,6 +761,53 @@ class _GeneralContent extends StatelessWidget {
               child: ShadSwitch(
                 value: settingsProvider.notifyOnComplete,
                 onChanged: (v) => settingsProvider.setNotifyOnComplete(v),
+              ),
+            ),
+            const SizedBox(height: 20),
+            // 侧边栏显示设置 — 小标题
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                LocaleScope.of(context).sidebarVisibility,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.of(context).textPrimary,
+                ),
+              ),
+            ),
+            Text(
+              LocaleScope.of(context).sidebarVisibilityDesc,
+              style: TextStyle(
+                fontSize: 11.5,
+                color: AppColors.of(context).textMuted,
+              ),
+            ),
+            const SizedBox(height: 10),
+            _SettingCard(
+              label: LocaleScope.of(context).showSidebarStatus,
+              description: LocaleScope.of(context).showSidebarStatusDesc,
+              child: ShadSwitch(
+                value: settingsProvider.showSidebarStatus,
+                onChanged: (v) => settingsProvider.setShowSidebarStatus(v),
+              ),
+            ),
+            const SizedBox(height: 10),
+            _SettingCard(
+              label: LocaleScope.of(context).showSidebarQueues,
+              description: LocaleScope.of(context).showSidebarQueuesDesc,
+              child: ShadSwitch(
+                value: settingsProvider.showSidebarQueues,
+                onChanged: (v) => settingsProvider.setShowSidebarQueues(v),
+              ),
+            ),
+            const SizedBox(height: 10),
+            _SettingCard(
+              label: LocaleScope.of(context).showSidebarCategory,
+              description: LocaleScope.of(context).showSidebarCategoryDesc,
+              child: ShadSwitch(
+                value: settingsProvider.showSidebarCategory,
+                onChanged: (v) => settingsProvider.setShowSidebarCategory(v),
               ),
             ),
           ],

@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:launch_at_startup/launch_at_startup.dart';
 import 'package:rinf/rinf.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:window_manager/window_manager.dart';
 import 'src/bindings/bindings.dart';
 import 'src/services/window_state_service.dart';
@@ -26,6 +27,7 @@ import 'src/services/update_service.dart';
 import 'src/theme/app_theme.dart';
 import 'src/theme/flux_theme_tokens.dart';
 import 'src/theme/theme_provider.dart';
+import 'src/widgets/feedback_dialog.dart';
 import 'src/widgets/update_changelog_dialog.dart';
 
 Future<void> main(List<String> args) async {
@@ -663,7 +665,8 @@ class _FluxDownAppState extends State<FluxDownApp> with WindowListener {
     WidgetsBinding.instance.addPostFrameCallback(
       (_) => _syncMacOsWindowBackground(tokens),
     );
-    return LocaleScope(
+
+    Widget app = LocaleScope(
       s: _localeNotifier.s,
       child: FluxThemeScope(
         tokens: tokens,
@@ -708,6 +711,192 @@ class _FluxDownAppState extends State<FluxDownApp> with WindowListener {
         ),
       ),
     );
+
+    // macOS: 自定义应用菜单栏（替换默认 Flutter 模板菜单）
+    if (Platform.isMacOS) {
+      app = PlatformMenuBar(menus: _buildMacMenus(), child: app);
+    }
+
+    return app;
+  }
+
+  /// 构建 macOS 应用菜单栏。
+  /// [PlatformMenuItemGroup] 将相关菜单项分组，组与组之间自动插入分隔线。
+  List<PlatformMenuItem> _buildMacMenus() {
+    final s = _localeNotifier.s;
+    return [
+      // ── FluxDown (应用菜单) ──
+      PlatformMenu(
+        label: 'FluxDown',
+        menus: [
+          // About + Check for Updates
+          PlatformMenuItemGroup(
+            members: [
+              const PlatformProvidedMenuItem(
+                type: PlatformProvidedMenuItemType.about,
+              ),
+              PlatformMenuItem(
+                label: s.menuCheckForUpdates,
+                onSelected: () => UpdateService.instance.checkForUpdate(),
+              ),
+            ],
+          ),
+          // Settings
+          PlatformMenuItemGroup(
+            members: [
+              PlatformMenuItem(
+                label: s.menuSettings,
+                shortcut: const SingleActivator(
+                  LogicalKeyboardKey.comma,
+                  meta: true,
+                ),
+                onSelected: () => AppMenuCallbacks.openSettings?.call(),
+              ),
+            ],
+          ),
+          // Services
+          const PlatformMenuItemGroup(
+            members: [
+              PlatformProvidedMenuItem(
+                type: PlatformProvidedMenuItemType.servicesSubmenu,
+              ),
+            ],
+          ),
+          // Hide / Hide Others / Show All
+          const PlatformMenuItemGroup(
+            members: [
+              PlatformProvidedMenuItem(type: PlatformProvidedMenuItemType.hide),
+              PlatformProvidedMenuItem(
+                type: PlatformProvidedMenuItemType.hideOtherApplications,
+              ),
+              PlatformProvidedMenuItem(
+                type: PlatformProvidedMenuItemType.showAllApplications,
+              ),
+            ],
+          ),
+          // Quit
+          const PlatformMenuItemGroup(
+            members: [
+              PlatformProvidedMenuItem(type: PlatformProvidedMenuItemType.quit),
+            ],
+          ),
+        ],
+      ),
+
+      // ── 文件 ──
+      PlatformMenu(
+        label: s.menuFile,
+        menus: [
+          PlatformMenuItemGroup(
+            members: [
+              PlatformMenuItem(
+                label: s.menuNewDownload,
+                shortcut: const SingleActivator(
+                  LogicalKeyboardKey.keyN,
+                  meta: true,
+                ),
+                onSelected: () => AppMenuCallbacks.newDownload?.call(),
+              ),
+            ],
+          ),
+          PlatformMenuItemGroup(
+            members: [
+              PlatformMenuItem(
+                label: s.menuCloseWindow,
+                shortcut: const SingleActivator(
+                  LogicalKeyboardKey.keyW,
+                  meta: true,
+                ),
+                onSelected: () => windowManager.close(),
+              ),
+            ],
+          ),
+        ],
+      ),
+
+      // ── 编辑 ──
+      PlatformMenu(
+        label: s.menuEdit,
+        menus: [
+          PlatformMenuItemGroup(
+            members: [
+              PlatformMenuItem(
+                label: s.menuSelectAll,
+                shortcut: const SingleActivator(
+                  LogicalKeyboardKey.keyA,
+                  meta: true,
+                ),
+                onSelected: () => AppMenuCallbacks.selectAll?.call(),
+              ),
+            ],
+          ),
+          PlatformMenuItemGroup(
+            members: [
+              PlatformMenuItem(
+                label: s.menuFind,
+                shortcut: const SingleActivator(
+                  LogicalKeyboardKey.keyF,
+                  meta: true,
+                ),
+                onSelected: () => AppMenuCallbacks.find?.call(),
+              ),
+            ],
+          ),
+        ],
+      ),
+
+      // ── 视图 ──
+      PlatformMenu(
+        label: s.menuView,
+        menus: [
+          const PlatformProvidedMenuItem(
+            type: PlatformProvidedMenuItemType.toggleFullScreen,
+          ),
+        ],
+      ),
+
+      // ── 窗口 ──
+      PlatformMenu(
+        label: s.menuWindow,
+        menus: [
+          const PlatformMenuItemGroup(
+            members: [
+              PlatformProvidedMenuItem(
+                type: PlatformProvidedMenuItemType.minimizeWindow,
+              ),
+              PlatformProvidedMenuItem(
+                type: PlatformProvidedMenuItemType.zoomWindow,
+              ),
+            ],
+          ),
+          const PlatformMenuItemGroup(
+            members: [
+              PlatformProvidedMenuItem(
+                type: PlatformProvidedMenuItemType.arrangeWindowsInFront,
+              ),
+            ],
+          ),
+        ],
+      ),
+
+      // ── 帮助 ──
+      PlatformMenu(
+        label: s.menuHelp,
+        menus: [
+          PlatformMenuItem(
+            label: s.menuWebsite,
+            onSelected: () => launchUrl(Uri.parse('https://fluxdown.zerx.dev')),
+          ),
+          PlatformMenuItem(
+            label: s.menuFeedback,
+            onSelected: () {
+              final ctx = _navigatorKey.currentContext;
+              if (ctx != null) showFeedbackDialog(ctx);
+            },
+          ),
+        ],
+      ),
+    ];
   }
 }
 

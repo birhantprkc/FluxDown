@@ -189,12 +189,29 @@ async function sendWithRetry(
     result.message === "app_not_running" ||
     result.message === "timeout";
 
-  if (retryable) {
+  if (!retryable) return result;
+
+  disconnectPort();
+
+  // "port disconnected" 特殊处理：NMH 进程可能在将消息转发给 App 后才断开，
+  // 此时消息已送达但响应丢失。重连后先 ping：如果 App 在线，说明消息
+  // 大概率已送达，直接返回成功，避免重复发送导致 App 创建重复任务。
+  if (result.message === "port disconnected" && action !== "ping") {
+    const pingResult = await sendMessage("ping");
+    if (pingResult.success) {
+      console.log(
+        "[FluxDown NMH] App alive after port disconnect — message likely delivered, skipping retry",
+      );
+      return {
+        success: true,
+        message: "delivered (reconnected after disconnect)",
+      };
+    }
+    // ping 也失败，断开后重试发送原消息
     disconnectPort();
-    return sendMessage(action, payload);
   }
 
-  return result;
+  return sendMessage(action, payload);
 }
 
 // ──────────────────────────────────────────────────────────────

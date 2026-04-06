@@ -25,6 +25,11 @@ class SettingsProvider extends ChangeNotifier {
   bool _analyticsEnabled = true; // 默认启用匿名数据分析
   bool _notifyOnComplete = true; // 默认任务完成时弹出通知
 
+  // 侧边栏区块显示设置
+  bool _showSidebarStatus = true;    // 显示状态区块
+  bool _showSidebarQueues = true;    // 显示队列区块
+  bool _showSidebarCategory = true;  // 显示分类区块
+
   // 文件关联
   bool _torrentAssocPrompted = false; // 是否已弹窗提示过文件关联
   bool _torrentAssociated = false; // .torrent 文件是否已关联到 FluxDown
@@ -103,6 +108,11 @@ class SettingsProvider extends ChangeNotifier {
   bool get autoCheckUpdate => _autoCheckUpdate;
   bool get analyticsEnabled => _analyticsEnabled;
   bool get notifyOnComplete => _notifyOnComplete;
+
+  // 侧边栏显示 Getters
+  bool get showSidebarStatus => _showSidebarStatus;
+  bool get showSidebarQueues => _showSidebarQueues;
+  bool get showSidebarCategory => _showSidebarCategory;
 
   // 文件关联 Getters
   bool get torrentAssocPrompted => _torrentAssocPrompted;
@@ -196,6 +206,29 @@ class SettingsProvider extends ChangeNotifier {
     _notifyOnComplete = value;
     notifyListeners();
     _saveToRust('notify_on_complete', value.toString());
+  }
+
+  // 侧边栏显示 Setters
+
+  void setShowSidebarStatus(bool value) {
+    if (_showSidebarStatus == value) return;
+    _showSidebarStatus = value;
+    notifyListeners();
+    _saveToRust('show_sidebar_status', value.toString());
+  }
+
+  void setShowSidebarQueues(bool value) {
+    if (_showSidebarQueues == value) return;
+    _showSidebarQueues = value;
+    notifyListeners();
+    _saveToRust('show_sidebar_queues', value.toString());
+  }
+
+  void setShowSidebarCategory(bool value) {
+    if (_showSidebarCategory == value) return;
+    _showSidebarCategory = value;
+    notifyListeners();
+    _saveToRust('show_sidebar_category', value.toString());
   }
 
   // 代理设置 Setters
@@ -449,6 +482,12 @@ class SettingsProvider extends ChangeNotifier {
           _globalUserAgent = entry.value;
         case 'default_queue_id':
           _defaultQueueId = entry.value;
+        case 'show_sidebar_status':
+          _showSidebarStatus = entry.value != 'false';
+        case 'show_sidebar_queues':
+          _showSidebarQueues = entry.value != 'false';
+        case 'show_sidebar_category':
+          _showSidebarCategory = entry.value != 'false';
       }
     }
     _loaded = true;

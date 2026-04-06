@@ -8,13 +8,15 @@ import '../models/download_queue.dart';
 import '../models/download_task.dart';
 import '../services/update_service.dart';
 import '../i18n/locale_provider.dart';
+import '../models/settings_provider.dart';
 import '../theme/app_colors.dart';
 import 'context_menu.dart';
 
 class Sidebar extends StatefulWidget {
   final DownloadController controller;
+  final SettingsProvider settingsProvider;
 
-  const Sidebar({super.key, required this.controller});
+  const Sidebar({super.key, required this.controller, required this.settingsProvider});
 
   @override
   State<Sidebar> createState() => _SidebarState();
@@ -74,19 +76,27 @@ class _SidebarState extends State<Sidebar> {
           // Only the data-driven sections rebuild on controller changes.
           Expanded(
             child: ListenableBuilder(
-              listenable: widget.controller,
+              listenable: Listenable.merge([widget.controller, widget.settingsProvider]),
               builder: (context, _) {
                 final ctrl = widget.controller;
+                final sp = widget.settingsProvider;
                 final s = LocaleScope.of(context);
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _buildStatusSection(ctrl, s, c),
-                    const SizedBox(height: 6),
-                    _buildQueuesSection(ctrl, s, c),
-                    const SizedBox(height: 6),
-                    _buildCategorySection(ctrl, s, c),
-                  ],
+                return SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (sp.showSidebarStatus) ...[
+                        _buildStatusSection(ctrl, s, c),
+                        const SizedBox(height: 6),
+                      ],
+                      if (sp.showSidebarQueues) ...[
+                        _buildQueuesSection(ctrl, s, c),
+                        const SizedBox(height: 6),
+                      ],
+                      if (sp.showSidebarCategory)
+                        _buildCategorySection(ctrl, s, c),
+                    ],
+                  ),
                 );
               },
             ),
@@ -168,7 +178,13 @@ class _SidebarState extends State<Sidebar> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _SectionHeader(title: s.sidebarStatus, c: c),
+        GestureDetector(
+          onSecondaryTapUp: (d) => _showSectionContextMenu(
+            context, d.globalPosition, s,
+            onHide: () => widget.settingsProvider.setShowSidebarStatus(false),
+          ),
+          child: _SectionHeader(title: s.sidebarStatus, c: c),
+        ),
         const SizedBox(height: 4),
         for (final tab in StatusTab.values)
           _NavItem(
@@ -194,14 +210,20 @@ class _SidebarState extends State<Sidebar> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _CollapsibleSectionHeader(
-          title: s.sidebarQueues,
-          expanded: _queuesExpanded,
-          c: c,
-          onToggle: () => setState(() => _queuesExpanded = !_queuesExpanded),
-          trailing: _QueueAddButton(
+        GestureDetector(
+          onSecondaryTapUp: (d) => _showSectionContextMenu(
+            context, d.globalPosition, s,
+            onHide: () => widget.settingsProvider.setShowSidebarQueues(false),
+          ),
+          child: _CollapsibleSectionHeader(
+            title: s.sidebarQueues,
+            expanded: _queuesExpanded,
             c: c,
-            onTap: () => _showCreateQueueDialog(context, ctrl, s, c),
+            onToggle: () => setState(() => _queuesExpanded = !_queuesExpanded),
+            trailing: _QueueAddButton(
+              c: c,
+              onTap: () => _showCreateQueueDialog(context, ctrl, s, c),
+            ),
           ),
         ),
         if (_queuesExpanded) ...[
@@ -360,12 +382,18 @@ class _SidebarState extends State<Sidebar> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _CollapsibleSectionHeader(
-          title: s.sidebarCategory,
-          expanded: _categoryExpanded,
-          c: c,
-          onToggle: () =>
-              setState(() => _categoryExpanded = !_categoryExpanded),
+        GestureDetector(
+          onSecondaryTapUp: (d) => _showSectionContextMenu(
+            context, d.globalPosition, s,
+            onHide: () => widget.settingsProvider.setShowSidebarCategory(false),
+          ),
+          child: _CollapsibleSectionHeader(
+            title: s.sidebarCategory,
+            expanded: _categoryExpanded,
+            c: c,
+            onToggle: () =>
+                setState(() => _categoryExpanded = !_categoryExpanded),
+          ),
         ),
         if (_categoryExpanded) ...[
           const SizedBox(height: 4),
@@ -378,6 +406,27 @@ class _SidebarState extends State<Sidebar> {
               onTap: () => ctrl.setCategoryFilter(cat),
             ),
         ],
+      ],
+    );
+  }
+
+  void _showSectionContextMenu(
+    BuildContext context,
+    Offset position,
+    S s, {
+    required VoidCallback onHide,
+  }) {
+    final c = AppColors.of(context);
+    showContextMenu(
+      context,
+      position,
+      items: [
+        ContextMenuItem(
+          icon: LucideIcons.eyeOff,
+          label: s.hideSection,
+          color: c.textSecondary,
+          action: onHide,
+        ),
       ],
     );
   }

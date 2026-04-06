@@ -911,13 +911,13 @@ export default defineBackground(() => {
     }
 
     if (!sendOk) {
-      // 发送失败，回退让浏览器重新下载
+      // 发送失败，先 ping 确认 App 是否在线再决定是否回退
       console.warn(
-        "[FluxDown] executeFallbackIntercept: send failed, falling back to browser download:",
+        "[FluxDown] executeFallbackIntercept: send failed, checking app status before fallback:",
         url,
       );
       handledDownloads.delete(downloadId);
-      await fallbackToBrowserDownload(url, cleanFilename);
+      await fallbackAfterSendFailure(url, cleanFilename);
     }
   }
 
@@ -1082,13 +1082,13 @@ export default defineBackground(() => {
                   downloadUrl !== url ? url : undefined,
                 );
                 if (!sendOk) {
-                  // 发送失败，下载已被取消，需要回退用浏览器重新下载
-                  await fallbackToBrowserDownload(downloadUrl, _syncClean);
+                  // 发送失败，先 ping 确认 App 是否在线再决定是否回退
+                  await fallbackAfterSendFailure(downloadUrl, _syncClean);
                 }
               } catch (e) {
                 console.error("[FluxDown] sync-path: sendToFluxDown error:", e);
-                // 异常情况也回退到浏览器下载
-                await fallbackToBrowserDownload(downloadUrl).catch(() => {});
+                // 异常情况：先 ping 确认 App 是否在线再决定是否回退
+                await fallbackAfterSendFailure(downloadUrl).catch(() => {});
               } finally {
                 downloadItemCache.delete(downloadItem.id);
               }
@@ -1202,9 +1202,9 @@ export default defineBackground(() => {
                 downloadUrl !== url ? url : undefined,
               );
               if (!sendOk) {
-                // 发送失败 — 清除 primary 标记防止阻塞后续拦截，然后回退到浏览器下载
+                // 发送失败 — 清除 primary 标记，先 ping 确认 App 是否在线再决定是否回退
                 handledDownloads.delete(downloadItem.id);
-                await fallbackToBrowserDownload(
+                await fallbackAfterSendFailure(
                   downloadUrl,
                   cleanFilename,
                 ).catch(() => {});
@@ -1215,7 +1215,8 @@ export default defineBackground(() => {
                 e,
               );
               handledDownloads.delete(downloadItem.id);
-              await fallbackToBrowserDownload(downloadUrl).catch(() => {});
+              // 异常情况：先 ping 确认 App 是否在线再决定是否回退
+              await fallbackAfterSendFailure(downloadUrl).catch(() => {});
             } finally {
               downloadItemCache.delete(downloadItem.id);
             }
@@ -1357,9 +1358,9 @@ export default defineBackground(() => {
             );
 
             if (!sendOk) {
-              // 发送失败，下载已被取消，需要回退用浏览器重新下载
+              // 发送失败，先 ping 确认 App 是否在线再决定是否回退
               handledDownloads.delete(downloadItem.id);
-              await fallbackToBrowserDownload(downloadUrl, cleanFilename);
+              await fallbackAfterSendFailure(downloadUrl, cleanFilename);
             }
           } catch (e) {
             console.error(
@@ -1671,6 +1672,37 @@ export default defineBackground(() => {
         t("notify.fallbackBrowserDetail", { url }),
       );
     }
+  }
+
+  /**
+   * sendToFluxDown 失败后的智能回退：先 ping 确认 App 状态再决定是否回退。
+   *
+   * 根因：NMH 通信存在瞬态失败场景（端口断开、超时等），此时消息可能已经
+   * 送达 App 但响应丢失，如果直接 fallbackToBrowserDownload 会导致"双下载"
+   * （App 下载了 + 浏览器也下载了）。
+   *
+   * 策略：
+   * - ping App 成功 → 消息大概率已送达，跳过回退，避免双下载
+   * - ping App 失败 → App 确实不可达，回退让浏览器下载
+   */
+  async function fallbackAfterSendFailure(
+    url: string,
+    filename?: string,
+    silent = false,
+  ): Promise<void> {
+    try {
+      const appAlive = await checkFluxDownAvailable();
+      if (appAlive) {
+        console.log(
+          "[FluxDown] App is alive after send failure — skipping browser fallback (message likely delivered):",
+          url,
+        );
+        return;
+      }
+    } catch {
+      // ping 本身异常，视为 App 不可达，继续回退
+    }
+    await fallbackToBrowserDownload(url, filename, silent);
   }
 
   // ===== 统一消息处理（Popup + Content Script） =====
