@@ -510,16 +510,77 @@ impl DownloadManager {
 
     /// Invalidate (destroy) the current BT session so it will be re-created
     /// with the latest `bt_config` on the next BT download.  Active BT
-    /// downloads will be paused first.
+    /// downloads are gracefully paused first so their progress is preserved
+    /// and they appear as "paused" (status 2) in the UI.
     pub async fn invalidate_bt_session(&mut self) {
+        if self.bt_session.is_none() {
+            return;
+        }
+
+        // 1. Collect all active BT task IDs.
+        let bt_task_ids: Vec<String> = self
+            .active_tasks
+            .iter()
+            .filter(|(_, e)| e.is_bt)
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        // 2. Gracefully pause each active BT task (cancel token, persist
+        //    progress, update DB status to paused, notify Dart).
+        if !bt_task_ids.is_empty() {
+            log_info!(
+                "[manager] pausing {} active BT task(s) before session invalidation",
+                bt_task_ids.len()
+            );
+            for tid in &bt_task_ids {
+                if let Some(entry) = self.active_tasks.remove(tid) {
+                    entry.token.cancel();
+
+                    // Pause the torrent handle in the session so librqbit
+                    // flushes its piece-level state to disk.
+                    if let Some(ref bt) = self.bt_session {
+                        let _ = bt.pause_task(tid).await;
+                    }
+
+                    let _ = self.db.update_task_status(tid, 2, "").await;
+
+                    if let Ok(Some(t)) = self.db.load_task_by_id(tid).await {
+                        TaskProgress {
+                            task_id: tid.clone(),
+                            status: 2,
+                            downloaded_bytes: t.downloaded_bytes,
+                            total_bytes: t.total_bytes,
+                            speed: 0,
+                            file_name: t.file_name.clone(),
+                            save_dir: t.save_dir.clone(),
+                            url: t.url.clone(),
+                            error_message: String::new(),
+                        }
+                        .send_signal_to_dart();
+
+                        self.send_segments_from_db(tid, t.total_bytes).await;
+                    }
+
+                    // Boost guard: if the paused task was the current priority
+                    // (Boost) target, cancel Boost and resume other tasks.
+                    if self.priority_task_id.as_deref() == Some(tid.as_str()) {
+                        self.clear_priority().await;
+                    }
+                }
+            }
+
+            // Give in-flight BT download loops a moment to detect
+            // cancellation and exit cleanly before we tear down the runtime.
+            tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        }
+
+        // 3. Destroy the session on a background thread (block_on inside).
         if let Some(bt) = self.bt_session.take() {
             log_info!("[manager] invalidating BT session for config change");
-            let bt_clone = bt.clone();
-            // Shutdown on a blocking thread since it calls block_on internally.
-            let _ = tokio::task::spawn_blocking(move || {
-                bt_clone.shutdown();
-            })
-            .await;
+            std::thread::spawn(move || match Arc::try_unwrap(bt) {
+                Ok(owned) => owned.shutdown(),
+                Err(shared) => shared.shutdown(),
+            });
         }
     }
 

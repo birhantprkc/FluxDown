@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
 
@@ -27,11 +28,13 @@ class FilePickerService {
     String? initialDirectory,
   }) async {
     try {
+      final validatedDir = await _validateDirectory(initialDirectory);
       return await getDirectoryPath(
-        initialDirectory: initialDirectory,
+        initialDirectory: validatedDir,
         confirmButtonText: dialogTitle,
       );
     } catch (e) {
+      if (e is FilePickerException) rethrow;
       throw FilePickerException(_classifyError(e), cause: e);
     }
   }
@@ -63,6 +66,7 @@ class FilePickerService {
         return file == null ? null : [file];
       }
     } catch (e) {
+      if (e is FilePickerException) rethrow;
       throw FilePickerException(_classifyError(e), cause: e);
     }
   }
@@ -78,6 +82,7 @@ class FilePickerService {
     List<String>? allowedExtensions,
   }) async {
     try {
+      final validatedDir = await _validateDirectory(initialDirectory);
       final typeGroup = XTypeGroup(
         label: dialogTitle,
         extensions: allowedExtensions,
@@ -85,12 +90,13 @@ class FilePickerService {
 
       final location = await getSaveLocation(
         acceptedTypeGroups: <XTypeGroup>[typeGroup],
-        initialDirectory: initialDirectory,
+        initialDirectory: validatedDir,
         suggestedName: fileName,
       );
 
       return location?.path;
     } catch (e) {
+      if (e is FilePickerException) rethrow;
       throw FilePickerException(_classifyError(e), cause: e);
     }
   }
@@ -98,6 +104,35 @@ class FilePickerService {
   // ─────────────────────────────────────────────
   // 内部辅助
   // ─────────────────────────────────────────────
+
+  /// 验证 [dir] 是否为实际存在的目录。
+  ///
+  /// 在 Windows 上，`IFileDialog::SetFolder` 在目录不存在时会抛出 COM 错误
+  /// (HRESULT)，导致文件选择器无法打开。这里预先检查：
+  /// - 路径为 `null` 或空字符串 → 返回 `null`（让系统决定初始目录）
+  /// - 路径存在且是目录 → 原样返回
+  /// - 路径不存在或不是目录 → 逐级向上查找第一个存在的祖先目录
+  /// - 所有祖先都不存在 → 返回 `null`
+  static Future<String?> _validateDirectory(String? dir) async {
+    if (dir == null || dir.isEmpty) return null;
+
+    // 快速检查：路径存在且是目录
+    if (await Directory(dir).exists()) return dir;
+
+    // 逐级向上找到第一个存在的祖先目录。
+    // 用户可能手动输入了路径或目录被删除/移动/在外部驱动器上。
+    var current = Directory(dir);
+    for (var i = 0; i < 20; i++) {
+      final parent = current.parent;
+      // 到达根目录仍无法解析 — 放弃
+      if (parent.path == current.path) break;
+      if (await parent.exists()) return parent.path;
+      current = parent;
+    }
+
+    // 所有祖先都不存在，交给系统选择默认目录
+    return null;
+  }
 
   static FilePickerFailReason _classifyError(Object e) {
     final msg = e.toString().toLowerCase();
