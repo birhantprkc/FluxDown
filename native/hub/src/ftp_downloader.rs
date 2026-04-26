@@ -24,8 +24,7 @@ use tokio_util::sync::CancellationToken;
 use crate::db::Db;
 use crate::downloader::{
     BUF_WRITER_CAPACITY, DB_SAVE_INTERVAL_SECS, DownloadError, DownloadParams, FileInfo,
-    ProgressUpdate, SegmentProgressInfo, TEMP_EXT, dedup_filename, extract_from_url,
-    sanitize_filename,
+    ProgressUpdate, SegmentProgressInfo, TEMP_EXT, extract_from_url, sanitize_filename,
 };
 use crate::logger::log_info;
 use crate::proxy_config::{self, ProxyConfig};
@@ -543,11 +542,10 @@ async fn run_ftp_download_inner(p: &DownloadParams) -> Result<i64, DownloadError
     };
 
     let save_dir = PathBuf::from(&p.save_dir);
-    let actual_name = if p.is_resume {
-        auto_name.clone()
-    } else {
-        dedup_filename(&save_dir, &auto_name, &p.reserved_filenames_snapshot).await
-    };
+    // 文件名由 DownloadManager 在 do_start_task 同步段统一决策（含 dedup 和
+    // 兄弟任务预订协调），FTP downloader 内不再做名称变更——保留
+    // p.file_name 即可，仅当为空时（兜底）使用 probe 结果。
+    let actual_name = auto_name.clone();
 
     p.db.update_task_file_info(&p.task_id, &actual_name, info.total_bytes)
         .await?;

@@ -148,15 +148,6 @@ pub struct DownloadParams {
     /// 浏览器扩展捕获的额外 HTTP 请求头（如 Authorization）。
     /// 在发起 HTTP 请求时附加到请求头中。
     pub extra_headers: std::collections::HashMap<String, String>,
-    /// `DownloadManager::reserved_temp_paths` 在 `do_start_task` 同步段的快照。
-    ///
-    /// 传入 `dedup_filename` 以防止批量下载时多个并发任务选出相同文件名：
-    /// 每个任务在检查文件名冲突时，除磁盘现有文件外，还会排除此快照中
-    /// 已被兄弟任务预订的临时路径（`.fdownloading`）。
-    ///
-    /// 对于 resume 任务（`is_resume = true`），此字段无意义（dedup 被跳过）；
-    /// 对于 BT 任务，此字段为空集合（BT 有自己的文件名管理机制）。
-    pub reserved_filenames_snapshot: std::collections::HashSet<std::path::PathBuf>,
 }
 
 /// 将浏览器扩展捕获的额外 HTTP 头应用到请求构建器上。
@@ -1595,17 +1586,14 @@ async fn run_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
         ));
     }
 
-    // When resuming, the file on disk belongs to *this* task — skip dedup.
-    // For new downloads, dedup to avoid overwriting unrelated files.
-    // Pass the reserved_filenames_snapshot so that sibling tasks started in
-    // the same batch are also excluded from the candidate set, preventing the
-    // TOCTOU race where two concurrent tasks both see "no conflict" and choose
-    // the same filename, then overwrite each other's .fdownloading temp file.
-    let actual_name = if p.is_resume {
-        auto_name.clone()
-    } else {
-        dedup_filename(&save_dir, &auto_name, &p.reserved_filenames_snapshot).await
-    };
+    // 文件名由 DownloadManager 在 do_start_task 同步段统一决策（含 dedup 和
+    // 兄弟任务预订协调），downloader 内不再做名称变更，避免双源决策导致的
+    // 自我冲突或 reserved 集合污染（参见 PR #296 的回归 bug）。
+    //
+    // 仅当 p.file_name 为空时（极端兜底，正常路径不应发生），使用 probe
+    // 结果作为文件名；此时也不做 dedup（manager 应在 spawn 前确保 file_name
+    // 已 dedup）。
+    let actual_name = auto_name.clone();
 
     // For resume tasks we must NOT blindly overwrite total_bytes with the
     // freshly-probed value.  CDN servers frequently return a slightly different
@@ -1705,7 +1693,7 @@ async fn run_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
         })
         .await;
 
-    let mut dest_path = save_dir.join(&actual_name);
+    let dest_path = save_dir.join(&actual_name);
     // Chrome-style: write to a temporary file during download, rename on success.
     let temp_path = PathBuf::from(format!("{}{}", dest_path.display(), TEMP_EXT));
 
@@ -1939,42 +1927,16 @@ async fn run_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
         }
     };
 
-    // If a better file name was discovered during download (e.g. the actual
-    // GET response carried a richer Content-Disposition than the initial probe
-    // hint), download_single / do_segment will have already written it to the
-    // DB via update_task_file_name.  Re-read it here and redirect dest_path so
-    // the final rename lands on the correct file name.
+    // 注：旧版本会在此处读取 DB 中可能被 download_single / do_segment 更新过
+    // 的"更好的文件名"（来自 GET 响应的 Content-Disposition），并再次 dedup
+    // 以应用到磁盘文件名。该机制存在两个根本问题：
+    //   1. 与 manager 的 reserved_temp_paths 协调断裂——better-name 不在
+    //      manager 的预订集合中，可能与并发兄弟任务冲突。
+    //   2. 与 manager 的"文件名唯一决策者"原则冲突。
     //
-    // Without this step the task's in-memory / Dart-side name (updated via
-    // ProgressUpdate) diverges from the on-disk file name, which stays at the
-    // original hint-based name forever.
-    {
-        let db_file_name =
-            p.db.load_task_by_id(&p.task_id)
-                .await
-                .ok()
-                .flatten()
-                .map(|t| t.file_name)
-                .unwrap_or_default();
-
-        if !db_file_name.is_empty() && db_file_name != actual_name {
-            // Dedup in case the better name collides with an existing file that
-            // was created between probe and now.
-            let deduped =
-                dedup_filename(&save_dir, &db_file_name, &p.reserved_filenames_snapshot).await;
-            if deduped != db_file_name {
-                // Dedup changed the name — keep DB and reality in sync.
-                let _ = p.db.update_task_file_name(&p.task_id, &deduped).await;
-            }
-            log_info!(
-                "[download] task {} better name applied: {} → {}",
-                p.task_id,
-                actual_name,
-                deduped
-            );
-            dest_path = save_dir.join(&deduped);
-        }
-    }
+    // 浏览器扩展已在请求阶段解析 Content-Disposition 并作为 hint filename
+    // 传入；命令行/手动新建任务也会在 manager 的 do_start_task 中通过 probe
+    // 拿到 Content-Disposition。downloader 内部不再二次改名。
 
     // Checksum verification — runs after size integrity check, before rename.
     if !p.checksum.is_empty() {
@@ -2131,40 +2093,11 @@ async fn download_single(
         let _ = db.update_task_progress(task_id, 0).await;
     }
 
-    // Try extracting a better filename from the actual download response.
-    // This is the ultimate fallback — the real GET may have Content-Disposition
-    // even when the probe HEAD/GET-Range:0-0 didn't.
-    let resp_name = extract_filename(resp.headers(), resp.url().as_str());
-    if !resp_name.is_empty()
-        && resp_name != "download"
-        && resp
-            .headers()
-            .contains_key(reqwest::header::CONTENT_DISPOSITION)
-    {
-        log_info!(
-            "[download-single] got better name from response: {}",
-            resp_name
-        );
-        // Persist immediately so run_download_inner can redirect dest_path
-        // to this name before the final .fdownloading → real-name rename.
-        let _ = db.update_task_file_name(task_id, &resp_name).await;
-        let _ = progress_tx
-            .send(ProgressUpdate {
-                task_id: task_id.to_string(),
-                downloaded_bytes: downloaded,
-                total_bytes,
-                status: 1,
-                error_message: String::new(),
-                file_name: resp_name,
-                segment_details: Some(vec![SegmentProgressInfo {
-                    index: 0,
-                    start_byte: 0,
-                    end_byte: if total_bytes > 0 { total_bytes - 1 } else { 0 },
-                    downloaded_bytes: downloaded,
-                }]),
-            })
-            .await;
-    }
+    // 注：旧版本会从实际下载响应的 Content-Disposition 中提取"更好的文件名"，
+    // 写入 DB 并通知 Dart UI。该机制已移除——新架构下文件名由 DownloadManager
+    // 在 do_start_task 同步段统一决策（probe 阶段已读取 Content-Disposition），
+    // downloader 内部不再变更文件名，避免与 manager 的 reserved_temp_paths
+    // 协调断裂导致并发下载冲突（参见 PR #296 自我冲突回归 bug）。
 
     // Wrap with decompression if needed.  The stream now yields
     // Result<Bytes, io::Error> regardless of whether decompression is active.
@@ -2762,6 +2695,47 @@ mod tests {
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
+
+    // -----------------------------------------------------------------------
+    // 回归测试：PR #296 自我冲突 bug
+    //
+    // 场景：单任务下载，磁盘上没有同名文件，reserved 集合中也没有该名字
+    //       的预订（manager 还未 insert，或 snapshot 在 insert 之前 clone）。
+    //       此时 dedup 必须返回原名，不得加 (1) 后缀。
+    //
+    // 旧 bug：manager 同步段先 insert(self) 再 clone snapshot，spawned task
+    //         拿到的 snapshot 包含自己，dedup 误判冲突 → 所有浏览器扩展下载
+    //         都被加 (1)（用户日志：FluxDown-0.1.40-windows-x64-setup.exe →
+    //         FluxDown-0.1.40-windows-x64-setup (1).exe，磁盘并无原名文件）。
+    //
+    // 新设计中 spawned task 完全不再调 dedup_filename；这里仍然保留 sync
+    // 与 async 两个测试，作为底层契约——"reserved 集合不含本任务名"时必须
+    // 返回原名。
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn dedup_filename_async_no_self_conflict_when_alone() {
+        let dir = std::env::temp_dir().join("fluxdown_test_dedup_no_self_conflict_async");
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        let _ = tokio::fs::create_dir_all(&dir).await;
+
+        // 磁盘干净；reserved 中只有兄弟任务 sibling.bin，没有自己的 setup.exe
+        let mut reserved = std::collections::HashSet::new();
+        reserved.insert(dir.join(format!("sibling.bin{TEMP_EXT}")));
+
+        let result = dedup_filename(&dir, "setup.exe", &reserved).await;
+        assert_eq!(
+            result, "setup.exe",
+            "reserved 集合不含本任务名时，dedup 必须返回原名（PR #296 回归 bug）"
+        );
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    // 注：dedup_filename_sync 是 download_manager 模块内的私有函数，与
+    // dedup_filename（async）实现严格对称（同一文件检测 + 同一 reserved
+    // 集合判断）。上面的 async 测试已覆盖两者共享的行为契约："reserved
+    // 集合不含本任务名时返回原名"，无需重复测试 sync 版本。
 
     // -----------------------------------------------------------------------
     // Bug: HeaderValue::to_str() rejects raw UTF-8 bytes (non-ASCII)

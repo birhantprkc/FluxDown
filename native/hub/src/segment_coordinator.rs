@@ -1921,34 +1921,12 @@ async fn do_segment(
         )));
     }
 
-    // For segment 0, try extracting a better filename from the response.
-    if seg_idx == 0
-        && let Some(cd) = resp.headers().get(reqwest::header::CONTENT_DISPOSITION)
-    {
-        let resp_name = crate::downloader::extract_filename(resp.headers(), resp.url().as_str());
-        if !resp_name.is_empty() && resp_name != "download" {
-            log_info!(
-                "[coordinator-seg0] got better name from response: {} (cd={:?})",
-                resp_name,
-                cd
-            );
-            // Persist immediately so run_download_inner can redirect dest_path
-            // to this name before the final .fdownloading → real-name rename.
-            let _ = db.update_task_file_name(task_id, &resp_name).await;
-            let snapshot = seg_states.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            let _ = progress_tx
-                .send(ProgressUpdate {
-                    task_id: task_id.to_string(),
-                    downloaded_bytes: total_downloaded.load(Ordering::Relaxed),
-                    total_bytes,
-                    status: 1,
-                    error_message: String::new(),
-                    file_name: resp_name,
-                    segment_details: Some(snapshot),
-                })
-                .await;
-        }
-    }
+    // 注：旧版本会在 segment 0 响应中提取 Content-Disposition 的"更好文件名"
+    // 写入 DB 并通知 Dart UI，run_download_inner 末尾再据此 dedup + 重定向
+    // dest_path。该机制已移除——新架构下文件名由 DownloadManager 在
+    // do_start_task 同步段统一决策（probe 阶段读取 Content-Disposition），
+    // 所有下载器内部不再变更文件名，避免与 manager 的 reserved_temp_paths
+    // 协调断裂导致并发冲突（参见 PR #296 自我冲突回归 bug）。
 
     let mut stream = resp.bytes_stream();
 

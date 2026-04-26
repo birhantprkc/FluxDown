@@ -646,11 +646,10 @@ async fn run_hls_download_inner(
     };
 
     let save_dir = PathBuf::from(&p.save_dir);
-    let actual_name = if p.is_resume {
-        auto_name.clone()
-    } else {
-        dedup_filename(&save_dir, &auto_name, &p.reserved_filenames_snapshot).await
-    };
+    // 文件名由 DownloadManager 在 do_start_task 同步段统一决策（含 dedup 和
+    // 兄弟任务预订协调），HLS downloader 内不再做名称变更——保留
+    // p.file_name 即可，仅当为空时（兜底）使用 URL 解析结果。
+    let actual_name = auto_name.clone();
 
     // total_bytes is unknown for HLS until we download all segments
     p.db.update_task_file_info(&p.task_id, &actual_name, 0)

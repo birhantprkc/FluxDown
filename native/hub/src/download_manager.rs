@@ -1594,58 +1594,86 @@ impl DownloadManager {
             };
 
             // ---------------------------------------------------------------
-            // Pre-spawn file-name reservation (TOCTOU fix for batch downloads)
+            // 文件名最终决策：manager 是文件名的唯一决策者
             //
-            // Problem: `dedup_filename` is called inside each spawned task.
-            // When multiple tasks start simultaneously (batch download or when
-            // the queue drains multiple slots at once), all of them call
-            // `dedup_filename` concurrently.  Because no `.fdownloading` file
-            // exists yet, every task sees "no conflict" and chooses the same
-            // filename.  They then race to write the same temp file, causing
-            // later writers to silently overwrite earlier ones → file loss.
+            // 流程:
+            //   1. 若 file_name 为空 → await probe 拿 Content-Disposition / URL 文件名
+            //      （probe 是 async，但发生在"同步预订段"之前；同时只允许 file_name
+            //       为空的任务 await，已知 file_name 的任务直接进同步段，互不干扰）
+            //   2. 同步段（无 .await）：
+            //      - dedup_filename_sync(磁盘 + 兄弟任务的 reserved_temp_paths)
+            //      - reserved_temp_paths.insert(自己的 temp 路径)
+            //      - 持久化最终 file_name 到 DB
             //
-            // Fix: Before spawning, synchronously (no `.await`) compute the
-            // deduplicated filename using the current disk state PLUS the set
-            // of paths already reserved by other in-flight tasks.  Insert the
-            // chosen temp path into `reserved_temp_paths` atomically (since
-            // we are on the single current_thread runtime and haven't yielded).
-            // The spawned task uses the already-resolved `file_name` and
-            // receives a snapshot of `reserved_temp_paths` so that even
-            // probe-after-start tasks (empty `file_name`) can still see their
-            // siblings' reservations.
+            // 与旧设计的本质区别：
+            //   - 旧设计：manager 同步段做一次 dedup 并插入 reserved，spawned task
+            //     再做一次 dedup 并把 reserved 快照（含自己）传进去。后者会把"自己
+            //     已预订"误判为"已被占用"，触发回归 bug（PR #296 自我冲突）。
+            //   - 新设计：spawned task 不再 dedup，DownloadParams 不再携带
+            //     reserved_filenames_snapshot；下载器内部不再变更文件名。
             //
-            // Reservation is released in `on_task_done` via the
-            // `reserved_temp_path` field on `TaskDone`.
+            // Reservation 在 `on_task_done` 中通过 TaskDone.reserved_temp_path 释放。
             // ---------------------------------------------------------------
             let save_path = std::path::PathBuf::from(&save_dir);
 
-            // Only pre-reserve when we already know the file name.
-            // When file_name is empty, the probe inside run_download_inner
-            // will resolve the name; the snapshot passed via
-            // reserved_filenames_snapshot still lets it avoid siblings'
-            // already-reserved paths.
-            // Pre-reserve only when the file name is already known.  BT tasks
-            // never reach this branch (they are handled by the `if use_bt`
-            // block above).  FTP and HLS are handled identically to HTTP here
-            // because they all write via the same temp-file + rename pattern.
+            // Step 1: 若名称未知，先 probe（async；不在同步预订段内）。
+            // BT 不走此分支，FTP/HLS/DASH/HTTP 共用此 probe 接口。
+            // probe 失败则保持 file_name 为空——下载器内部仍有兜底（URL 解析），
+            // 但此时无法做 manager 级 dedup，dedup_filename_sync 会返回原名。
+            if file_name.is_empty() {
+                // Step 1a: 先从 DB 读一次——任务在 pending_queue 等待期间，
+                // create_task 中 spawn 的背景 probe 可能已经把文件名写进 DB。
+                // 直接复用，避免对一次性 CDN URL 重复 probe 消耗 token。
+                if let Ok(Some(t)) = self.db.load_task_by_id(&task_id).await
+                    && !t.file_name.is_empty()
+                {
+                    file_name = t.file_name;
+                }
+            }
+
+            if file_name.is_empty() {
+                // Step 1b: DB 中也没有名字（未排队，或背景 probe 未完成/失败）
+                // → 在此 await 一次 probe。注意此 .await 在同步预订段之前，
+                // 不会破坏 dedup+insert 的原子性。
+                let (probed_name, _probed_size) = crate::meta_prober::probe_task_meta(
+                    &url,
+                    &file_name,
+                    &task_client,
+                    &task_proxy,
+                )
+                .await;
+                if !probed_name.is_empty() {
+                    file_name = probed_name;
+                    let _ = self.db.update_task_file_name(&task_id, &file_name).await;
+                    TaskMetaProbed {
+                        task_id: task_id.clone(),
+                        file_name: file_name.clone(),
+                        total_bytes: 0,
+                    }
+                    .send_signal_to_dart();
+                }
+            }
+
+            // Step 2: 同步原子段——dedup + insert reserved。无 .await！
+            // 此时 self.reserved_temp_paths 中只有兄弟任务的预订，不包含自己，
+            // 因此不会出现"自我冲突"。
             let reserved_temp_path: Option<std::path::PathBuf> = if !file_name.is_empty() {
-                // Synchronous dedup: check disk + reserved set without .await.
-                // Safe because we are in the synchronous section before spawn.
                 let deduped =
                     dedup_filename_sync(&save_path, &file_name, &self.reserved_temp_paths);
-                // Update file_name to the deduped version so the spawned task
-                // uses it directly (skip a second dedup in run_download_inner).
-                file_name = deduped.clone();
+                if deduped != file_name {
+                    file_name = deduped.clone();
+                    // dedup 改名后立即落库（spawned task 不再修改文件名）
+                    let _ = self.db.update_task_file_name(&task_id, &file_name).await;
+                }
                 let temp = save_path.join(format!("{}{}", deduped, downloader::TEMP_EXT));
                 self.reserved_temp_paths.insert(temp.clone());
                 Some(temp)
             } else {
+                // 兜底：file_name 仍为空（probe 失败）。下载器内部会从响应头
+                // / URL 兜底解析名称，但不做 dedup（无法与 reserved 协调）。
+                // 这是极端情况，正常路径不会到此。
                 None
             };
-
-            // Snapshot for the spawned task — lets probe-resolved names also
-            // avoid their siblings' reserved paths inside dedup_filename.
-            let reserved_snapshot = self.reserved_temp_paths.clone();
 
             let params = DownloadParams {
                 task_id: task_id.clone(),
@@ -1666,7 +1694,6 @@ impl DownloadManager {
                 hls_quality_rx,
                 checksum,
                 extra_headers,
-                reserved_filenames_snapshot: reserved_snapshot,
             };
 
             tokio::spawn(async move {
@@ -2184,8 +2211,6 @@ impl DownloadManager {
                 hls_quality_rx,
                 checksum: task.checksum,
                 extra_headers: std::collections::HashMap::new(), // 恢复任务无额外请求头
-                // Resume 任务跳过 dedup（文件已存在磁盘），无需预订快照。
-                reserved_filenames_snapshot: std::collections::HashSet::new(),
             };
 
             tokio::spawn(async move {
