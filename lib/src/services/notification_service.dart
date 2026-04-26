@@ -155,6 +155,18 @@ class NotificationService {
       );
       return;
     }
+    // Windows 上所有通知均由 Win32ToastWindow / OverlayEntry 处理，
+    // 无需额外触发 flutter_local_notifications 系统通知。
+    // flutter_local_notifications 在 Windows 上会弹出带有系统语言 UI
+    // 外框（"清除"、"通知设置"等英文按钮）的 Action Center 通知，
+    // 与 App 内语言设置不一致，体验较差。
+    if (Platform.isWindows) {
+      logInfo(
+        _tag,
+        'showAllCompletedSummary: skipped on Windows (handled by Win32ToastWindow)',
+      );
+      return;
+    }
     _showSystemAllCompleted(count);
   }
 
@@ -334,7 +346,10 @@ class NotificationService {
           );
           logInfo(_tag, 'initSystem: macOS permission granted=$granted');
         } else {
-          logInfo(_tag, 'initSystem: macOS plugin not resolved, skipping permission request');
+          logInfo(
+            _tag,
+            'initSystem: macOS plugin not resolved, skipping permission request',
+          );
           // Fallback: try iOS plugin (older plugin versions share the same class)
           if (macOsPlugin != null) {
             final granted = await macOsPlugin.requestPermissions(
@@ -342,7 +357,10 @@ class NotificationService {
               badge: true,
               sound: true,
             );
-            logInfo(_tag, 'initSystem: macOS(iOS-compat) permission granted=$granted');
+            logInfo(
+              _tag,
+              'initSystem: macOS(iOS-compat) permission granted=$granted',
+            );
           }
         }
       }

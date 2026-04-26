@@ -3,6 +3,7 @@ import 'dart:ffi';
 import 'dart:io';
 
 import 'package:ffi/ffi.dart';
+import '../../i18n/locale_provider.dart';
 import '../../models/download_task.dart';
 import '../log_service.dart';
 import '../open_folder.dart';
@@ -327,8 +328,9 @@ void _createToastWindow(_ToastBatch batch) {
       // 构建状态（批量时标题显示数量）
       final filePath =
           '${task.saveDir}${Platform.pathSeparator}${task.fileName}';
-      final title =
-          batch.count > 1 ? '${batch.count}个文件已下载' : '下载完成';
+      final title = batch.count > 1
+          ? currentS.batchDownloadCompleted(batch.count)
+          : currentS.downloadCompleted;
       final state = _ToastState(
         title: title,
         body: task.fileName,
@@ -384,12 +386,7 @@ void _createToastWindow(_ToastBatch batch) {
   }
 }
 
-void _calcHitAreas(
-  _ToastState state,
-  int scaledW,
-  int scaledH,
-  double scale,
-) {
+void _calcHitAreas(_ToastState state, int scaledW, int scaledH, double scale) {
   final closeBtnSize = (30 * scale).round();
   state.closeX1 = scaledW - closeBtnSize;
   state.closeY1 = 0;
@@ -749,9 +746,7 @@ void _drawHeader(
   final oldXFont = selectObject(dc, xFont);
   setTextColor(
     dc,
-    colorToCOLORREF(
-      state.hoveredButton == 1 ? colors.text : colors.textMuted,
-    ),
+    colorToCOLORREF(state.hoveredButton == 1 ? colors.text : colors.textMuted),
   );
   final xRect = calloc<RECT>();
   final xPtr = '✕'.toNativeUtf16();
@@ -857,13 +852,7 @@ void _drawContent(
   }
 }
 
-void _drawDivider(
-  int dc,
-  int w,
-  int h,
-  double scale,
-  _ToastColors colors,
-) {
+void _drawDivider(int dc, int w, int h, double scale, _ToastColors colors) {
   final actionH = (42 * scale).round();
   final dividerY = h - actionH;
   final divBrush = createSolidBrush(colorToCOLORREF(colors.divider));
@@ -911,10 +900,9 @@ void _drawActions(
   }
 
   // 打开文件（右半，accent 背景）
-  final fileBg =
-      state.hoveredButton == 3
-          ? (Win32ToastWindow.instance.isDarkMode ? 0x3A7FCC : 0x0055AA)
-          : colors.accent;
+  final fileBg = state.hoveredButton == 3
+      ? (Win32ToastWindow.instance.isDarkMode ? 0x3A7FCC : 0x0055AA)
+      : colors.accent;
   final fileBrush = createSolidBrush(colorToCOLORREF(fileBg));
   final fileRect = calloc<RECT>();
   try {
@@ -935,7 +923,7 @@ void _drawActions(
   setBkMode(dc, TRANSPARENT);
 
   final folderRect = calloc<RECT>();
-  final folderPtr = '打开文件夹'.toNativeUtf16();
+  final folderPtr = currentS.openFileFolder.toNativeUtf16();
   try {
     folderRect.ref
       ..left = 0
@@ -956,7 +944,7 @@ void _drawActions(
   }
 
   final fileTextRect = calloc<RECT>();
-  final fileTextPtr = '打开文件'.toNativeUtf16();
+  final fileTextPtr = currentS.openFile.toNativeUtf16();
   try {
     fileTextRect.ref
       ..left = halfW
