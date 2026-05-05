@@ -1208,6 +1208,131 @@ fn dedup_name_in_dir(dir: &Path, name: &str) -> String {
     name.to_string()
 }
 
+/// Compute the layout for moving downloaded files from staging to save_dir.
+///
+/// Returns `(moves, top_level_name)`:
+/// - `moves`: ordered list of `(src_in_stage, dst_in_save)` pairs to apply
+/// - `top_level_name`: the entry that ends up directly under `save_dir`
+///   (used as the DB `file_name` for "open file location" UX)
+///
+/// Layout decisions:
+/// - **All-selected with shared top-level dir** → container move (move the
+///   whole top-level dir from staging to save_dir, optionally renamed).
+/// - **All-selected, flat torrent** → per-file flat move (each non-padding
+///   file lands directly under save_dir).
+/// - **Single file (partial or otherwise)** → single-file flat move (basename
+///   only, no container, optional `custom_name` rename).
+/// - **Partial selection of multiple files** → per-file flat move; basenames
+///   are deduped against save_dir AND against in-batch siblings.  `custom_name`
+///   does not apply (no obvious "container" to rename).
+///
+/// The reason completion is driven by `selected_paths` (and never by reading
+/// staging dir contents) is that BT pieces span file boundaries, so librqbit
+/// inevitably writes piece-overlap byproducts for non-selected files (see
+/// `librqbit/file_ops.rs::write_chunk` — only BEP-47 padding files are
+/// skipped).  Those byproducts are cleaned up wholesale by `remove_dir_all`
+/// after all selected files have been moved out.
+fn compute_completion_layout(
+    save_dir: &Path,
+    stage_dir: &Path,
+    selected_paths: &[PathBuf],
+    all_selected: bool,
+    custom_name: &str,
+) -> Option<(Vec<(PathBuf, PathBuf)>, String)> {
+    if selected_paths.is_empty() {
+        return None;
+    }
+
+    // Detect a real shared top-level directory (every path has > 1 component
+    // AND first component is identical across all selected files).
+    let shared_top_dir: Option<String> = (|| -> Option<String> {
+        let first = selected_paths
+            .first()?
+            .components()
+            .next()
+            .and_then(|c| c.as_os_str().to_str())?
+            .to_string();
+        for p in selected_paths {
+            if p.components().count() < 2 {
+                return None;
+            }
+            let head = p.components().next()?.as_os_str().to_str()?;
+            if head != first {
+                return None;
+            }
+        }
+        Some(first)
+    })();
+
+    // Container move: only when all selected AND a real top-level dir exists.
+    if all_selected
+        && let Some(top) = shared_top_dir.as_deref()
+    {
+        let desired = if custom_name.is_empty() {
+            top
+        } else {
+            custom_name
+        };
+        let final_top = dedup_name_in_dir(save_dir, desired);
+        let src = stage_dir.join(top);
+        let dst = save_dir.join(&final_top);
+        return Some((vec![(src, dst)], final_top));
+    }
+
+    // Single-file flat move (single selected file regardless of all_selected).
+    if selected_paths.len() == 1 {
+        let rel = &selected_paths[0];
+        let basename = rel
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("download")
+            .to_string();
+        let desired = if custom_name.is_empty() {
+            basename.as_str()
+        } else {
+            custom_name
+        };
+        let final_name = dedup_name_in_dir(save_dir, desired);
+        let src = stage_dir.join(rel);
+        let dst = save_dir.join(&final_name);
+        return Some((vec![(src, dst)], final_name));
+    }
+
+    // Per-file flat move: covers all-selected flat torrent + partial multi.
+    // Dedup each basename against save_dir AND against names already chosen
+    // in this batch so two staged files cannot collide on the same dst.
+    let mut taken: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut moves: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(selected_paths.len());
+    let mut top_level: Option<String> = None;
+    for (idx, rel) in selected_paths.iter().enumerate() {
+        let basename = rel
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("download")
+            .to_string();
+        // For all-selected flat torrent + custom_name, rename the FIRST file
+        // only (preserves prior behavior for the single-rename UX).
+        let candidate_seed = if idx == 0 && all_selected && !custom_name.is_empty() {
+            custom_name
+        } else {
+            basename.as_str()
+        };
+        let mut candidate = dedup_name_in_dir(save_dir, candidate_seed);
+        while taken.contains(&candidate) {
+            candidate = dedup_name_in_dir(save_dir, &format!("_{candidate}"));
+        }
+        taken.insert(candidate.clone());
+        let src = stage_dir.join(rel);
+        let dst = save_dir.join(&candidate);
+        if top_level.is_none() {
+            top_level = Some(candidate.clone());
+        }
+        moves.push((src, dst));
+    }
+
+    Some((moves, top_level.unwrap_or_else(|| "download".to_string())))
+}
+
 /// Move a file or directory from `src` to `dst`.
 ///
 /// Tries `std::fs::rename` first (atomic, same filesystem).  If that fails
@@ -1723,9 +1848,7 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
 
     // Extract file layout info and piece count from torrent metadata.
     // These are immutable after metadata resolution, so we cache them once.
-    // Also capture the first file's relative_filename so we know exactly
-    // what path librqbit will create inside the staging directory.
-    let (file_offsets, total_pieces, first_relative_filename) = handle
+    let (file_offsets, total_pieces) = handle
         .with_metadata(|meta| {
             let offsets: Vec<(u64, u64)> = meta
                 .file_infos
@@ -1733,40 +1856,15 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                 .map(|fi| (fi.offset_in_torrent, fi.len))
                 .collect();
             let pieces = meta.lengths.total_pieces();
-            // For single-file torrents the relative_filename is just the
-            // file name.  For multi-file torrents it is `name/file.ext`,
-            // so the top-level entry is the torrent name directory.
-            let first_name = meta
-                .file_infos
-                .first()
-                .map(|fi| fi.relative_filename.clone())
-                .unwrap_or_default();
-            (offsets, pieces, first_name)
+            (offsets, pieces)
         })
-        .unwrap_or_else(|_| (Vec::new(), 0, PathBuf::new()));
-
-    // The top-level component of the first file's relative path is the
-    // name of the file or directory that librqbit creates directly inside
-    // the output_folder (i.e. the staging directory).
-    let top_level_name = first_relative_filename
-        .components()
-        .next()
-        .and_then(|c| c.as_os_str().to_str())
-        .unwrap_or(&resolved_name)
-        .to_string();
-    // Prefer the metadata-derived top_level_name; fall back to resolved_name.
-    let staging_item_name = if top_level_name.is_empty() {
-        resolved_name.clone()
-    } else {
-        top_level_name
-    };
+        .unwrap_or((Vec::new(), 0));
 
     log_info!(
-        "[BT] task={} files={}, total_pieces={}, staging_item={}",
+        "[BT] task={} files={}, total_pieces={}",
         short_id(&task_id),
         file_offsets.len(),
         total_pieces,
-        &staging_item_name,
     );
 
     // -----------------------------------------------------------------------
@@ -1969,6 +2067,50 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Snapshot the relative paths of selected non-padding files.
+    //
+    // This is the SOLE source of truth for the completion-time move:
+    //   - Path R (had_existing_handle): `selected_indices` is a (0..file_count)
+    //     placeholder.  Load the real selection from DB.
+    //   - Path S (skip_file_selection): `selected_indices` is (0..file_count)
+    //     meaning "all" — already correct.
+    //   - Path A / Path B: `selected_indices` is the real user choice.
+    // -----------------------------------------------------------------------
+    let true_selection: Vec<i32> = if had_existing_handle {
+        match db.load_bt_selected_files(&task_id).await.ok().flatten() {
+            Some(v) if v.is_empty() => (0..file_count as i32).collect(), // "all" sentinel
+            Some(v) => v,
+            None => (0..file_count as i32).collect(), // never confirmed → all
+        }
+    } else {
+        selected_indices.clone()
+    };
+    let (selected_paths, non_padding_count): (Vec<PathBuf>, usize) = handle
+        .with_metadata(|meta| {
+            let total_non_padding = meta
+                .file_infos
+                .iter()
+                .filter(|fi| !fi.attrs.padding)
+                .count();
+            let paths: Vec<PathBuf> = true_selection
+                .iter()
+                .filter_map(|&i| meta.file_infos.get(i as usize))
+                .filter(|fi| !fi.attrs.padding)
+                .map(|fi| fi.relative_filename.clone())
+                .collect();
+            (paths, total_non_padding)
+        })
+        .unwrap_or_default();
+    let all_selected = !selected_paths.is_empty() && selected_paths.len() == non_padding_count;
+    log_info!(
+        "[BT] task={} completion plan: {} selected file(s), all_selected={}, non_padding_total={}",
+        short_id(&task_id),
+        selected_paths.len(),
+        all_selected,
+        non_padding_count
+    );
+
     // Recompute total_bytes based on selected files only for accurate progress display.
     let total_bytes = {
         let selected_total: i64 = handle
@@ -2140,118 +2282,101 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
 
             // Download complete.
             //
-            // Move the downloaded file/directory from the staging directory
-            // into save_dir with a deduplicated name, then update the DB so
-            // that the UI and delete logic see the correct final path.
-            //
-            // Staging layout:  save_dir/.bt_stage_<task_id>/<staging_item_name>
-            // Final layout:    save_dir/<final_name>
+            // Move the user-selected files from the staging directory into
+            // save_dir.  The move is driven by `selected_paths` (a snapshot
+            // of `meta.file_infos[i].relative_filename` for selected indices,
+            // taken right after the user confirmed the file selection).
             //
             // We send the single STATUS_COMPLETED signal AFTER the move so
             // that the file_name field already reflects the true disk name.
             let save_path = PathBuf::from(&save_dir);
             let stage_dir = bt_stage_dir(&save_dir, &task_id);
-            let stage_item = stage_dir.join(&staging_item_name);
 
-            // Determine the final file name: attempt the staging-dir move
-            // when the staged item is present; otherwise fall back to
-            // resolved_name (e.g. resumed download that was already moved).
-            let completed_name = if stage_item.exists() {
-                let desired_name = if custom_name.is_empty() {
-                    &staging_item_name
-                } else {
-                    &custom_name
-                };
-                let final_name = dedup_name_in_dir(&save_path, desired_name);
-                let final_path = save_path.join(&final_name);
-
-                log_info!(
-                    "[BT] task={} moving '{}' → '{}' (staging_item={})",
-                    short_id(&task_id),
-                    stage_item.display(),
-                    final_path.display(),
-                    &staging_item_name,
-                );
-
-                match move_path(&stage_item, &final_path) {
-                    Ok(()) => {
-                        if final_name != resolved_name {
-                            log_info!(
-                                "[BT] task={} file_name updated '{}' → '{}' (dedup)",
-                                short_id(&task_id),
-                                &resolved_name,
-                                &final_name,
-                            );
-                        }
-                        // Persist the true final name before signalling Dart.
-                        let _ = db
-                            .update_task_file_info(&task_id, &final_name, final_total)
-                            .await;
-                        final_name
-                    }
-                    Err(e) => {
-                        log_info!(
-                            "[BT] task={} failed to move staging item to final path: {}",
-                            short_id(&task_id),
-                            e,
-                        );
-                        // Fall through — the file is still in the staging dir.
-                        // resolved_name is the best we can report; the staging
-                        // directory remains for manual recovery.
-                        resolved_name.clone()
-                    }
-                }
-            } else if stage_dir.exists() {
-                // Staging dir exists but the expected item is missing —
-                // the torrent might be multi-file with a different top-level
-                // name.  Move the entire staging dir contents best-effort.
-                log_info!(
-                    "[BT] task={} staging item '{}' not found in '{}'; moving whole staging dir",
-                    short_id(&task_id),
-                    &staging_item_name,
-                    stage_dir.display(),
-                );
-                let mut first_child_name = resolved_name.clone();
-                if let Ok(entries) = std::fs::read_dir(&stage_dir) {
-                    for entry in entries.filter_map(|e| e.ok()) {
-                        let child_name = entry.file_name();
-                        let child_name_str = child_name.to_string_lossy();
-                        // Skip hidden files (e.g. .DS_Store, other temp files).
-                        if child_name_str.starts_with('.') {
-                            continue;
-                        }
-                        let final_child_name = dedup_name_in_dir(&save_path, &child_name_str);
-                        let dst = save_path.join(&final_child_name);
-                        if move_path(&entry.path(), &dst).is_ok() {
-                            first_child_name = final_child_name;
-                        } else {
-                            log_info!(
-                                "[BT] task={} failed to move child '{}' from staging dir",
-                                short_id(&task_id),
-                                child_name_str,
-                            );
-                        }
-                    }
-                }
-                // If the user specified a custom name, rename the moved item.
-                if !custom_name.is_empty() && first_child_name != custom_name {
-                    let src = save_path.join(&first_child_name);
-                    let target = dedup_name_in_dir(&save_path, &custom_name);
-                    let dst = save_path.join(&target);
-                    if move_path(&src, &dst).is_ok() {
-                        first_child_name = target;
-                    }
-                }
-                let _ = db
-                    .update_task_file_info(&task_id, &first_child_name, final_total)
-                    .await;
-                first_child_name
-            } else {
+            let (completed_name, all_moves_succeeded) = if !stage_dir.exists() {
                 // No staging dir at all — resumed download that was already
                 // moved in a previous session, or existing_handle path where
                 // output_folder == save_dir.  The DB file_name is already
                 // correct; just return resolved_name for the signal.
-                resolved_name.clone()
+                (resolved_name.clone(), true)
+            } else {
+                let layout = compute_completion_layout(
+                    &save_path,
+                    &stage_dir,
+                    &selected_paths,
+                    all_selected,
+                    &custom_name,
+                );
+                match layout {
+                    None => {
+                        // Empty selection — should not happen in practice.
+                        log_info!(
+                            "[BT] task={} completion: empty selection, falling back to resolved_name='{}'",
+                            short_id(&task_id),
+                            &resolved_name,
+                        );
+                        (resolved_name.clone(), false)
+                    }
+                    Some((moves, top_level_name)) => {
+                        let total = moves.len();
+                        let mut succeeded = 0usize;
+                        for (src, dst) in &moves {
+                            if !src.exists() {
+                                log_info!(
+                                    "[BT] task={} completion: expected staged file missing '{}'",
+                                    short_id(&task_id),
+                                    src.display(),
+                                );
+                                continue;
+                            }
+                            log_info!(
+                                "[BT] task={} moving '{}' → '{}'",
+                                short_id(&task_id),
+                                src.display(),
+                                dst.display(),
+                            );
+                            if let Some(parent) = dst.parent()
+                                && !parent.exists()
+                            {
+                                let _ = std::fs::create_dir_all(parent);
+                            }
+                            match move_path(src, dst) {
+                                Ok(()) => {
+                                    succeeded += 1;
+                                }
+                                Err(e) => {
+                                    log_info!(
+                                        "[BT] task={} move failed: {} ({})",
+                                        short_id(&task_id),
+                                        src.display(),
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                        let all_ok = total > 0 && succeeded == total;
+                        if all_ok {
+                            log_info!(
+                                "[BT] task={} all {} selected file(s) moved; top_level='{}'",
+                                short_id(&task_id),
+                                total,
+                                &top_level_name,
+                            );
+                        } else {
+                            log_info!(
+                                "[BT] task={} completion: {}/{} files moved — leaving staging dir for recovery",
+                                short_id(&task_id),
+                                succeeded,
+                                total,
+                            );
+                        }
+                        // Persist the resolved top-level name so that the UI
+                        // and "open file location" agree with what's on disk.
+                        let _ = db
+                            .update_task_file_info(&task_id, &top_level_name, final_total)
+                            .await;
+                        (top_level_name, all_ok)
+                    }
+                }
             };
 
             // Send the single STATUS_COMPLETED signal with the true file name.
@@ -2287,7 +2412,11 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
             // behind.  We retry a few times with a short delay to handle
             // the case where the runtime thread hasn't fully flushed yet.
             let stage_dir_for_cleanup = bt_stage_dir(&save_dir, &task_id);
-            if stage_dir_for_cleanup.exists() {
+            // Only clean up staging when every selected file was successfully
+            // moved out.  If any move failed, leaving the staging dir intact
+            // lets the user (or `rescue_stranded_staging_files` on next start)
+            // recover the data manually.
+            if all_moves_succeeded && stage_dir_for_cleanup.exists() {
                 let mut removed = false;
                 for attempt in 0u8..4 {
                     if attempt > 0 {
