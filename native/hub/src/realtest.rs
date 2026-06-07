@@ -65,6 +65,9 @@ struct ServerState {
     /// 全量 GET 返回 `Content-Encoding: gzip` + 该 gzip 字节（模拟服务器无视
     /// Accept-Encoding: identity 仍压缩）。设置时通常配合 support_range=false。
     gzip_body: Option<Arc<Vec<u8>>>,
+    /// 覆盖全量 GET 的 Content-Encoding 头值（如 "gzip, gzip" 多层 / "compress" 未知）。
+    /// 设置时优先于 gzip_body 自动添加的 "gzip"。仅影响头部，不改 body。
+    content_encoding_override: Option<String>,
     /// 全量 GET 不发 Content-Length（靠连接关闭定界），模拟 chunked/无 CL 服务器。
     omit_content_length_full: bool,
     /// 全量 GET 只发前 K 字节然后关闭（模拟传输中途断流/截断）。
@@ -95,6 +98,7 @@ impl ServerState {
             drop_range_get_nth: None,
             corrupt_range_get_nth: None,
             gzip_body: None,
+            content_encoding_override: None,
             omit_content_length_full: false,
             close_full_after: None,
             disable_close_full: std::sync::atomic::AtomicBool::new(false),
@@ -268,7 +272,9 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
             (None, None) => total,
         };
         h.push_str(&format!("Content-Length: {}\r\n", cl));
-        if st.gzip_body.is_some() {
+        if let Some(ce) = &st.content_encoding_override {
+            h.push_str(&format!("Content-Encoding: {}\r\n", ce));
+        } else if st.gzip_body.is_some() {
             h.push_str("Content-Encoding: gzip\r\n");
         }
         if st.support_range && st.advertise_accept_ranges {
@@ -307,7 +313,9 @@ async fn handle_conn(mut stream: TcpStream, st: Arc<ServerState>) -> std::io::Re
         if !st.omit_content_length_full {
             h.push_str(&format!("Content-Length: {}\r\n", cl));
         }
-        if st.gzip_body.is_some() {
+        if let Some(ce) = &st.content_encoding_override {
+            h.push_str(&format!("Content-Encoding: {}\r\n", ce));
+        } else if st.gzip_body.is_some() {
             h.push_str("Content-Encoding: gzip\r\n");
         }
         if st.support_range && st.advertise_accept_ranges {
@@ -1046,6 +1054,38 @@ async fn gzip_single_stream_should_succeed() {
     // 正确行为：解压后写盘的明文应被接受为完成，且内容正确。
     assert_eq!(status, 3, "gzip 单流下载应成功（解压后正确文件不该被完整性校验拒绝）");
     assert_eq!(got, expected, "解压内容应与原始明文一致");
+    drop(server);
+}
+
+// ---------------------------------------------------------------------------
+// BUG-HTTP-LAYERED-ENCODING：多层压缩（gzip, gzip）只能解一层 → 必须报错而非静默损坏
+// ---------------------------------------------------------------------------
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "binds a local port; run with --ignored"]
+async fn layered_content_encoding_must_error_not_corrupt() {
+    let work_dir = unique_dir("layered");
+    let _ = tokio::fs::remove_dir_all(&work_dir).await;
+    tokio::fs::create_dir_all(&work_dir).await.unwrap();
+
+    let plain = gen_body(200_000, 4321);
+    let gz = gzip_bytes(&plain).await; // body 仅单层；引擎应据【头部】"gzip, gzip" 判定多层并报错
+
+    let mut s = ServerState::new(Arc::new(plain), "etl");
+    s.support_range = false;
+    s.advertise_accept_ranges = false;
+    s.gzip_body = Some(Arc::new(gz));
+    s.content_encoding_override = Some("gzip, gzip".to_string()); // 多层
+    let st = Arc::new(s);
+    let server = start_server(st).await;
+    let url = server.url("/file");
+
+    let db = Db::open(&work_dir).expect("db");
+    insert_simple_task(&db, &work_dir, "ly", &url, "out.bin", 0, 0).await;
+    let cancel = CancellationToken::new();
+    let (status, dest) = run_full(&work_dir, &db, "ly", &url, "out.bin", 0, 0, false, "", &cancel).await;
+    eprintln!("[layered] status={status} dest_exists={}", dest.exists());
+    // 正确行为：无法完整解码的多层压缩必须报错（status=4），绝不静默落盘残留压缩字节。
+    assert_eq!(status, 4, "❌ 多层 Content-Encoding 被静默接受——只解一层、内层压缩字节当成功落盘");
     drop(server);
 }
 

@@ -395,6 +395,8 @@ async fn run_dash_download_inner(
     // DASH streams typically have separate audio and video tracks.
     // Try to mux them into a single file using ffmpeg if available.
     // If ffmpeg is not installed, keep both files — the user can mux manually.
+    // 是否最终合并为单文件：无音轨时本就是单文件；有音轨时取决于 mux 是否成功。
+    let mut mux_succeeded = true;
     if audio_bytes > 0 {
         let audio_path = build_audio_path(&dest_path);
         match mux_audio_video(&dest_path, &audio_path, &p.cancel_token).await {
@@ -422,15 +424,23 @@ async fn run_dash_download_inner(
                     dest_path.display(),
                 );
                 // Don't fail the download — both files are valid, just not merged
+                mux_succeeded = false;
             }
         }
     }
 
-    // mux 完成后以主输出文件的实际磁盘大小上报，避免 video+audio 之和与实际文件
-    // 大小不符（mux 成功：单文件大小；mux 失败：仅 video 文件大小）（BUG-DASH-MUX-SIZE-MISMATCH）。
-    let total = match tokio::fs::metadata(&dest_path).await {
-        Ok(meta) => meta.len() as i64,
-        Err(_) => video_bytes + audio_bytes,
+    // 上报大小（BUG-DASH-MUX-SIZE-MISMATCH）：
+    //   • 已合并为单文件（无音轨 或 mux 成功）→ 以 dest_path 实际磁盘大小为准
+    //     （容器重打包后与 video+audio 之和不同）。
+    //   • mux 失败 → 磁盘上是 video + 独立 audio 两个文件，dest_path 仅为 video，
+    //     故以 video_bytes + audio_bytes 之和上报，避免漏算 audio。
+    let total = if mux_succeeded {
+        match tokio::fs::metadata(&dest_path).await {
+            Ok(meta) => meta.len() as i64,
+            Err(_) => video_bytes + audio_bytes,
+        }
+    } else {
+        video_bytes + audio_bytes
     };
     let _ = p.db.update_task_progress(&p.task_id, total).await;
     Ok(total)

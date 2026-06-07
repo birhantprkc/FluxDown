@@ -1889,13 +1889,17 @@ async fn do_segment(
     // 会再判一次），从而**即使 CDN 在 206 上剥离了 ETag/Last-Modified**也能阻止
     // 新旧版本静默拼接（BUG-COORD-XVERSION-NO-CONDITIONAL）。下方逐段 ETag 比对
     // 作为第二道防线保留（应对服务器忽略 If-Range 的情形）。
-    let validator = if !expected_etag.is_empty() {
+    // If-Range 必须用【强】validator（RFC 7233 §3.2）：弱 ETag（`W/` 前缀）在
+    // If-Range 上语义未定义，部分严格服务器即便文件未变也会回 200，反而误触
+    // 下方回退。故强 ETag 优先，弱 ETag 跳过、回退 Last-Modified。
+    let validator = if !expected_etag.is_empty() && !expected_etag.starts_with("W/") {
         Some(expected_etag.to_string())
     } else if !expected_last_modified.is_empty() {
         Some(expected_last_modified.to_string())
     } else {
         None
     };
+    let validator_sent = validator.is_some();
     if let Some(v) = validator {
         req = req.header("If-Range", v);
     }
@@ -1917,9 +1921,36 @@ async fn do_segment(
     // the coordinator cancels all workers for the current attempt.  On retry
     // the cached policy kicks in and the download proceeds in single-stream.
     if resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
-        // Record the host so future tasks for the same server start in
-        // single-stream mode immediately (24 h TTL in-process cache).
-        record_single_conn_domain(url);
+        // 区分两种 non-206：
+        //   (a) 我们发了 If-Range 且响应 validator 与 probe【不同】→ 文件在 probe
+        //       与本段请求之间确实变了。这是"版本变化"而非"服务器不支持 Range"——
+        //       仅本任务回退单流（RangeNotSupported 会触发 run_download_inner 清理
+        //       临时文件并重下新版本）即可，【绝不】把整个主机记入单连接缓存，
+        //       否则一次文件变更会牵连该主机后续所有无关下载 24h 失去多段吞吐
+        //       （BUG-COORD-IFRANGE-200-POISONS-HOST）。
+        //   (b) 未发 validator，或响应 validator 与 probe 相同/缺失 → 服务器确实
+        //       无视 Range（如 FnOS NAS）。记录主机，后续任务直接走单流。
+        let resp_etag = resp
+            .headers()
+            .get(reqwest::header::ETAG)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        let resp_lm = resp
+            .headers()
+            .get(reqwest::header::LAST_MODIFIED)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        let version_changed = validator_sent
+            && ((!expected_etag.is_empty()
+                && !resp_etag.is_empty()
+                && resp_etag != expected_etag)
+                || (!expected_last_modified.is_empty()
+                    && !resp_lm.is_empty()
+                    && resp_lm != expected_last_modified));
+        if !version_changed {
+            // 真·服务器无视 Range → 记录主机，后续任务直接单流（24h TTL）。
+            record_single_conn_domain(url);
+        }
         return Err(DownloadError::RangeNotSupported(resp.status().to_string()));
     }
 

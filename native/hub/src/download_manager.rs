@@ -1019,9 +1019,19 @@ impl DownloadManager {
                     *count += 1;
                     let attempt = *count;
                     // 延迟 = 基础值 × 已重试次数（递增），但封顶到 MAX_AUTO_RETRY_DELAY_SECS，
-                    // 避免无限模式下退避无界增长。base 为 0 时即立即重试。
-                    let delay_secs = self
-                        .auto_retry_delay_secs
+                    // 避免无限模式下退避无界增长。
+                    //
+                    // 防护：无限重试（-1）模式下强制 base 至少 1s。否则当用户同时选了
+                    // "无限重试"+"延迟 0s"（两者皆为合法 UI 取值）时，delay 恒为 0、
+                    // 计数无上限 → 对永久失活的主机（connection refused 在毫秒级失败且
+                    // 被判定为可重试）形成零延迟热循环，疯狂重连、刷 DB、永不进入
+                    // 稳定 error 态。有限次数模式仍允许 0 延迟（最多重试 n 次后自然停止）。
+                    let base = if max_retries == -1 {
+                        self.auto_retry_delay_secs.max(1)
+                    } else {
+                        self.auto_retry_delay_secs
+                    };
+                    let delay_secs = base
                         .saturating_mul(attempt as u64)
                         .min(MAX_AUTO_RETRY_DELAY_SECS);
                     log_info!(
@@ -2978,6 +2988,10 @@ impl DownloadManager {
                     let reserved = PathBuf::from(&t.save_dir)
                         .join(format!("{}{}", t.file_name, downloader::TEMP_EXT));
                     self.reserved_temp_paths.remove(&reserved);
+                    // 与单任务 delete_task 一致：移除自动重试计数（同样因 abort 超时
+                    // 时 on_task_done 不执行而需在 &mut self 上下文主动清理）。task_id
+                    // 是一次性 UUID 不会复用，故仅为内存一致性，无功能影响。
+                    self.auto_retry_counts.remove(tid.as_str());
                     cleanup_futs.push(tokio::spawn(async move {
                         // Wait for this task's download handle (10s per-task timeout).
                         // 超时后 abort 外层 future，加速纯 async 任务释放连接/句柄，
@@ -3153,6 +3167,11 @@ impl DownloadManager {
 
     /// Resume a task using a pre-loaded TaskInfo row (avoids redundant DB query).
     async fn resume_task_with_row(&mut self, task_id: &str, task_row: TaskInfo) {
+        // 批量手动 resume 与单任务 resume_task 语义对齐：用户手动恢复应重置
+        // 自动重试计数，给一个全新的重试配额。否则一个已耗尽配额的任务被批量
+        // 恢复后，下次可重试错误会立刻命中"已耗尽"分支、停在 error，与单任务
+        // 手动恢复行为不一致（BUG-BATCH-RESUME-NO-RETRY-RESET）。
+        self.auto_retry_counts.remove(task_id);
         if self.active_tasks.contains_key(task_id) {
             let is_terminal = task_row.status == 3 || task_row.status == 4;
             if !is_terminal {

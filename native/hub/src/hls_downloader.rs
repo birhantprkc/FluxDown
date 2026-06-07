@@ -1639,7 +1639,16 @@ async fn download_segment_once(
     //   写入字节数;压缩响应解压后 buf 长度必然 != content_length(压缩后的值),
     //   故只对未压缩响应启用,避免误伤合法压缩分段。
     let declared_len = match byte_range {
-        Some((_, length)) => Some(length),
+        // byte_range 长度只在【未压缩】时等于落盘字节数；若服务器对 206 仍压缩
+        // （正常不会，因强制 Accept-Encoding: identity），解压后长度 != 请求长度，
+        // 会误报截断。与下方 None 分支一致地在有 encoding 时跳过大小校验。
+        Some((_, length)) => {
+            if encoding.is_none() {
+                Some(length)
+            } else {
+                None
+            }
+        }
         None => {
             if encoding.is_none() {
                 resp.content_length()

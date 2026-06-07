@@ -1099,9 +1099,11 @@ async fn ftp_download_single(
             } else {
                 // BUG-FTP-CONTROL-IDLE-421 修复：读取 226 前给控制连接设超时，
                 // 防止服务器 421 断开后 finalize_retr_stream 无限阻塞。
-                ftp.get_ref()
-                    .set_read_timeout(Some(FTP_CONTROL_READ_TIMEOUT))
-                    .ok();
+                // 设超时失败时记日志（与数据连接 set_read_timeout 一致），否则
+                // 控制连接无超时仍可能挂起，且静默无诊断线索。
+                if let Err(e) = ftp.get_ref().set_read_timeout(Some(FTP_CONTROL_READ_TIMEOUT)) {
+                    log_info!("[ftp] 控制连接 set_read_timeout 失败: {}", e);
+                }
                 let _ = ftp.finalize_retr_stream(data_stream);
             }
             let _ = ftp.quit();
@@ -1193,7 +1195,14 @@ async fn ftp_download_single(
                         }
 
                         if last_db_save.elapsed().as_secs() >= DB_SAVE_INTERVAL_SECS {
-                            let _ = db.update_task_progress(&task_id, downloaded).await;
+                            // 与多段路径（ftp_do_segment）保持一致：落库前先 flush+sync，
+                            // 使 DB 偏移不超过已持久化字节。单流续传虽以磁盘文件大小为准
+                            // （非 DB 值），此处主要为不变式一致性；sync 失败则跳过本次落库。
+                            let durable =
+                                file.flush().await.is_ok() && file.get_ref().sync_data().await.is_ok();
+                            if durable {
+                                let _ = db.update_task_progress(&task_id, downloaded).await;
+                            }
                             last_db_save = std::time::Instant::now();
                         }
                     }
@@ -1204,6 +1213,9 @@ async fn ftp_download_single(
     }
 
     file.flush().await?;
+    // 与周期保存 / ftp_do_segment 保持一致：最终落库前 fdatasync，确保完成时
+    // 磁盘数据持久（best-effort，失败不掩盖后续 reader 结果判定）。
+    let _ = file.get_ref().sync_data().await;
     let _ = db.update_task_progress(&task_id, downloaded).await;
     cancel_watcher.abort();
 
@@ -1634,9 +1646,11 @@ async fn ftp_do_segment(
             } else {
                 // BUG-FTP-CONTROL-IDLE-421 修复：读取 226 前给控制连接设超时，
                 // 防止服务器 421 断开后 finalize_retr_stream 无限阻塞。
-                ftp.get_ref()
-                    .set_read_timeout(Some(FTP_CONTROL_READ_TIMEOUT))
-                    .ok();
+                // 设超时失败时记日志（与数据连接 set_read_timeout 一致），否则
+                // 控制连接无超时仍可能挂起，且静默无诊断线索。
+                if let Err(e) = ftp.get_ref().set_read_timeout(Some(FTP_CONTROL_READ_TIMEOUT)) {
+                    log_info!("[ftp] 控制连接 set_read_timeout 失败: {}", e);
+                }
                 let _ = ftp.finalize_retr_stream(data_stream);
             }
             let _ = ftp.quit();

@@ -453,28 +453,28 @@ pub fn detect_content_encoding(headers: &reqwest::header::HeaderMap) -> Option<C
 pub fn unsupported_content_encoding(headers: &reqwest::header::HeaderMap) -> Option<String> {
     let ce = headers.get(reqwest::header::CONTENT_ENCODING)?;
     let value = ce.to_str().ok()?;
-    let mut unknown: Option<String> = None;
+    // 收集所有【非 identity】编码层。解压管线（maybe_decompress_stream）只能反转
+    // 单一层，因此"无法完整还原"的情形有二：
+    //   (1) 存在任何【未知】编码（如 compress）；
+    //   (2) 存在【多于一层】非 identity 编码（如 gzip, gzip / gzip, compress）——
+    //       即便每层都受支持，也只反转得了第一层，残留层落盘即损坏。
+    let mut layers: Vec<String> = Vec::new();
+    let mut has_unknown = false;
     for part in value.split(',') {
         let lower = part.trim().to_ascii_lowercase();
         match lower.as_str() {
-            // 受支持（可解码）或无意义的占位 → 不算"不支持"。
-            "gzip" | "x-gzip" | "br" | "brotli" | "deflate" | "zstd" | "identity" | "" => {}
+            "identity" | "" => {}
+            "gzip" | "x-gzip" | "br" | "brotli" | "deflate" | "zstd" => layers.push(lower),
             other => {
-                // 记录首个不认识的编码；只要存在一个受支持编码（上面分支命中）
-                // 即说明可解码，不应报错——故仅当【全程未命中任何受支持编码】时才
-                // 由调用方据此报错。这里先暂存。
-                if unknown.is_none() {
-                    unknown = Some(other.to_string());
-                }
+                has_unknown = true;
+                layers.push(other.to_string());
             }
         }
     }
-    // 若同时含受支持编码，detect_content_encoding 会返回 Some 并走解压路径，
-    // 调用方不会用到本结果；这里只在"纯未知编码"场景提供报错依据。
-    if detect_content_encoding(headers).is_some() {
-        None
+    if has_unknown || layers.len() > 1 {
+        Some(layers.join(", "))
     } else {
-        unknown
+        None
     }
 }
 
@@ -2132,10 +2132,20 @@ async fn run_download_inner(p: &DownloadParams) -> Result<i64, DownloadError> {
         }
     } else {
         if !info.etag.is_empty() || !info.last_modified.is_empty() {
-            let _ = p
+            // 失败仅记日志（不阻断下载）：若存储失败，将来续传会 get 到空值并
+            // 回退到"用续传时重新 probe 的 validator"——退化为旧行为，可能无法检出
+            // 跨会话文件变化（单流续传拼接的残余风险）。记日志使该退化可观测。
+            if let Err(e) = p
                 .db
                 .set_task_validator(&p.task_id, &info.etag, &info.last_modified)
-                .await;
+                .await
+            {
+                log_info!(
+                    "[download] task {} 警告：持久化 resume validator 失败：{:?}（续传一致性校验可能退化）",
+                    p.task_id,
+                    e
+                );
+            }
         }
         (info.etag.clone(), info.last_modified.clone())
     };
@@ -2636,10 +2646,11 @@ async fn download_single(
         req = req.header("Range", format!("bytes={}-", existing_len));
         // If-Range：让服务器自己判定文件是否自 probe 起变化。validator 一致 →
         // 返回 206 续传；不一致 → 返回 200 全量，下方 actual_resume 变 false →
-        // File::create 截断从 0 重下。优先用 ETag（强校验），无 ETag 时回退
-        // Last-Modified。两者皆空（如某些 FTP-over-HTTP 或裸 CDN）则不带 If-Range，
-        // 退化为原有行为（仍受 206/encoding 守卫保护，不会更糟）。
-        let validator = if !expected_etag.is_empty() {
+        // File::create 截断从 0 重下。优先用【强】ETag；弱 ETag（`W/` 前缀）在
+        // If-Range 上语义未定义、可能让服务器恒回 200（RFC 7233 §3.2），故跳过、
+        // 回退 Last-Modified。两者皆空（如某些 FTP-over-HTTP 或裸 CDN）则不带
+        // If-Range，退化为原有行为（仍受 206/encoding 守卫保护，不会更糟）。
+        let validator = if !expected_etag.is_empty() && !expected_etag.starts_with("W/") {
             Some(expected_etag.to_string())
         } else if !expected_last_modified.is_empty() {
             Some(expected_last_modified.to_string())
@@ -2711,10 +2722,28 @@ async fn download_single(
         }
     }
 
+    // 第一道闸：拒绝任何【无法完整还原】的响应压缩——必须在 detect_content_encoding
+    // 解压分支之前判定。原因（BUG-HTTP-LAYERED-ENCODING-UNREACHABLE）：
+    // maybe_decompress_stream 只反转【单层】，而 detect_content_encoding 命中首个
+    // 受支持 token 即返回 Some。若把 unsupported 检查放在 `else if`，则 `gzip, gzip`
+    // / `gzip, compress`（首 token 受支持）会走解压分支只解一层、内层压缩字节原样
+    // 落盘，且 decompressed=true 会跳过完整性检查 → 静默损坏。故提前为独立闸。
+    //
+    // 措辞刻意【不含】子串 "content-encoding"：这是服务器配置导致的永久性条件，
+    // 重试只会再次命中同样编码、同样失败；is_retriable_error 用 contains("content-encoding")
+    // 把"Range-on-206 压缩"判为可重试，若本错误含该子串会被卷入无限重试。
+    if let Some(unsupported) = unsupported_content_encoding(resp.headers()) {
+        return Err(DownloadError::Other(format!(
+            "server applied an unsupported or multi-layered response compression scheme \
+             '{unsupported}'; cannot decode the body — refusing to write raw bytes to disk"
+        )));
+    }
+
     // Detect compressed responses — we now decompress on-the-fly instead of
     // rejecting.  When decompression is active, total_bytes from the probe is
     // the *compressed* size, not the decompressed size, so we must treat it
     // as unknown for progress reporting and skip the final size integrity check.
+    // 至此只可能是【单层】受支持编码（多层/未知已被上方闸拦下）。
     let encoding = detect_content_encoding(resp.headers());
     if encoding.is_some() {
         log_info!(
@@ -2723,14 +2752,6 @@ async fn download_single(
             task_id,
             encoding
         );
-    } else if let Some(unknown) = unsupported_content_encoding(resp.headers()) {
-        // 存在我们无法解码的 Content-Encoding（如 compress）。继续会把压缩字节
-        // 原样写盘 = 文件损坏。直接报错让用户感知，胜过静默产出损坏文件
-        // （BUG-HTTP-UNKNOWN-ENCODING-RAW）。
-        return Err(DownloadError::Other(format!(
-            "server returned unsupported Content-Encoding '{unknown}'; \
-             cannot decode — refusing to write raw compressed bytes to disk"
-        )));
     }
 
     // Verify the server actually honoured the Range request.

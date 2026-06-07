@@ -2575,11 +2575,12 @@ async fn bt_download_inner(p: BtInnerParams) -> Result<(), DownloadError> {
                     }
                     Some((moves, top_level_name)) => {
                         let total = moves.len();
-                        // 完成移动是阻塞的 std::fs rename / 跨设备递归复制,在
-                        // current_thread 的 bt-runtime 上直接执行会占满一个 worker,
-                        // 跨设备多 GB 复制时饿死其他 BT 任务。把整段移动循环搬进
-                        // spawn_blocking,再 .await 句柄;`_move_guard` 仍在外层
-                        // 持有,跨越此 await,保留 completion_move_lock 的序列化语义
+                        // 完成移动是阻塞的 std::fs rename / 跨设备递归复制。bt-runtime
+                        // 是 multi_thread（worker_threads = cpu_cores.clamp(2,8)），在其
+                        // async worker 上直接阻塞会占用一个 worker，跨设备多 GB 复制时
+                        // 拖慢其他 BT 任务的进度轮询/暂停响应。把整段移动循环搬进
+                        // spawn_blocking（卸载到专用阻塞线程）,再 .await 句柄;`_move_guard`
+                        // 仍在外层持有,跨越此 await,保留 completion_move_lock 的序列化语义
                         // (BUG-BT-COMPLETION-MOVE-BLOCKING)。
                         let tid_for_move = task_id.clone();
                         let move_result = tokio::task::spawn_blocking(move || {

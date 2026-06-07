@@ -324,12 +324,17 @@ impl Db {
                 // First-time probe — always write the value.
                 true
             } else if probed_total_bytes < stored_total {
-                // File shrank — apply symmetric CDN-drift tolerance.
-                // 微小的负漂移（动态头注入、签名 URL 尾部差异等）同样视为漂移，
-                // 保留 stored_total 以维持 segment end_byte 一致性；只有
-                // 收缩幅度超过阈值时才视为真正的文件变化。
-                let delta = stored_total - probed_total_bytes;
-                delta > threshold
+                // File shrank — ALWAYS update to the smaller, authoritative size.
+                //
+                // 注意：缩小方向【不能】套用 CDN 漂移容差（这是与 grow 方向刻意
+                // 不对称的设计，而非 bug）。若保留较大的 stored_total，segment
+                // 协调器会算出 db_total==total_bytes（"精确匹配"）从而沿用旧分段，
+                // 但末段 end_byte = stored_total-1 已越过服务器真实 EOF →
+                // worker 发出越界 Range 请求 → 416 / 截断 → 续传永远失败。
+                // 返回较小的 probed 值可让协调器走 db_total>total_bytes 分支，
+                // validate_coverage 检出不一致并按新尺寸重建分段，从而成功。
+                // （回归修复：此前一次"对称容差"改动破坏了小幅缩小的续传。）
+                true
             } else if probed_total_bytes > stored_total {
                 // File grew (or CDN drift).  Only treat as a genuine change
                 // when the delta exceeds the CDN-drift tolerance threshold.
