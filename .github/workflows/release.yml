@@ -134,7 +134,17 @@ jobs:
       # ── Rinf code generation ──
       - name: Install Rinf CLI
         if: steps.cache-rinf.outputs.cache-hit != 'true'
-        run: cargo install rinf_cli@8.9.0
+        shell: bash
+        env:
+          CARGO_HTTP_MULTIPLEXING: "false"
+          CARGO_NET_RETRY: "10"
+        run: |
+          for i in 1 2 3; do
+            cargo install rinf_cli@8.9.0 && exit 0
+            echo "cargo install failed (attempt $i), retrying in 15s..."
+            sleep 15
+          done
+          exit 1
 
       - name: Generate Rinf bindings
         run: rinf gen
@@ -467,7 +477,17 @@ jobs:
       # ── Rinf code generation ──
       - name: Install Rinf CLI
         if: steps.cache-rinf.outputs.cache-hit != 'true'
-        run: cargo install rinf_cli@8.9.0
+        shell: bash
+        env:
+          CARGO_HTTP_MULTIPLEXING: "false"
+          CARGO_NET_RETRY: "10"
+        run: |
+          for i in 1 2 3; do
+            cargo install rinf_cli@8.9.0 && exit 0
+            echo "cargo install failed (attempt $i), retrying in 15s..."
+            sleep 15
+          done
+          exit 1
 
       - name: Generate Rinf bindings
         run: rinf gen
@@ -746,7 +766,17 @@ jobs:
       # ── Rinf code generation ──
       - name: Install Rinf CLI
         if: steps.cache-rinf.outputs.cache-hit != 'true'
-        run: cargo install rinf_cli@8.9.0
+        shell: bash
+        env:
+          CARGO_HTTP_MULTIPLEXING: "false"
+          CARGO_NET_RETRY: "10"
+        run: |
+          for i in 1 2 3; do
+            cargo install rinf_cli@8.9.0 && exit 0
+            echo "cargo install failed (attempt $i), retrying in 15s..."
+            sleep 15
+          done
+          exit 1
 
       - name: Generate Rinf bindings
         run: rinf gen
