@@ -2455,38 +2455,111 @@ export default defineBackground(() => {
   }
 
   /**
+   * 将字节数组解码为字符串：优先 UTF-8，失败时回退 GBK（老旧中文服务器常见），
+   * 双失败返回 `null`。与 Rust 引擎 `decode_bytes_utf8_or_gbk` 保持一致的策略，
+   * 避免浏览器插件与桌面端对同一响应头解析出不同的文件名。
+   */
+  function decodeBytesUtf8OrGbk(bytes: Uint8Array): string | null {
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      // fallthrough
+    }
+    try {
+      return new TextDecoder("gbk", { fatal: true }).decode(bytes);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 把字符串按字节展开：`%XX` 转义解出对应字节，其余字符按其 UTF-16 code unit
+   * 截断到低 8 位当作一个字节。
+   *
+   * 后者依据 Chrome `webRequest` 的行为：响应头按 RFC 7230 定义只能是
+   * ISO-8859-1（Latin-1）字节序列，Chrome 将其逐字节映射为同码位的 JS
+   * 字符串（即字符码 = 原始字节值），不做 UTF-8 解释。如果服务器未做
+   * RFC 5987/percent-encoding，直接把原始 UTF-8 字节塞进 `filename=`，
+   * Chrome 交给扩展的字符串就会是这种"看起来像重音拉丁字母"的乱码
+   * （如 "æä»¶" 对应 UTF-8 编码的"文件"）。逐字符取低 8 位即可还原
+   * 原始字节，再交给 `decodeBytesUtf8OrGbk` 正确解码。
+   */
+  function percentDecodeToBytes(s: string): Uint8Array {
+    const bytes: number[] = [];
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      if (c === 0x25 /* '%' */ && i + 2 < s.length) {
+        const hex = s.slice(i + 1, i + 3);
+        if (/^[0-9a-fA-F]{2}$/.test(hex)) {
+          bytes.push(parseInt(hex, 16));
+          i += 2;
+          continue;
+        }
+      }
+      bytes.push(c & 0xff);
+    }
+    return new Uint8Array(bytes);
+  }
+
+  /**
+   * 解码 Content-Disposition `filename=` / `filename*=` 的原始值。
+   *
+   * 修复两类乱码 bug：
+   * - #406：服务器用 `filename="xxx"` 承载 percent-encoding（如中文云存储
+   *   OBS/S3），而非标准 `filename*=` 语法，导致文件名原样显示为
+   *   `%E5%A4%9A...`。
+   * - #380：服务器未做任何转义、直接把原始 UTF-8/GBK 字节写入
+   *   `filename=`，Chrome 按 Latin-1 语义把每个字节映射成同码位字符，
+   *   产生重音拉丁字母乱码。
+   *
+   * 纯 ASCII 值直接返回，避免无谓的字节往返；否则按字节展开
+   * （percent-decode + Latin-1 还原）后用 UTF-8/GBK 解码，失败则回退原值。
+   */
+  function decodeDispositionFilenameValue(raw: string): string {
+    const trimmed = raw.trim();
+    if (!trimmed || !/[%\u0080-\uffff]/.test(trimmed)) {
+      return trimmed;
+    }
+    const bytes = percentDecodeToBytes(trimmed);
+    const decoded = decodeBytesUtf8OrGbk(bytes);
+    return decoded && decoded.trim() ? decoded : trimmed;
+  }
+
+  /**
    * 从 Content-Disposition 头解析文件名
    *
    * 支持格式：
    * - Content-Disposition: attachment; filename="report.pdf"
    * - Content-Disposition: attachment; filename=report.pdf
    * - Content-Disposition: attachment; filename*=UTF-8''%E6%8A%A5%E5%91%8A.pdf
+   * - Content-Disposition: attachment; filename="%E6%B0%B8%E7%94%9F.mp4"（#406）
+   * - Content-Disposition: attachment; filename="<raw UTF-8/GBK bytes>"（#380）
    */
   function parseContentDispositionFilename(disposition: string): string {
     if (!disposition) return "";
 
-    // 优先尝试 filename*（RFC 5987 编码）
+    // 优先尝试 filename*（RFC 5987 编码：charset'lang'percent-encoded-name）。
+    // charset 字段按理应决定解码方式，这里统一走 UTF-8 优先 / GBK 回退
+    // （老旧中文服务器常声明 UTF-8 却实际发送 GBK），与 filename= 分支
+    // 及 Rust 引擎 extract_from_content_disposition 保持一致。
     const starMatch = disposition.match(
-      /filename\*\s*=\s*(?:UTF-8|utf-8)'[^']*'(.+?)(?:;|$)/i,
+      /filename\*\s*=\s*[^']*'[^']*'([^;]+)/i,
     );
     if (starMatch) {
-      try {
-        return decodeURIComponent(starMatch[1].trim());
-      } catch {
-        // fallthrough
-      }
+      const decoded = decodeDispositionFilenameValue(starMatch[1]);
+      if (decoded) return decoded;
     }
 
     // 再尝试 filename="..."（带引号）
     const quotedMatch = disposition.match(/filename\s*=\s*"(.+?)"/i);
     if (quotedMatch) {
-      return quotedMatch[1];
+      return decodeDispositionFilenameValue(quotedMatch[1]);
     }
 
     // 最后尝试 filename=...（无引号）
     const plainMatch = disposition.match(/filename\s*=\s*([^\s;]+)/i);
     if (plainMatch) {
-      return plainMatch[1];
+      return decodeDispositionFilenameValue(plainMatch[1]);
     }
 
     return "";
