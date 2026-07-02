@@ -405,6 +405,55 @@ jobs:
 
           echo "::notice::Chrome extension v${VERSION} submitted to Web Store review"
 
+      # ── Edge Add-ons 商店自动发布（需 EDGE_CLIENT_ID / EDGE_API_KEY / EDGE_PRODUCT_ID）──
+      # Edge 复用 Chrome MV3 zip（同为 MV3）。API v1.1：ApiKey 鉴权。
+      # ⚠️  API key 每 72 天过期，过期后需在 Partner Center → Publish API 重新生成并更新 EDGE_API_KEY secret。
+      - name: Publish Edge extension to Edge Add-ons
+        continue-on-error: true
+        env:
+          EDGE_CLIENT_ID: ${{ secrets.EDGE_CLIENT_ID }}
+          EDGE_API_KEY: ${{ secrets.EDGE_API_KEY }}
+          EDGE_PRODUCT_ID: ${{ secrets.EDGE_PRODUCT_ID }}
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          set -uo pipefail
+          ZIP_FILE="build/extension/FluxDown-${VERSION}-chrome.zip"
+          BASE="https://api.addons.microsoftedge.microsoft.com/v1/products/${EDGE_PRODUCT_ID}"
+          AUTH=(-H "Authorization: ApiKey ${EDGE_API_KEY}" -H "X-ClientID: ${EDGE_CLIENT_ID}")
+
+          # 1) 上传 zip 包到 draft（202 + Location 头携带 operationID）
+          echo "Uploading ${ZIP_FILE} to Edge Add-ons..."
+          UP_HEADERS=$(curl -sS -D - -o /dev/null -X POST "${BASE}/submissions/draft/package" \
+            "${AUTH[@]}" -H "Content-Type: application/zip" --data-binary "@${ZIP_FILE}")
+          OP=$(echo "$UP_HEADERS" | tr -d '\r' | awk -F': ' 'tolower($1)=="location"{print $2}' | awk -F/ '{print $NF}')
+          if [ -z "$OP" ]; then
+            echo "::error::Edge upload did not return an operation id"; echo "$UP_HEADERS"; exit 1
+          fi
+          echo "Upload operation: $OP"
+
+          # 2) 轮询上传处理状态（InProgress → Succeeded / Failed）
+          STATUS="?"
+          for i in $(seq 1 20); do
+            sleep 10
+            RESP=$(curl -sS "${BASE}/submissions/draft/package/operations/${OP}" "${AUTH[@]}")
+            STATUS=$(echo "$RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('status','?'))" 2>/dev/null || echo "?")
+            echo "  upload status: $STATUS"
+            [ "$STATUS" = "Succeeded" ] && break
+            if [ "$STATUS" = "Failed" ]; then echo "::error::Edge upload failed: $RESP"; exit 1; fi
+          done
+          if [ "$STATUS" != "Succeeded" ]; then
+            echo "::error::Edge upload timed out (status=$STATUS)"; exit 1
+          fi
+
+          # 3) 提交发布（202 + Location 头携带发布 operationID）
+          echo "Publishing Edge submission..."
+          PUB_HEADERS=$(curl -sS -D - -o /dev/null -X POST "${BASE}/submissions" \
+            "${AUTH[@]}" -H "Content-Type: application/json" \
+            --data "{\"notes\":\"Automated release v${VERSION}\"}")
+          PUB_OP=$(echo "$PUB_HEADERS" | tr -d '\r' | awk -F': ' 'tolower($1)=="location"{print $2}' | awk -F/ '{print $NF}')
+          echo "Publish operation: ${PUB_OP:-<none>}"
+          echo "::notice::Edge extension v${VERSION} submitted to Edge Add-ons review"
+
       - name: Upload Firefox extension artifact
         uses: actions/upload-artifact@v4
         with:
