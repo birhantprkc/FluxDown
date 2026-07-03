@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { cn, GITHUB_REPO_URL } from "@/lib/utils";
+import { cn, DEMO_URL, GITHUB_REPO_URL } from "@/lib/utils";
 import { useLocale } from "@/lib/i18n";
 
 declare global {
@@ -259,9 +259,10 @@ export function FloatingNavbar({ className }: { className?: string }) {
   // --- 导航结构定义 ---
 
   // 一级直接链接
-  const directLinks = [
+  const directLinks: { name: string; link: string; external?: boolean }[] = [
     { name: t("nav.features"), link: "/#features" },
     { name: t("nav.download"), link: "/#download" },
+    { name: t("nav.demo"), link: DEMO_URL, external: true },
   ];
 
   // 「资源」下拉菜单
@@ -430,6 +431,8 @@ export function FloatingNavbar({ className }: { className?: string }) {
               <a
                 key={item.link}
                 href={item.link}
+                target={item.external ? "_blank" : undefined}
+                rel={item.external ? "noopener noreferrer" : undefined}
                 className="hidden sm:inline-block text-xs font-medium text-dark-text-secondary hover:text-dark-text px-3 py-1.5 rounded-full hover:bg-dark-surface3/50 transition-all duration-200"
               >
                 {item.name}
@@ -579,6 +582,16 @@ export function FloatingNavbar({ className }: { className?: string }) {
                         <a
                           key={item.link}
                           href={item.link}
+                          target={
+                            "external" in item && item.external
+                              ? "_blank"
+                              : undefined
+                          }
+                          rel={
+                            "external" in item && item.external
+                              ? "noopener noreferrer"
+                              : undefined
+                          }
                           onClick={() => setMobileOpen(false)}
                           className="flex items-center gap-2.5 text-sm font-medium text-dark-text-secondary hover:text-dark-text px-4 py-2.5 rounded-xl hover:bg-dark-surface2 transition-colors"
                         >

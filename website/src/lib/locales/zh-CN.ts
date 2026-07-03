@@ -130,6 +130,7 @@ const zhCN: Messages = {
   "nav.logoVote": "Logo 投票",
   "nav.features": "功能",
   "nav.download": "下载",
+  "nav.demo": "在线演示",
   "nav.resources": "资源",
   "nav.extension": "浏览器扩展",
   "nav.themeBuilder": "主题构建器",

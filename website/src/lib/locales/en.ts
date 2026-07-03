@@ -138,6 +138,7 @@ const en = {
   "nav.features": "Features",
   "nav.extension": "Extension",
   "nav.download": "Download",
+  "nav.demo": "Live Demo",
   "nav.announcements": "Announcements",
   "nav.feedback": "Feedback",
   "nav.changelog": "Changelog",
