@@ -13,7 +13,7 @@ jobs:
   # ── 前置 Job: 检测上一个版本 tag → 当前 tag 之间哪些组件目录有变更 ──
   # 规则：
   #   fluxDown/**            → 浏览器扩展（extension）
-  #   website/**             → 官网（website）
+  #   website/**             → 官网（独立走 deploy-website.yml 部署，不发 release）
   #   docs/**、*.md          → 纯文档，不触发任何构建
   #   其余任何路径            → 桌面客户端（app）
   # 找不到上一个 v* tag（首个版本）时全部视为有变更。
@@ -23,7 +23,6 @@ jobs:
     outputs:
       app: ${{ steps.detect.outputs.app }}
       extension: ${{ steps.detect.outputs.extension }}
-      website: ${{ steps.detect.outputs.website }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -40,10 +39,10 @@ jobs:
           # 自动忽略 release 流程创建的 extension-v* / website-v* 组件 tag）
           PREV=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "${TAG}^" 2>/dev/null || true)
 
-          APP=false; EXTENSION=false; WEBSITE=false
+          APP=false; EXTENSION=false
           if [ -z "$PREV" ]; then
             echo "No previous version tag found — building everything"
-            APP=true; EXTENSION=true; WEBSITE=true
+            APP=true; EXTENSION=true
           else
             echo "Diff range: ${PREV}..${TAG}"
             CHANGED=$(git diff --name-only "${PREV}" "${TAG}")
@@ -53,7 +52,7 @@ jobs:
               [ -z "$f" ] && continue
               case "$f" in
                 fluxDown/*) EXTENSION=true ;;
-                website/*)  WEBSITE=true ;;
+                website/*)  ;;
                 docs/*|*.md) ;;
                 *)          APP=true ;;
               esac
@@ -63,9 +62,8 @@ jobs:
           {
             echo "app=$APP"
             echo "extension=$EXTENSION"
-            echo "website=$WEBSITE"
           } >> "$GITHUB_OUTPUT"
-          echo "::notice::Components changed in ${PREV:-<none>}..${TAG}: app=$APP extension=$EXTENSION website=$WEBSITE"
+          echo "::notice::Components changed in ${PREV:-<none>}..${TAG}: app=$APP extension=$EXTENSION"
 
   # ── 并行 Job 1: 构建 Windows 安装包（x64 + ARM64）──
   build-windows:
@@ -934,50 +932,6 @@ jobs:
           path: build/installer/FluxDown-*-macos-${{ matrix.arch }}.tar.gz
           if-no-files-found: error
 
-  # ── 并行 Job 5: 构建官网（website/ 有变更时）──
-  build-website:
-    name: Build Website
-    runs-on: ubuntu-latest
-    needs: changes
-    if: needs.changes.outputs.website == 'true'
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Get version from tag
-        id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
-
-      # website/ 无 package-lock.json，不能用 npm ci
-      - name: Install dependencies
-        run: npm install
-        working-directory: website
-
-      - name: Build website
-        run: npm run build
-        working-directory: website
-
-      # 打包 Node standalone 构建产物（dist/ 含 server + client）
-      - name: Package website dist
-        run: |
-          VERSION=${{ steps.version.outputs.VERSION }}
-          mkdir -p build/website
-          tar -czf "build/website/FluxDown-website-${VERSION}.tar.gz" -C website dist
-          ls -la build/website/
-
-      - name: Upload website artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: website-dist
-          path: build/website/FluxDown-website-*.tar.gz
-          if-no-files-found: error
-
   # ── Release Job 1: 桌面客户端（使用推送的 v* tag，保持 GitHub latest release 语义）──
   release-app:
     name: Release Desktop App
@@ -1003,15 +957,65 @@ jobs:
           GITHUB_REPO: ${{ github.repository }}
 
       # 兜底：若区间内没有符合规范的 commit（git-cliff 输出为空），
-      # 使用默认标题避免空 release body
+      # 使用默认标题避免空 release body；同时备份原始 notes 供翻译失败时回退
       - name: Finalize release notes
+        id: finalize
         shell: bash
         run: |
           TAG_NAME="${GITHUB_REF#refs/tags/}"
+          HAS_NOTES=true
           if [ ! -s RELEASE_NOTES.md ]; then
             echo "Release $TAG_NAME" > RELEASE_NOTES.md
+            HAS_NOTES=false
           fi
-          echo "── Release notes ──"
+          cp RELEASE_NOTES.md RELEASE_NOTES.orig.md
+          echo "has_notes=$HAS_NOTES" >> "$GITHUB_OUTPUT"
+          echo "── Release notes (git-cliff) ──"
+          cat RELEASE_NOTES.md
+
+      # ── 将混合语言的 cliff 输出翻译为中英双语 ──
+      # 官网 changelog 页按站点语言取对应区块（<!-- fluxdown:lang:zh/en --> 标记），
+      # GitHub Release 页则两段依次展示。失败不阻塞发布（下一步回退原始 notes）。
+      - name: Translate release notes (bilingual)
+        if: steps.finalize.outputs.has_notes == 'true'
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: "--allowedTools Read,Write,Edit"
+          prompt: |
+            RELEASE_NOTES.md 是 git-cliff 从 Conventional Commits 生成的更新日志，条目语言混杂（部分中文、部分英文）。
+            请将其改写为中英双语版本，并覆盖写回 RELEASE_NOTES.md。
+
+            输出文件格式（严格遵守，无代码块围栏、无任何额外说明文字）：
+
+            <!-- fluxdown:lang:zh -->
+            （完整中文版）
+
+            <!-- fluxdown:lang:en -->
+            （完整英文版）
+
+            规则：
+            - 两个区块的结构与原文件一一对应：保留 "## [x.y.z] - 日期" 版本标题、"### <emoji> 分组" 标题、"- *(scope)* 描述" 条目格式与条目顺序，emoji 原样保留
+            - 中文区块：分组标题与所有条目描述均为中文（如 "### 🚀 新功能"、"### 🐛 问题修复"）
+            - 英文区块：分组标题与所有条目描述均为英文（如 "### 🚀 Features"、"### 🐛 Bug Fixes"）
+            - *(scope)* 括号内的 scope 名、反引号内的代码、issue/PR 编号（#123）、专有名词（HLS、DASH、aria2、Rinf、BT tracker 等）原样保留，不翻译
+            - 只修改 RELEASE_NOTES.md，不改动其他任何文件
+
+      # 校验翻译结果：缺少双语标记则回退到原始 git-cliff 输出
+      - name: Validate translated notes
+        if: steps.finalize.outputs.has_notes == 'true'
+        shell: bash
+        run: |
+          if grep -q '<!-- fluxdown:lang:zh -->' RELEASE_NOTES.md \
+            && grep -q '<!-- fluxdown:lang:en -->' RELEASE_NOTES.md; then
+            echo "Bilingual translation OK"
+          else
+            echo "::warning::Translated notes missing language markers — falling back to original git-cliff output"
+            cp RELEASE_NOTES.orig.md RELEASE_NOTES.md
+          fi
+          rm -f RELEASE_NOTES.orig.md
+          echo "── Final release notes ──"
           cat RELEASE_NOTES.md
 
       # ── 下载桌面客户端构建产物 ──
@@ -1075,13 +1079,62 @@ jobs:
           OUTPUT: RELEASE_NOTES.md
           GITHUB_REPO: ${{ github.repository }}
 
+      # 兜底 + 备份原始 notes 供翻译失败时回退
       - name: Finalize release notes
+        id: finalize
         shell: bash
         run: |
+          HAS_NOTES=true
           if [ ! -s RELEASE_NOTES.md ]; then
             echo "Browser Extension Release v${{ steps.version.outputs.VERSION }}" > RELEASE_NOTES.md
+            HAS_NOTES=false
           fi
-          echo "── Release notes ──"
+          cp RELEASE_NOTES.md RELEASE_NOTES.orig.md
+          echo "has_notes=$HAS_NOTES" >> "$GITHUB_OUTPUT"
+          echo "── Release notes (git-cliff) ──"
+          cat RELEASE_NOTES.md
+
+      # ── 将混合语言的 cliff 输出翻译为中英双语（与 release-app 同一套规则）──
+      - name: Translate release notes (bilingual)
+        if: steps.finalize.outputs.has_notes == 'true'
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: "--allowedTools Read,Write,Edit"
+          prompt: |
+            RELEASE_NOTES.md 是 git-cliff 从 Conventional Commits 生成的更新日志，条目语言混杂（部分中文、部分英文）。
+            请将其改写为中英双语版本，并覆盖写回 RELEASE_NOTES.md。
+
+            输出文件格式（严格遵守，无代码块围栏、无任何额外说明文字）：
+
+            <!-- fluxdown:lang:zh -->
+            （完整中文版）
+
+            <!-- fluxdown:lang:en -->
+            （完整英文版）
+
+            规则：
+            - 两个区块的结构与原文件一一对应：保留 "## [x.y.z] - 日期" 版本标题、"### <emoji> 分组" 标题、"- *(scope)* 描述" 条目格式与条目顺序，emoji 原样保留
+            - 中文区块：分组标题与所有条目描述均为中文（如 "### 🚀 新功能"、"### 🐛 问题修复"）
+            - 英文区块：分组标题与所有条目描述均为英文（如 "### 🚀 Features"、"### 🐛 Bug Fixes"）
+            - *(scope)* 括号内的 scope 名、反引号内的代码、issue/PR 编号（#123）、专有名词（HLS、DASH、aria2、Rinf、Content-Disposition 等）原样保留，不翻译
+            - 只修改 RELEASE_NOTES.md，不改动其他任何文件
+
+      # 校验翻译结果：缺少双语标记则回退到原始 git-cliff 输出
+      - name: Validate translated notes
+        if: steps.finalize.outputs.has_notes == 'true'
+        shell: bash
+        run: |
+          if grep -q '<!-- fluxdown:lang:zh -->' RELEASE_NOTES.md \
+            && grep -q '<!-- fluxdown:lang:en -->' RELEASE_NOTES.md; then
+            echo "Bilingual translation OK"
+          else
+            echo "::warning::Translated notes missing language markers — falling back to original git-cliff output"
+            cp RELEASE_NOTES.orig.md RELEASE_NOTES.md
+          fi
+          rm -f RELEASE_NOTES.orig.md
+          echo "── Final release notes ──"
           cat RELEASE_NOTES.md
 
       - name: Download browser extensions
@@ -1107,62 +1160,6 @@ jobs:
           draft: false
           make_latest: "false"
 
-  # ── Release Job 3: 官网（独立 tag website-v*，不抢占 latest）──
-  release-website:
-    name: Release Website
-    runs-on: ubuntu-latest
-    needs: build-website
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          fetch-tags: true
-
-      - name: Get version from tag
-        id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
-
-      # 只收集 website/ 目录相关的 commit 作为官网 release notes
-      - name: Generate release notes with git-cliff
-        uses: orhun/git-cliff-action@v4
-        with:
-          args: --latest --strip header --include-path "website/**"
-        env:
-          OUTPUT: RELEASE_NOTES.md
-          GITHUB_REPO: ${{ github.repository }}
-
-      - name: Finalize release notes
-        shell: bash
-        run: |
-          if [ ! -s RELEASE_NOTES.md ]; then
-            echo "Website Release v${{ steps.version.outputs.VERSION }}" > RELEASE_NOTES.md
-          fi
-          echo "── Release notes ──"
-          cat RELEASE_NOTES.md
-
-      - name: Download website artifact
-        uses: actions/download-artifact@v4
-        with:
-          pattern: website-dist
-          path: release-assets/
-          merge-multiple: true
-
-      - name: List release assets
-        run: ls -la release-assets/
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: website-v${{ steps.version.outputs.VERSION }}
-          name: FluxDown Website v${{ steps.version.outputs.VERSION }}
-          files: release-assets/*
-          body_path: RELEASE_NOTES.md
-          generate_release_notes: false
-          draft: false
-          make_latest: "false"
-
   # ── 最终 Job: 清理 GitHub Actions Artifact，仅保留当前 tag 这一组 ──
   # 原因：Free 账号 artifact 配额仅 500MB，每次 release 会上传 ~400MB
   # Release 资产已独立存储在 GitHub Release，artifact 只是 CI 中间产物可安全清理
@@ -1170,7 +1167,7 @@ jobs:
   cleanup-artifacts:
     name: Cleanup CI Artifacts
     runs-on: ubuntu-latest
-    needs: [release-app, release-extension, release-website]
+    needs: [release-app, release-extension]
     if: ${{ always() && !cancelled() }}
 
     steps:

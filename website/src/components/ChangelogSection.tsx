@@ -331,6 +331,27 @@ function cleanInline(text: string): string {
     .replace(/`([^`]+)`/g, "[$1]");
 }
 
+/** 双语 release body 的语言标记（由 release 工作流翻译步骤写入） */
+const LANG_MARKER_RE = /<!--\s*fluxdown:lang:(zh|en)\s*-->/g;
+
+/**
+ * 从双语 release body 中取出当前语言区块。
+ * 无标记（历史版本 / 翻译失败回退）时原样返回全文。
+ */
+function pickLocaleBody(body: string, locale: string): string {
+  const matches = [...body.matchAll(LANG_MARKER_RE)];
+  if (matches.length === 0) return body;
+
+  const sections = new Map<string, string>();
+  for (let i = 0; i < matches.length; i++) {
+    const start = (matches[i].index ?? 0) + matches[i][0].length;
+    const end =
+      i + 1 < matches.length ? (matches[i + 1].index ?? body.length) : body.length;
+    sections.set(matches[i][1], body.slice(start, end).trim());
+  }
+  return sections.get(locale) ?? sections.get("zh") ?? body;
+}
+
 /** 将 release body 转为适合 QQ群公告粘贴的纯文本 */
 function toPlainText(release: Release, locale: string): string {
   const date = formatDate(release.published_at, locale);
@@ -343,7 +364,7 @@ function toPlainText(release: Release, locale: string): string {
   let counter = 0;
   let lastWasBlank = true;
 
-  for (const raw of release.body.split("\n")) {
+  for (const raw of pickLocaleBody(release.body, locale).split("\n")) {
     const line = raw.trimEnd();
     const trimmed = line.trim();
 
@@ -433,7 +454,7 @@ function CopyButtons({
     <div className="ml-auto flex items-center gap-0.5 shrink-0">
       {/* Copy Markdown */}
       <button
-        onClick={() => copy(release.body, "md")}
+        onClick={() => copy(pickLocaleBody(release.body, locale), "md")}
         title={t("changelog.copyMd") + " (Markdown)"}
         className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-dark-text-muted hover:text-dark-text hover:bg-dark-surface2 transition-all duration-150 cursor-pointer select-none"
       >
@@ -706,7 +727,7 @@ export default function ChangelogSection() {
                     <div
                       className="px-5 py-4 changelog-body"
                       dangerouslySetInnerHTML={{
-                        __html: renderMarkdown(release.body),
+                        __html: renderMarkdown(pickLocaleBody(release.body, locale)),
                       }}
                     />
 

@@ -140,6 +140,7 @@ const zhCN: Messages = {
   "nav.announcements": "公告",
   "nav.feedback": "反馈",
   "nav.sponsor": "赞助",
+  "nav.github": "GitHub 仓库",
 
   // Theme Builder
   "tb.badge": "主题构建器",
@@ -181,12 +182,13 @@ const zhCN: Messages = {
     "JSON 结构与 FluxThemeTokens.toJson()/fromJson() 一致（appearance + colors + segmentPalette）。",
 
   // Hero
-  "hero.badge": "由 Rust 驱动",
+  "hero.badge": "开源免费 · 由 Rust 驱动",
   "hero.title1": "下载，",
   "hero.title2": "全面加速。",
   "hero.subtitle":
     "Rust 驱动的多协议下载管理器，支持 HTTP/FTP/BitTorrent 磁力链接及 HLS/DASH 流媒体，智能多线程加速与浏览器无缝集成。精美界面，极致性能，永久免费，零广告。",
   "hero.cta": "下载",
+  "hero.github": "GitHub 开源",
   "hero.stat1.value": "10x",
   "hero.stat1.label": "极速下载",
   "hero.stat2.value": "零",

@@ -34,9 +34,18 @@ flutter test test/widget_test.dart   # 运行单个 Dart 测试文件
 cargo test -p fluxdown_engine        # 运行下载引擎全部单元测试（native/engine，下载协议/分段/DB 等核心逻辑）
 cargo test -p hub                    # 运行 hub 适配层全部单元测试（native/hub，Rinf FFI/信号桥接）
 cargo test -p fluxdown_api           # 运行本机 API 服务全部测试（native/api，axum HTTP API/aria2 兼容）
+cargo test -p fluxdown_server        # 运行 headless 服务器全部测试（native/server，WS/actor/扩展路由）
 cargo test -p fluxdown_engine -- segment_advisor # 运行特定 Rust 测试模块
 cargo test -p fluxdown_engine -- test_name       # 运行单个 Rust 测试函数
+PG_TEST_URL=postgres://postgres:pw@localhost/postgres cargo test -p fluxdown_engine -- --ignored pg_smoke  # Postgres 后端冒烟（需本地 pg）
 cargo run -p fluxdown_api --example gen_openapi > website/public/openapi.json  # 改动 API 后重新生成 OpenAPI 规范（官网 /api-docs 渲染）
+
+# Web 服务器（headless，native/server）
+cargo run -p fluxdown_server         # 启动服务器（默认 0.0.0.0:17800；环境变量：FLUXDOWN_BIND / FLUXDOWN_DATA_DIR / FLUXDOWN_DATABASE_URL / FLUXDOWN_WEBROOT）
+# Web 前端（web/ 目录下，React 19 + TanStack + Tailwind v4，包管理器 bun）
+bun run dev                          # 开发服务器 localhost:5173（/api 代理到 localhost:17800）
+bun run build                        # 构建到 web/dist（FLUXDOWN_WEBROOT=web/dist 由服务器托管）
+bun run lint                         # oxlint
 
 # 依赖
 flutter pub get                      # Dart 依赖安装
@@ -53,10 +62,8 @@ npm run dev                          # 本地开发服务器 localhost:4321
 npm run build                        # 构建生产版到 dist/
 npm run preview                      # 预览构建结果
 
-# 发布版本
-python scripts/release_tag.py v0.x.x --push --github-release --update-changelog
-python scripts/release_tag.py v0.x.x --model opus --lang both --push --github-release  # 高质量双语
-python scripts/release_tag.py v0.x.x --dry-run  # 仅预览
+# 发布版本（推送 v* tag 触发 GitHub Actions，release notes 由 git-cliff 从 Conventional Commits 生成）
+git tag -a v0.x.x -m "v0.x.x" && git push origin v0.x.x
 
 # 图标生成（修改 assets/logo/fluxdown_logo.svg 后执行）
 bun scripts/gen_icons.ts               # 全平台图标一键生成（50 个文件，覆盖所有平台）
@@ -111,7 +118,7 @@ x_down/
 │       ├── segment_coordinator.rs     # 动态分段协调（主动拆分/抢救慢速分段）
 │       ├── meta_prober.rs             # 文件元数据探测（HEAD/Range:0-0）
 │       ├── proxy_config.rs            # 代理配置（无/系统/手动，读 Windows 注册表）
-│       ├── db.rs                      # SQLite 数据层（tasks/task_segments/config/queues）
+│       ├── db.rs                      # 持久化层（sqlx Any 池：SQLite/PostgreSQL 双后端，$N 占位符统一 SQL）
 │       ├── data_dir.rs                # 数据目录解析（`resolve_data_dir(Option<&Path>)`）
 │       ├── logger.rs                  # 全局文件日志（`log_info!`/`log_error!`，`#[macro_export]`）
 │       ├── speed_limiter.rs           # Token bucket 全局速度限制器
@@ -145,6 +152,21 @@ x_down/
 │       └── updater.rs                 # 自动更新器（GitHub Releases API）
 ├── native/nmh/                        # Native Messaging Host（Linux/macOS 平台）
 │   └── src/main.rs                    # 独立二进制：stdin/stdout ↔ Unix socket 桥接 + 启动 app
+├── native/server/                     # `fluxdown_server` crate（headless Web 服务器，axum，零 rinf 依赖）
+│   └── src/
+│       ├── main.rs                    # 组装：Engine + actor + WS hub + api_router 合并扩展路由 + SPA 托管（ServeDir fallback）
+│       ├── config.rs                  # 环境变量（FLUXDOWN_BIND/DATA_DIR/DATABASE_URL/WEBROOT）+ token 首次生成
+│       ├── actor.rs                   # ActorCmd 命令循环（独占 Engine；ApplyConfig live-apply 镜像桌面 SaveConfig）
+│       ├── ws_hub.rs                  # WsHub broadcast + EngineEventSink（EngineEvent→WS JSON）+ WsHostSelection（HLS/BT 经 WS 往返）
+│       ├── host.rs                    # `ApiHost` 实现（读直查 Db，写经 ActorCmd+oneshot；submit_external 直接建任务，无确认框）
+│       ├── wire.rs                    # WS/扩展 REST 的 wire JSON 契约（WsServerMsg/WsClientMsg，camelCase）
+│       └── routes_ext.rs              # 扩展路由（/ws、/config、队列 CRUD、/tasks/{id}/file 流式取回、/fs/list、/proxy/test、/stats、合并版 openapi.json + Scalar /docs）
+├── web/                               # Web SPA（React 19 + TanStack Router/Query/Table/Virtual + Tailwind v4 + Radix，bun）
+│   └── src/
+│       ├── design.css                 # 移植自 design/web/styles.css（像素级依据）
+│       ├── lib/                       # api.ts（typed REST）/ ws.ts（可重连 WS + live store）/ auth/format/theme
+│       ├── routes/                    # login / tasks（三栏主界面）/ settings
+│       └── components/                # tasks 组件 + dialogs（新建下载/HLS 画质/BT 文件选择）
 ├── fluxDown/                          # WXT 浏览器扩展（Chrome MV3, TypeScript）
 ├── website/                           # 官网（Astro + React，部署到 Vercel）
 │   └── src/
@@ -157,7 +179,6 @@ x_down/
 │       ├── pages/announcements.astro  # 公告页面
 │       └── pages/api/                 # API 路由（feedback/issues/release/vote/subscribe/changelog）
 ├── scripts/
-│   ├── release_tag.py             # 自动发布脚本（Claude CLI 生成 Release Notes）
 │   ├── send_notify.py             # 通知推送（邮件/钉钉等）
 │   └── gen_icons.ts               # 全平台图标生成（bun scripts/gen_icons.ts）
 ├── Cargo.toml                         # Rust workspace（resolver = "3"）
@@ -177,7 +198,7 @@ x_down/
                           [fluxdown_engine::Engine]           [fluxdown_nmh 进程]
                      │        │        │        │             (stdin/stdout NMH)
               [DownloadManager]      [Db]                            ↑
-                     │              (SQLite)                  [WXT 浏览器扩展]
+                     │        (sqlx Any: SQLite/PG)           [WXT 浏览器扩展]
               ┌──────┼──────┬───────┐
            [HTTP] [FTP]   [BT]    [HLS/DASH]
                      │
@@ -238,7 +259,7 @@ x_down/
 ### 时间分组（5种）
 `today` / `yesterday` / `thisWeek` / `thisMonth` / `older`
 
-### SQLite 数据库（db.rs）
+### 数据库（db.rs，sqlx `Any` 池：SQLite / PostgreSQL 双后端）
 
 ```sql
 -- 任务表
@@ -260,12 +281,13 @@ CREATE TABLE tasks (
 
 -- 分段表
 CREATE TABLE task_segments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- 复合主键 (task_id, segment_index)；旧桌面库遗留的 id AUTOINCREMENT 列不再读取
     task_id TEXT NOT NULL,
     segment_index INTEGER NOT NULL,
     start_byte INTEGER NOT NULL,
     end_byte INTEGER NOT NULL,
     downloaded_bytes INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (task_id, segment_index),
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 
@@ -292,7 +314,7 @@ CREATE TABLE queues (
 );
 ```
 
-**数据库特性**: WAL 模式、外键约束、Schema 迁移（ALTER TABLE ADD COLUMN）、5s 批量持久化
+**数据库特性**: sqlx `Any` 连接池（URL scheme 选后端：`sqlite:`/`postgres:`）、`$N` 占位符统一 SQL、SQLite 侧 WAL + 外键、pg 侧字节列 BIGINT、Schema 迁移（幂等 ADD COLUMN）、5s 批量持久化。`Engine::new` 为 async，`EngineConfig.database_url` 为 `None` 时用数据目录下 SQLite 文件
 
 ## 下载协议支持
 
@@ -639,10 +661,10 @@ final fileCount = LogService.instance.logFileCount;
 - 下载协议/引擎逻辑（HTTP/FTP/BT/HLS/DASH/分段协调/DB/…）新模块加入 `native/engine`（`fluxdown_engine` crate），在 `native/engine/src/lib.rs` 中声明 `pub mod xxx;`
 - 参考 `downloader.rs`（HTTP）和 `ftp_downloader.rs`（FTP）的对称设计模式
 - 需要上报事件给宿主 → 用 `EventSink::emit`（不要引入新的 rinf/Dart 依赖）；需要宿主介入决策（如弹窗选择）→ 用 `HostSelection`
-- DB 操作统一通过 `native/engine/src/db.rs` 的 `Db` 结构体，所有 rusqlite 调用在 `spawn_blocking` 中
+- DB 操作统一通过 `native/engine/src/db.rs` 的 `Db` 结构体（sqlx 原生 async，占位符一律 `$N`，两后端共用同一份 SQL；仅 DDL 与 `wal_checkpoint` 按后端分支）
 - App-shell 专属逻辑（文件关联/协议注册/NMH/更新器/…）留在 `native/hub`，在 `native/hub/src/lib.rs` 中声明 `mod xxx;`
 
 ### 发布新版本
-1. 运行 `python scripts/release_tag.py v0.x.x --push --github-release --update-changelog`
-2. 脚本自动提取 commit 记录 → Claude CLI 生成中文 Release Notes → 创建 annotated tag → 推送触发 CI
-3. 高质量双语发布加 `--model opus --lang both`
+1. 创建并推送 annotated tag：`git tag -a v0.x.x -m "v0.x.x" && git push origin v0.x.x`
+2. GitHub Actions（`.github/workflows/release.yml`）自动构建全平台产物，git-cliff 从 Conventional Commits 生成 Release Notes
+3. Release Notes 经 Claude 翻译为中英双语（`<!-- fluxdown:lang:zh -->` / `<!-- fluxdown:lang:en -->` 标记分块），官网 changelog 页按站点语言展示对应区块；翻译失败时回退原始 cliff 输出

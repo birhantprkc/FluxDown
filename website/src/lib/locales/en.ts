@@ -147,6 +147,7 @@ const en = {
   "nav.sponsor": "Sponsor",
   "nav.faq": "FAQ",
   "nav.apiDocs": "API Reference",
+  "nav.github": "GitHub Repository",
 
   // Theme Builder
   "tb.badge": "Theme Builder",
@@ -188,12 +189,13 @@ const en = {
     "JSON follows FluxThemeTokens.toJson()/fromJson() structure (appearance + colors + segmentPalette).",
 
   // Hero
-  "hero.badge": "Powered by Rust",
+  "hero.badge": "Open Source · Powered by Rust",
   "hero.title1": "Downloads,",
   "hero.title2": "Supercharged.",
   "hero.subtitle":
     "A Rust-powered download manager with HTTP, FTP, BitTorrent and HLS/DASH streaming support. Smart multi-threaded acceleration, seamless browser integration, beautiful interface — free forever, zero ads.",
   "hero.cta": "Download",
+  "hero.github": "Star on GitHub",
   "hero.stat1.value": "10x",
   "hero.stat1.label": "Faster Downloads",
   "hero.stat2.value": "Zero",
