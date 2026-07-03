@@ -1,66 +1,133 @@
+<div align="center">
+
+<img src="assets/logo/fluxdown_logo.png" alt="FluxDown Logo" width="128" />
+
 # FluxDown
 
-**Downloads, Supercharged.** A blazing fast, multi-protocol download manager powered by a Rust engine — HTTP/HTTPS/FTP/BitTorrent/HLS, intelligent segmentation, browser integration. Free forever, no ads, no tracking.
+### Downloads, Supercharged.
 
-Website: https://fluxdown.app
+*A blazing fast, multi-protocol download manager — the free & open-source IDM alternative.*
 
-## Getting Started
+[![Latest Release](https://img.shields.io/github/v/release/zerx-lab/FluxDown?style=flat-square&color=06b6d4&label=release)](https://github.com/zerx-lab/FluxDown/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/zerx-lab/FluxDown/total?style=flat-square&color=22c55e)](https://github.com/zerx-lab/FluxDown/releases)
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-8b5cf6?style=flat-square)](#installation)
+[![Rust](https://img.shields.io/badge/engine-Rust-f74c00?style=flat-square&logo=rust)](native/engine)
+[![Flutter](https://img.shields.io/badge/UI-Flutter-02569B?style=flat-square&logo=flutter)](lib)
 
-This project is a starting point for a Flutter application.
+[**Website**](https://fluxdown.zerx.dev) · [**Download**](https://fluxdown.zerx.dev/#download) · [**Changelog**](https://fluxdown.zerx.dev/changelog) · [**FAQ**](https://fluxdown.zerx.dev/faq) · [**Feedback**](https://fluxdown.zerx.dev/feedback)
 
-A few resources to get you started if this is your first Flutter project:
+**English** | [简体中文](README.zh-CN.md)
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+</div>
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+---
 
-## Using Rust Inside Flutter
+## Highlights
 
-This project leverages Flutter for GUI and Rust for the backend logic,
-utilizing the capabilities of the
-[Rinf](https://pub.dev/packages/rinf) framework.
+- **Up to 10x faster** — Rust + Tokio engine with IDM-style dynamic segmentation
+- **Multi-protocol** — HTTP/HTTPS, FTP, BitTorrent, eD2K, HLS & DASH streaming
+- **Browser integration** — Chrome / Edge / Firefox extension with a 3-layer interception engine
+- **Resume anywhere** — full download state persisted in SQLite; survive crashes and reboots
+- **Beautiful UI** — light/dark themes, 13 color schemes, responsive three-pane layout
+- **Clean & private** — free forever, no ads, no tracking, no account, local-first
 
-To run and build this app, you need to have
-[Flutter SDK](https://docs.flutter.dev/get-started/install)
-and [Rust toolchain](https://www.rust-lang.org/tools/install)
-installed on your system.
-You can check that your system is ready with the commands below.
-Note that all the Flutter subcomponents should be installed.
+## Features
+
+| Feature | Description |
+|---|---|
+| **Rust-Powered Engine** | Built on Rust and Tokio with zero-cost abstractions — memory-safe concurrency at maximum throughput |
+| **Smart Segmentation** | Segments split dynamically at runtime; idle threads rescue slow segments, just like IDM — but smarter |
+| **Multi-Protocol** | Dedicated engines for HTTP/HTTPS, FTP, BitTorrent (DHT/UPnP/magnet), eD2K (server + Kad DHT source finding, MD4 verification), HLS (AES-decrypt) and DASH |
+| **Speed Control** | Token-bucket global rate limiting — download in the background without killing your browsing |
+| **Resume Anywhere** | Every byte tracked in SQLite with WAL; power loss never costs you progress |
+| **Browser Integration** | Three-layer download interception, streaming media sniffing, Alt+Click bypass, right-click send |
+| **Beautiful Interface** | shadcn-style widgets, IDM-style segment visualization, named queues, system tray |
+| **Clean & Private** | Zero ads, zero telemetry lock-in, zero accounts — your data never leaves your machine |
+
+## FluxDown vs. IDM
+
+| | FluxDown | IDM |
+|---|:---:|:---:|
+| Price | **Free forever** | $24.95 + renewals |
+| Open source | Yes (AGPL-3.0) | No |
+| Platforms | Windows / macOS / Linux | Windows only |
+| BitTorrent & magnet | Yes | No |
+| eD2K / eMule links | Yes | No |
+| HLS / DASH streaming | Yes | Partial |
+| Dynamic segmentation | Yes | Yes |
+| Browser extension | Chrome / Edge / Firefox | Yes |
+| Ads & tracking | **None** | — |
+
+## Installation
+
+Grab the latest build from [**GitHub Releases**](https://github.com/zerx-lab/FluxDown/releases/latest) or [**fluxdown.zerx.dev**](https://fluxdown.zerx.dev/#download):
+
+| Platform | Packages |
+|---|---|
+| **Windows** (x64 / ARM64) | `setup.exe` installer · portable `.zip` |
+| **macOS** (Intel / Apple Silicon) | `.dmg` · portable `.tar.gz` |
+| **Linux** (x64) | `.AppImage` · `.deb` · Arch `.pkg.tar.zst` · portable `.tar.gz` |
+
+### Browser Extension
+
+Install the extension so FluxDown takes over browser downloads automatically:
+
+[<img src="https://img.shields.io/badge/Chrome-Web%20Store-4285F4?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Chrome Web Store" />](https://chromewebstore.google.com/detail/fluxdown/meleenglfggcmcajknpeeeiobnpfmahc)
+[<img src="https://img.shields.io/badge/Edge-Add--ons-0078D4?style=for-the-badge&logo=microsoftedge&logoColor=white" alt="Edge Add-ons" />](https://microsoftedge.microsoft.com/addons/detail/fluxdown/nglkkjbogjghekbhhcnccnpfedjbdhhd)
+[<img src="https://img.shields.io/badge/Firefox-Add--ons-FF7139?style=for-the-badge&logo=firefoxbrowser&logoColor=white" alt="Firefox Add-ons" />](https://addons.mozilla.org/firefox/addon/fluxdown)
+
+## Architecture
+
+Flutter renders the UI; a zero-FFI Rust engine does the heavy lifting. The two talk through [Rinf](https://rinf.cunarist.org) signals, and the browser extension connects via Native Messaging.
+
+```mermaid
+flowchart TD
+    EXT["Browser Extension (WXT)"] -->|Native Messaging| NMH["fluxdown_nmh"]
+    NMH -->|Named Pipe / Unix socket| HUB
+    UI["Flutter UI (shadcn_ui)"] <-->|Rinf signals| HUB["hub — FFI adapter"]
+    HUB --> ENGINE["fluxdown_engine"]
+    ENGINE --> HTTP["HTTP/HTTPS"]
+    ENGINE --> FTP["FTP"]
+    ENGINE --> BT["BitTorrent"]
+    ENGINE --> ED2K["eD2K"]
+    ENGINE --> HLS["HLS / DASH"]
+    ENGINE --> DB[("SQLite")]
+```
+
+| Layer | Tech | Path |
+|---|---|---|
+| UI | Flutter + shadcn_ui | [`lib/`](lib) |
+| FFI bridge | Rinf (Dart ↔ Rust signals) | [`native/hub/`](native/hub) |
+| Download engine | Rust + Tokio (zero FFI deps) | [`native/engine/`](native/engine) |
+| Browser extension | WXT + TypeScript | [`fluxDown/`](fluxDown) |
+| Website | Astro + React | [`website/`](website) |
+
+## Building from Source
+
+**Prerequisites**: [Flutter SDK](https://docs.flutter.dev/get-started/install) · [Rust toolchain](https://www.rust-lang.org/tools/install) · [Rinf CLI](https://rinf.cunarist.org)
 
 ```shell
+# Check your environment
 rustc --version
 flutter doctor
-```
 
-You also need to have the CLI tool for Rinf ready.
-
-```shell
+# Install the Rinf CLI (once)
 cargo install rinf_cli
-```
 
-Signals sent between Dart and Rust are implemented using signal attributes.
-If you've modified the signal structs, run the following command
-to generate the corresponding Dart classes:
-
-```shell
+# Fetch dependencies & generate Dart bindings
+flutter pub get
 rinf gen
-```
 
-Now you can run and build this app just like any other Flutter projects.
-
-```shell
+# Run in debug mode
 flutter run
+
+# Build a release
+flutter build windows --release   # or: macos / linux
 ```
 
-For detailed instructions on writing Rust and Flutter together,
-please refer to Rinf's [documentation](https://rinf.cunarist.org).
-
-## 构建 Linux 安装包
-
-确保已安装系统依赖：
+<details>
+<summary><b>Linux system dependencies</b></summary>
 
 ```shell
 # Debian/Ubuntu
@@ -71,81 +138,42 @@ sudo apt-get install cmake ninja-build clang pkg-config \
 sudo pacman -S cmake ninja clang pkgconf gtk3 libayatana-appindicator libnotify libsecret patchelf zstd
 ```
 
-构建 Flutter 应用和 NMH 中继二进制：
+The NMH relay binary (`fluxdown_nmh`) is built automatically by CMake during `flutter build`. Distribution packages (AppImage / deb / Arch / portable) are produced by [CI](.github/workflows/release.yml) on every tag.
+
+</details>
+
+<details>
+<summary><b>Running tests</b></summary>
 
 ```shell
-flutter build linux --release
-cargo build --release -p fluxdown_nmh
-cp target/release/fluxdown_nmh build/linux/x64/release/bundle/
+flutter test                          # Dart tests
+cargo test -p fluxdown_engine        # Rust engine tests
+cargo test -p hub                    # FFI adapter tests
 ```
 
-打包为 Arch `.pkg.tar.zst`：
+</details>
+
+## Contributing & Community
+
+- **Bug reports / feature requests** — [GitHub Issues](https://github.com/zerx-lab/FluxDown/issues) or the in-app feedback dialog
+- **QQ Group** — [832143651](https://fluxdown.zerx.dev/qq-group)
+- **Vote on features** — [fluxdown.zerx.dev/vote](https://fluxdown.zerx.dev/vote)
+
+Pull requests are welcome! Before submitting, please make sure:
 
 ```shell
-VERSION=0.1.0  # 替换为实际版本号
-BUNDLE_DIR="build/linux/x64/release/bundle"
-PKG_DIR="arch_pkg"
-
-mkdir -p "$PKG_DIR/opt/fluxdown" "$PKG_DIR/usr/bin" \
-         "$PKG_DIR/usr/share/applications" \
-         "$PKG_DIR/usr/share/icons/hicolor/256x256/apps"
-
-cp -a "$BUNDLE_DIR/." "$PKG_DIR/opt/fluxdown/"
-printf '#!/bin/bash\nexec /opt/fluxdown/flux_down "$@"\n' > "$PKG_DIR/usr/bin/flux_down"
-chmod 755 "$PKG_DIR/usr/bin/flux_down"
-cp linux/com.fluxdown.app.desktop "$PKG_DIR/usr/share/applications/"
-cp assets/logo/fluxdown_logo.png "$PKG_DIR/usr/share/icons/hicolor/256x256/apps/com.fluxdown.app.png"
-
-INSTALLED_SIZE=$(du -sb "$PKG_DIR/opt/" "$PKG_DIR/usr/" | awk '{sum+=$1} END {print sum}')
-cat > "$PKG_DIR/.PKGINFO" <<EOF
-pkgname = fluxdown
-pkgver = ${VERSION}-1
-pkgdesc = Free IDM-alternative download manager
-url = https://fluxdown.app
-builddate = $(date +%s)
-packager = FluxDown CI <ci@fluxdown.app>
-size = ${INSTALLED_SIZE}
-arch = x86_64
-license = custom
-depend = gtk3
-depend = libayatana-appindicator
-depend = libnotify
-EOF
-
-mkdir -p build/installer
-cd "$PKG_DIR"
-tar --zstd --owner=0 --group=0 -cf \
-  "../build/installer/FluxDown-${VERSION}-linux-x64.pkg.tar.zst" \
-  .PKGINFO opt/ usr/
-```
-
-安装：
-
-```shell
-sudo pacman -U build/installer/FluxDown-${VERSION}-linux-x64.pkg.tar.zst
-```
-
-## 发布版本
-
-项目使用 `scripts/release_tag.py` 脚本发布新版本。脚本会自动提取 commit 记录，调用 Claude CLI 生成中文 Release Notes，创建 annotated tag 后推送触发 CI 构建。
-
-前置要求：本地已安装 [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli)。
-
-```shell
-# 日常发布（推荐）
-python scripts/release_tag.py v0.1.7 --model sonnet --lang both --push
-
-# 仅预览效果
-python scripts/release_tag.py v0.1.7 --dry-run
+cargo fmt --check && cargo clippy -- -D warnings   # Rust
+flutter analyze                                     # Dart
 ```
 
 ## License
 
-FluxDown is licensed under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0).
+Distributed under the [GNU Affero General Public License v3.0](LICENSE).
 
-- The core application, download engine, and browser extension are free and open source.
-- Contributions require signing our CLA (prompted automatically on your first pull request), which allows us to offer commercial licensing for future premium features.
+<div align="center">
 
-## Trademark
+**If FluxDown saves you time, consider giving it a Star — it helps more people discover the project.**
 
-"FluxDown" and the FluxDown logo are trademarks of zerx-lab. The AGPL-3.0 license covers the source code only — forks and derivative works may not use the FluxDown name or logo without permission.
+Made by [zerx-lab](https://github.com/zerx-lab)
+
+</div>
