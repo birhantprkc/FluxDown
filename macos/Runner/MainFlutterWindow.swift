@@ -39,6 +39,23 @@ class MainFlutterWindow: NSWindow {
         // 单例通过 static let 自持，弹窗窗口/引擎懒创建、常驻复用，不随本窗口生命周期回收。
         PopupWindowHost.shared.register(with: flutterViewController.engine.binaryMessenger)
 
+        // 主窗口恢复通道（macOS）— MethodChannel `com.fluxdown/window`。
+        // 托盘/悬浮球点击恢复窗口时调用 `restore`，走 AppDelegate 与 Dock
+        // 点击相同的可靠激活序列（ignoringOtherApps: true），规避 window_manager
+        // show()/focus() 在 App 非前台时无法把窗口带到前台的问题。
+        FlutterMethodChannel(
+            name: "com.fluxdown/window",
+            binaryMessenger: flutterViewController.engine.binaryMessenger
+        ).setMethodCallHandler { (_ call: FlutterMethodCall, result: @escaping FlutterResult) in
+            switch call.method {
+            case "restore":
+                (NSApp.delegate as? AppDelegate)?.restoreMainWindow()
+                result(nil)
+            default:
+                result(FlutterMethodNotImplemented)
+            }
+        }
+
         RegisterGeneratedPlugins(registry: flutterViewController)
 
         super.awakeFromNib()

@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:path/path.dart' as p;
 import 'package:tray_manager/tray_manager.dart';
@@ -11,6 +12,30 @@ import 'floating_ball/floating_ball_service.dart';
 import 'log_service.dart';
 
 const _tag = 'TrayService';
+
+/// macOS 主窗口恢复通道（对应 macos/Runner/MainFlutterWindow.swift）。
+const _macWindowChannel = MethodChannel('com.fluxdown/window');
+
+/// 从托盘/最小化/关闭到托盘恢复主窗口并置于前台。
+///
+/// macOS：走原生 `com.fluxdown/window` → AppDelegate.restoreMainWindow，
+/// 与点击 Dock 图标相同的可靠激活序列（ignoringOtherApps: true）。
+/// window_manager 的 show()/focus() 在 App 非前台时用
+/// ignoringOtherApps: false，macOS 13+ 常无法把窗口带到前台，
+/// 导致「关掉窗口后再点击打不开、需退出重开」。
+/// 其它平台：沿用 window_manager show() + focus()。
+Future<void> restoreMainWindow() async {
+  if (Platform.isMacOS) {
+    try {
+      await _macWindowChannel.invokeMethod<void>('restore');
+      return;
+    } catch (e, stack) {
+      logError(_tag, 'native restore failed, falling back', e, stack);
+    }
+  }
+  await windowManager.show();
+  await windowManager.focus();
+}
 
 /// 系统托盘服务 — 管理托盘图标、菜单和事件
 class TrayService with TrayListener {
@@ -193,11 +218,8 @@ class TrayService with TrayListener {
         'window state before show: isMinimized=$isMinimized, '
         'isVisible=$isVisible',
       );
-      // window_manager 0.5.1 的 show() 内部已处理 isMinimized → restore()
-      logInfo(_tag, 'calling windowManager.show()...');
-      await windowManager.show();
-      logInfo(_tag, 'calling windowManager.focus()...');
-      await windowManager.focus();
+      logInfo(_tag, 'calling restoreMainWindow()...');
+      await restoreMainWindow();
       logInfo(_tag, '_showWindow done');
     } catch (e, stack) {
       logError(_tag, '_showWindow error', e, stack);

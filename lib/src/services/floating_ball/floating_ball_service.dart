@@ -407,8 +407,7 @@ class FloatingBallService {
   Future<void> _restoreMainWindow() async {
     try {
       final visible = await windowManager.isVisible();
-      await windowManager.show();
-      await windowManager.focus();
+      await restoreMainWindow();
       logInfo(_tag, 'main window restored (wasVisible=$visible)');
     } catch (e, stack) {
       logError(_tag, 'restore main window failed', e, stack);

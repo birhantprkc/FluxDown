@@ -13,6 +13,7 @@ import '../widgets/quick_download_dialog.dart';
 import '../widgets/quick_download_form.dart';
 import 'log_service.dart';
 import 'popup_window_service.dart';
+import 'tray_service.dart';
 
 const _tag = 'ExtDownSvc';
 
@@ -245,7 +246,11 @@ class ExternalDownloadService {
   /// 使用经典 Win32 技巧：先 HWND_TOPMOST 再 HWND_NOTOPMOST，
   /// 强制窗口到最上层后立刻取消置顶，效果等价于用户手动点击任务栏。
   Future<void> _bringWindowToFront() async {
-    // 先确保窗口可见（从托盘/最小化恢复）
+    // macOS：走原生可靠激活序列（见 restoreMainWindow）；其它平台 show()+restore()
+    if (Platform.isMacOS) {
+      await restoreMainWindow();
+      return;
+    }
     await windowManager.show();
     await windowManager.restore();
 
