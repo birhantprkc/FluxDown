@@ -836,6 +836,14 @@ class S {
   String get apiServiceTokenGenerate => _t('生成', 'Generate');
   String get apiServiceCopy => _t('复制', 'Copy');
   String get apiServiceCopied => _t('已复制', 'Copied');
+  String get apiServiceTokenClear => _t('清空', 'Clear');
+  String get apiServiceTokenCleared => _t('访问令牌已清空', 'Access token cleared');
+  String get apiServiceTokenClearConfirmTitle =>
+      _t('清空访问令牌？', 'Clear access token?');
+  String get apiServiceTokenClearConfirmDesc => _t(
+    '管理 API 已启用并依赖此令牌。清空令牌将同时关闭管理 API 服务。是否继续？',
+    'The management API is enabled and depends on this token. Clearing it will also turn off the management API. Continue?',
+  );
 
   String get apiServiceFeaturesTitle => _t('功能开关', 'Feature Toggles');
   String get apiServiceFeaturesDesc => _t(

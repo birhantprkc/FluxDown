@@ -807,6 +807,19 @@ class SettingsProvider extends ChangeNotifier {
     _saveToRust('local_server_token', value);
   }
 
+  /// 清空访问令牌。若管理 API 正依赖此令牌（已启用），则一并关闭管理 API，
+  /// 避免出现「已启用但无 token」的非法状态。
+  void clearLocalServerToken() {
+    if (_localServerToken.isEmpty && !_localServerApiEnabled) return;
+    _localServerToken = '';
+    _saveToRust('local_server_token', '');
+    if (_localServerApiEnabled) {
+      _localServerApiEnabled = false;
+      _saveToRust('local_server_api_enabled', 'false');
+    }
+    notifyListeners();
+  }
+
   void setLocalServerTakeoverEnabled(bool value) {
     if (_localServerTakeoverEnabled == value) return;
     _localServerTakeoverEnabled = value;

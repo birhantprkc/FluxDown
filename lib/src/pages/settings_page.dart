@@ -3803,6 +3803,53 @@ class _ApiServiceContentState extends State<_ApiServiceContent> {
     );
   }
 
+  void _clearToken() {
+    widget.settingsProvider.clearLocalServerToken();
+    if (!mounted) return;
+    ShadSonner.of(context).show(
+      ShadToast(
+        title: Text(LocaleScope.of(context).apiServiceTokenCleared),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  void _confirmClearToken() {
+    final sp = widget.settingsProvider;
+    // token 已空且管理 API 未启用：无需确认，直接返回（按钮通常已禁用）。
+    if (sp.localServerToken.isEmpty && !sp.localServerApiEnabled) return;
+    // 管理 API 未依赖此令牌：直接清空，无需二次确认。
+    if (!sp.localServerApiEnabled) {
+      _clearToken();
+      return;
+    }
+    final c = AppColors.of(context);
+    final s = LocaleScope.of(context);
+    showShadDialog(
+      context: context,
+      barrierColor: c.dialogBarrier,
+      animateIn: const [],
+      animateOut: const [],
+      builder: (ctx) => ShadDialog(
+        title: Text(s.apiServiceTokenClearConfirmTitle),
+        description: Text(s.apiServiceTokenClearConfirmDesc),
+        actions: [
+          ShadButton.outline(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text(s.cancel),
+          ),
+          ShadButton.destructive(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              _clearToken();
+            },
+            child: Text(s.apiServiceTokenClear),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
@@ -3956,6 +4003,22 @@ class _ApiServiceContentState extends State<_ApiServiceContent> {
                             Icon(LucideIcons.copy, size: 13),
                             const SizedBox(width: 4),
                             Text(s.apiServiceCopy),
+                          ],
+                        ),
+                      ),
+                      ShadButton.outline(
+                        size: ShadButtonSize.sm,
+                        enabled:
+                            enabled &&
+                            (sp.localServerToken.isNotEmpty ||
+                                sp.localServerApiEnabled),
+                        onPressed: _confirmClearToken,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(LucideIcons.eraser, size: 13),
+                            const SizedBox(width: 4),
+                            Text(s.apiServiceTokenClear),
                           ],
                         ),
                       ),
