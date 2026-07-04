@@ -114,3 +114,4 @@ android/local.properties
 **/Flutter/ephemeral/
 website/.vscode/launch.json
 design/
+.promo/
