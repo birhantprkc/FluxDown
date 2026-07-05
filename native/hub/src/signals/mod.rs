@@ -111,6 +111,13 @@ pub struct RevealFile {
     pub path: String,
 }
 
+/// Dart → Rust：用系统默认程序打开文件（裸路径经 ShellExecute，正确激活 UWP/
+/// Store 关联；避免 file:// URL 打不开 .mp4 等 UWP 关联类型）。
+#[derive(Deserialize, DartSignal)]
+pub struct OpenFile {
+    pub path: String,
+}
+
 // ========== Rust → Dart signals ==========
 
 /// Task progress update — sent periodically during download

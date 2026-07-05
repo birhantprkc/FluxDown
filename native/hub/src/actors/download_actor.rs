@@ -24,7 +24,7 @@ use crate::signals::{
     ConfigEntry, ConfigLoaded, ConfirmExternalDownload, ControlTask, CreateQueue, CreateTask,
     DeleteQueue, DetectSystemProxy, DownloadUpdate, Ed2kServerSubscriptionResult,
     ExternalDownloadRequest, FileAssociationStatus, InstallUpdate, MoveTaskToQueue,
-    ProbeTorrentMeta, ProxyTestResult, RequestAllQueues, RequestAllTasks, RequestConfig,
+    OpenFile, ProbeTorrentMeta, ProxyTestResult, RequestAllQueues, RequestAllTasks, RequestConfig,
     RequestUpdateFailureMarker, RevealFile, SaveConfig, SelectBtFiles, SelectHlsQuality,
     SetFileAssociation, SetPriorityTask, SetUrlProtocol, SystemProxyInfo, TestProxyConnection,
     TrackerSubscriptionResult, UpdateCheckResult, UpdateEd2kServerSubscription,
@@ -422,6 +422,7 @@ pub async fn run(db_dir: PathBuf) {
     let select_bt_files_recv = SelectBtFiles::get_dart_signal_receiver();
     let probe_torrent_meta_recv = ProbeTorrentMeta::get_dart_signal_receiver();
     let reveal_file_recv = RevealFile::get_dart_signal_receiver();
+    let open_file_recv = OpenFile::get_dart_signal_receiver();
     let update_tracker_sub_recv = UpdateTrackerSubscription::get_dart_signal_receiver();
 
     // Tracker 订阅刷新通道：后台 fetch 任务完成后把结果送回 actor 循环，
@@ -1111,6 +1112,13 @@ pub async fn run(db_dir: PathBuf) {
                     .unwrap_or_default();
                 tokio::task::spawn_blocking(move || {
                     crate::reveal_file::reveal(&path, &tpl);
+                });
+            }
+            // --- Open file with default application ---
+            Some(signal) = open_file_recv.recv() => {
+                let path = signal.message.path;
+                tokio::task::spawn_blocking(move || {
+                    crate::reveal_file::open_file(&path);
                 });
             }
             // --- Torrent meta probe (for new-download dialog preview) ---

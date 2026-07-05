@@ -57,6 +57,48 @@ pub fn reveal(path: &str, tpl: &str) {
     }
 }
 
+/// 用系统默认程序打开文件（等价于在资源管理器里双击）。
+///
+/// 关键点：
+/// - 必须用**裸路径**而非 `file://` URL。Windows 上 UWP/Store 应用注册的文件
+///   处理器（如 .mp4 默认的“电影和电视”/媒体播放器）无法通过 `file://` URL 被
+///   ShellExecute 激活，表现为“点开没反应”；裸路径与双击一致，能正确解析扩展名
+///   关联（含 UWP 与经典 Win32 handler）。
+/// - Windows 走 `explorer.exe <file>` 而非 `cmd /c start`：explorer 把打开动作
+///   委托给已运行的用户态 shell（中完整性级别），因此即便 App 以管理员身份运行也
+///   能激活 UWP 关联应用（提权进程直接激活 UWP 会被系统拒绝），且无 cmd 黑框闪
+///   烁。文件场景不存在“强制用 Explorer 当文件管理器”的顾虑（那是打开目录才有）。
+///
+/// | 平台    | 命令                |
+/// |---------|---------------------|
+/// | Windows | `explorer.exe path` |
+/// | macOS   | `open path`         |
+/// | Linux   | `xdg-open path`     |
+pub fn open_file(path: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        if let Err(e) = std::process::Command::new("explorer.exe").arg(path).spawn() {
+            crate::logger::log_info!("[open_file] explorer.exe failed: {e}");
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Err(e) = std::process::Command::new("open").arg(path).spawn() {
+            crate::logger::log_info!("[open_file] open failed: {e}");
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Err(e) = std::process::Command::new("xdg-open").arg(path).spawn() {
+            crate::logger::log_info!("[open_file] xdg-open failed: {e}");
+        }
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        crate::logger::log_info!("[open_file] not supported on this platform: {path}");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 模板执行：占位符替换 + shell 解析
 // ---------------------------------------------------------------------------

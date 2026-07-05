@@ -1,5 +1,3 @@
-import 'package:url_launcher/url_launcher.dart';
-
 import '../bindings/bindings.dart';
 
 /// 在文件管理器中打开文件所在目录（尽可能选中文件）或目录本身。
@@ -19,8 +17,11 @@ Future<void> openFolder(String filePath) async {
 }
 
 /// 用系统默认程序打开文件。
-/// Windows 上 launchUrl(file://) 走 ShellExecuteW("open", ...)，
-/// 通过完整的注册表查找链解析关联应用，比 cmd /c start 更可靠。
+///
+/// 交给 Rust 端以**裸路径**经 shell 打开（Windows `explorer.exe` / macOS `open`
+/// / Linux `xdg-open`），正确解析扩展名关联，包括 .mp4 等由 UWP/Store 应用处理
+/// 的类型。此前用 `launchUrl(Uri.file())` 传 `file://` URL，ShellExecute 无法据此
+/// 激活 UWP 关联应用，导致这类文件“点开没反应”。实现见 native/hub/src/reveal_file.rs。
 Future<void> openFile(String filePath) async {
-  await launchUrl(Uri.file(filePath));
+  OpenFile(path: filePath).sendSignalToRust();
 }
