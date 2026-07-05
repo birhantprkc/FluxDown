@@ -1056,6 +1056,8 @@ class SettingsProvider extends ChangeNotifier {
     final entries = pack.message.entries;
     logInfo('Settings', '_onConfigLoaded: ${entries.length} entries');
     String legacyOpenDirCmd = '';
+    // 追踪 reveal_file_cmd 键是否出现在配置中（区分「从未设置」与「已清空」）。
+    bool revealFileCmdPresent = false;
     for (final entry in entries) {
       logInfo('Settings', '  config: ${entry.key}=${_truncateForLog(entry.value)}');
       switch (entry.key) {
@@ -1178,6 +1180,7 @@ class SettingsProvider extends ChangeNotifier {
           _lastSaveDir = entry.value;
         case 'reveal_file_cmd':
           _revealFileCmd = entry.value;
+          revealFileCmdPresent = true;
         case 'open_dir_cmd':
           legacyOpenDirCmd = entry.value;
         case 'show_sidebar_status':
@@ -1202,9 +1205,11 @@ class SettingsProvider extends ChangeNotifier {
           _customCategories = CustomCategory.decodeList(entry.value);
       }
     }
-    // 迁移：旧版拆分的"打开目录"命令并入统一的文件管理器命令
-    //（reveal_file_cmd 为空时才搬，保留用户已设的定位命令优先）。
-    if (_revealFileCmd.isEmpty && legacyOpenDirCmd.isNotEmpty) {
+    // 一次性迁移：把旧版拆分的「打开目录」命令(open_dir_cmd)并入统一的文件
+    // 管理器命令。仅当 reveal_file_cmd 从未被持久化过（配置中无此键）时才搬；
+    // 用户主动清空会留下空串条目（键存在），不再被旧值复活——修复「清空后
+    // 无法重置为默认，每次启动都被 open_dir_cmd 搬回来」。
+    if (!revealFileCmdPresent && legacyOpenDirCmd.isNotEmpty) {
       _revealFileCmd = legacyOpenDirCmd;
       _saveToRust('reveal_file_cmd', legacyOpenDirCmd);
     }

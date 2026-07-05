@@ -3047,7 +3047,9 @@ class _FileManagerCmdInputState extends State<_FileManagerCmdInput> {
   @override
   void didUpdateWidget(_FileManagerCmdInput oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (_currentValue != _controller.text) {
+    // 仅在未聚焦（用户未编辑）时才用外部值回填，避免用户清空/编辑过程中被
+    // 外部 rebuild 回灌旧值，导致无法清空、无法重置为默认（留空=平台默认）。
+    if (!_focusNode.hasFocus && _currentValue != _controller.text) {
       _controller.text = _currentValue;
     }
   }
