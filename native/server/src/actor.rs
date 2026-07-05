@@ -5,6 +5,7 @@
 //! Native Messaging / 更新器 / 文件关联等桌面 App 专属分支。
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use fluxdown_api::types::CreateTaskRequest;
 use fluxdown_engine::Engine;
@@ -14,6 +15,7 @@ use fluxdown_engine::download_manager::TaskDone;
 use fluxdown_engine::log_info;
 use fluxdown_engine::proxy_config::ProxyConfig;
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::MissedTickBehavior;
 
 use crate::config::default_save_dir;
 
@@ -106,6 +108,14 @@ pub async fn run_actor(
     engine.manager.load_queues().await;
     engine.manager.load_and_send_all_tasks().await;
 
+    // 文件跟踪：headless 无窗口聚焦事件，用低频定时器周期性重扫已完成任务
+    // 文件是否仍在。声明在 loop 外并消费首个立即就绪的 tick（启动扫描已由
+    // load_and_send_all_tasks 覆盖）；MissedTickBehavior::Delay 防休眠唤醒后
+    // 积压 tick 造成扫描风暴。
+    let mut rescan_timer = tokio::time::interval(Duration::from_secs(300));
+    rescan_timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    rescan_timer.tick().await;
+
     loop {
         tokio::select! {
             Some(cmd) = cmd_rx.recv() => {
@@ -120,6 +130,9 @@ pub async fn run_actor(
                     log_info!("[server-actor] auto-retry: resuming task {}", task_id);
                     engine.manager.resume_task_auto(&task_id).await;
                 }
+            }
+            _ = rescan_timer.tick() => {
+                engine.manager.spawn_file_scan();
             }
             else => {
                 log_info!("[server-actor] all channels closed, exiting");

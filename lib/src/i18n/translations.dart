@@ -70,6 +70,7 @@ class S {
   String get statusError => _t('失败', 'Error');
   String get statusPreparing => _t('准备中', 'Preparing');
   String get statusResuming => _t('恢复中', 'Resuming');
+  String get statusFileMissing => _t('文件已删除', 'File deleted');
 
   // ─────────────────────────────────────────────
   // 任务副标题

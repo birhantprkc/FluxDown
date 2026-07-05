@@ -221,6 +221,10 @@ class DownloadTask {
   /// 自定义文件名。只要此字段为 true，probe 结果中的文件名将被忽略。
   final bool fileNameConfirmed;
 
+  /// 文件跟踪：completed 任务的目标文件在磁盘上是否已丢失（被删除/移动）。
+  /// 由引擎扫描后经 FileMissingChanged / AllTasks 下发，仅对 completed 有意义。
+  final bool fileMissing;
+
   DownloadTask({
     required this.id,
     required this.url,
@@ -237,6 +241,7 @@ class DownloadTask {
     this.queuePosition = -1,
     this.queueId = '',
     this.fileNameConfirmed = false,
+    this.fileMissing = false,
     DateTime? createdAt,
   }) : createdAt = createdAt ?? DateTime.now();
 
@@ -257,6 +262,7 @@ class DownloadTask {
       errorMessage: info.errorMessage,
       queueId: info.queueId,
       fileNameConfirmed: hasName,
+      fileMissing: info.fileMissing,
       createdAt: seconds > 0
           ? DateTime.fromMillisecondsSinceEpoch(seconds * 1000)
           : DateTime.now(),
@@ -279,6 +285,7 @@ class DownloadTask {
     int? queuePosition,
     String? queueId,
     bool? fileNameConfirmed,
+    bool? fileMissing,
     DateTime? createdAt,
   }) {
     return DownloadTask(
@@ -297,6 +304,7 @@ class DownloadTask {
       queuePosition: queuePosition ?? this.queuePosition,
       queueId: queueId ?? this.queueId,
       fileNameConfirmed: fileNameConfirmed ?? this.fileNameConfirmed,
+      fileMissing: fileMissing ?? this.fileMissing,
       createdAt: createdAt ?? this.createdAt,
     );
   }
@@ -412,6 +420,9 @@ class DownloadTask {
   /// 状态文本
   String get statusText {
     final s = currentS;
+    if (status == TaskStatus.completed && fileMissing) {
+      return s.statusFileMissing;
+    }
     return switch (status) {
       TaskStatus.pending => s.statusPending,
       TaskStatus.downloading => s.statusDownloading,

@@ -1,6 +1,7 @@
 import 'package:flutter/widgets.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 
+import '../bindings/bindings.dart';
 import '../i18n/locale_provider.dart';
 import '../models/download_controller.dart';
 import '../models/settings_provider.dart';
@@ -29,7 +30,7 @@ class MobileShell extends StatefulWidget {
   State<MobileShell> createState() => _MobileShellState();
 }
 
-class _MobileShellState extends State<MobileShell> {
+class _MobileShellState extends State<MobileShell> with WidgetsBindingObserver {
   final _controller = DownloadController();
   final _settings = SettingsProvider(enableFileAssoc: false);
   int _tab = 0;
@@ -38,6 +39,7 @@ class _MobileShellState extends State<MobileShell> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _settings.requestConfig();
     _ensureAndroidSaveDir();
     // 前台服务：切换应用时保活进程、持续下载，任务栏常驻进度通知（仅移动端生效）
@@ -87,12 +89,21 @@ class _MobileShellState extends State<MobileShell> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     ShareIntentService.shutdown();
     widget.localeNotifier.removeListener(_onLocaleChanged);
     ForegroundServiceManager.instance.stop();
     _controller.dispose();
     _settings.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // 文件跟踪：回到前台时用户可能刚在文件管理器删/移了文件，触发一次重扫。
+    if (state == AppLifecycleState.resumed) {
+      RescanFiles().sendSignalToRust();
+    }
   }
 
   @override

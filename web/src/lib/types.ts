@@ -17,6 +17,8 @@ export interface TaskDto {
   proxyUrl: string
   queueId: string
   checksum: string
+  /** 文件跟踪：completed 任务的目标文件是否已丢失（被删除/移动）。默认 false */
+  fileMissing?: boolean
 }
 
 export interface QueueDto {

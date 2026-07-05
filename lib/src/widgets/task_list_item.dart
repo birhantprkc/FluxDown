@@ -279,7 +279,7 @@ class _TaskListItemState extends State<TaskListItem> {
       case TaskStatus.resuming:
         return c.accent;
       case TaskStatus.completed:
-        return AppColors.green;
+        return task.fileMissing ? AppColors.amber : AppColors.green;
       case TaskStatus.paused:
         return AppColors.amber;
       case TaskStatus.error:
@@ -326,7 +326,7 @@ class _TaskListItemState extends State<TaskListItem> {
       case TaskStatus.preparing:
         statusColor = c.accent;
       case TaskStatus.completed:
-        statusColor = AppColors.green;
+        statusColor = task.fileMissing ? AppColors.amber : AppColors.green;
       case TaskStatus.paused:
         statusColor = AppColors.amber;
       case TaskStatus.error:
@@ -466,7 +466,7 @@ void showTaskContextMenu(
   // --- 打开文件 / 打开所在文件夹 ---
   final filePath = '${task.saveDir}${Platform.pathSeparator}${task.fileName}';
 
-  if (task.status == TaskStatus.completed) {
+  if (task.status == TaskStatus.completed && !task.fileMissing) {
     items.add(
       ContextMenuItem(
         icon: LucideIcons.externalLink,

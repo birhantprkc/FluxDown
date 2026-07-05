@@ -72,6 +72,7 @@ class _TaskListState extends State<TaskList> {
       case TaskStatus.error:
         widget.controller.resumeTask(task.id);
       case TaskStatus.completed:
+        if (task.fileMissing) return;
         final filePath =
             '${task.saveDir}${Platform.pathSeparator}${task.fileName}';
         openFile(filePath);

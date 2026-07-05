@@ -25,6 +25,10 @@ pub struct TaskInfo {
     pub queue_id: String,
     /// Checksum spec,格式 `algo=hexhash`(空 = 跳过校验)。
     pub checksum: String,
+    /// 文件跟踪：completed 任务的目标文件在磁盘上是否已丢失（被删除/移动）。
+    /// 由引擎按需扫描计算并落库（见 `crate::download_manager::DownloadManager::spawn_file_scan`）；
+    /// 仅对 status=3 语义有效，默认 false。
+    pub file_missing: bool,
 }
 
 /// 命名队列元数据。字段对应 `hub::signals::QueueInfo`。

@@ -168,6 +168,7 @@ fn sample_task(id: &str, status: i32) -> TaskDto {
         proxy_url: String::new(),
         queue_id: String::new(),
         checksum: String::new(),
+        file_missing: false,
     }
 }
 

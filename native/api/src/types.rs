@@ -121,6 +121,7 @@ pub struct DownloadRequest {
 ///     proxy_url: String::new(),
 ///     queue_id: String::new(),
 ///     checksum: String::new(),
+///     file_missing: false,
 /// };
 /// let dto = TaskDto::from(info);
 /// assert_eq!(dto.task_id, "t1");
@@ -147,6 +148,9 @@ pub struct TaskDto {
     pub queue_id: String,
     /// Checksum spec，格式 `algo=hexhash`（空 = 跳过校验）。
     pub checksum: String,
+    /// 文件跟踪：completed 任务的目标文件是否已丢失（被删除/移动）。默认 false。
+    #[serde(default)]
+    pub file_missing: bool,
 }
 
 impl From<fluxdown_engine::model::TaskInfo> for TaskDto {
@@ -164,6 +168,7 @@ impl From<fluxdown_engine::model::TaskInfo> for TaskDto {
             proxy_url: t.proxy_url,
             queue_id: t.queue_id,
             checksum: t.checksum,
+            file_missing: t.file_missing,
         }
     }
 }
@@ -387,6 +392,7 @@ mod tests {
             proxy_url: String::new(),
             queue_id: String::new(),
             checksum: String::new(),
+            file_missing: false,
         };
         let v = serde_json::to_value(&dto).unwrap();
         assert_eq!(v["taskId"], "t1");

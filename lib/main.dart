@@ -775,6 +775,8 @@ class _FluxDownAppState extends State<FluxDownApp>
     logInfo('FluxDownApp', 'onWindowFocus');
     // Wayland 降级形态③：主窗获焦时读一次剪贴板（失焦读取被协议门控）
     unawaited(WaylandDegradationService.instance.checkClipboardOnRestore());
+    // 文件跟踪：主窗获焦时用户可能刚在资源管理器删/移了文件，触发一次重扫。
+    RescanFiles().sendSignalToRust();
   }
 
   @override

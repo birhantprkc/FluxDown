@@ -388,6 +388,7 @@ mod tests {
             proxy_url: String::new(),
             queue_id: "q1".into(),
             checksum: String::new(),
+            file_missing: false,
         }
     }
 

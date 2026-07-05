@@ -24,6 +24,7 @@ impl From<model::TaskInfo> for signals::TaskInfo {
             proxy_url: t.proxy_url,
             queue_id: t.queue_id,
             checksum: t.checksum,
+            file_missing: t.file_missing,
         }
     }
 }

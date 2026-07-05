@@ -344,6 +344,7 @@ mod tests {
             proxy_url: String::new(),
             queue_id: String::new(),
             checksum: String::new(),
+            file_missing: false,
         }
     }
 

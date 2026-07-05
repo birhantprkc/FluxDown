@@ -114,6 +114,15 @@ impl EventSink for RinfEventSink {
                 }
                 .send_signal_to_dart();
             }
+            EngineEvent::FileMissingChanged(updates) => {
+                signals::FileMissingChanged {
+                    updates: updates
+                        .into_iter()
+                        .map(|(task_id, missing)| signals::FileMissingUpdate { task_id, missing })
+                        .collect(),
+                }
+                .send_signal_to_dart();
+            }
             // `#[non_exhaustive]`：未来新增变体默认丢弃并记录日志，而非编译失败。
             _ => {
                 crate::logger::log_info!(

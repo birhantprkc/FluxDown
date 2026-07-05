@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures_util::FutureExt;
 use reqwest::Client;
@@ -152,6 +153,108 @@ fn is_torrent_file_url(url: &str) -> bool {
 /// Determine if a URL represents any kind of BT download (magnet or .torrent file).
 fn is_bt_url(url: &str) -> bool {
     is_magnet(url) || is_torrent_file_url(url)
+}
+
+/// 文件跟踪扫描的并发上限。`try_exists` 内部走 tokio blocking 线程池，限流以
+/// bound 该共享池占用，防慢盘/网络盘扫描饿死并发下载 IO。
+const FILE_SCAN_CONCURRENCY: usize = 64;
+
+/// 单次文件存在性探测的超时（秒），防失联网络盘把整批扫描拖住到 OS 默认
+/// 重试时长。
+const FILE_SCAN_STAT_TIMEOUT_SECS: u64 = 5;
+
+/// 文件跟踪：构造 completed 任务的目标磁盘路径。`file_name` 为空或不安全
+/// （未命名 magnet、路径穿越等）时返回 `None`——无法可靠判定存在性，跳过。
+fn task_target_path(save_dir: &str, file_name: &str) -> Option<PathBuf> {
+    if file_name.is_empty() || !is_safe_file_name(file_name) {
+        return None;
+    }
+    Some(PathBuf::from(save_dir).join(file_name))
+}
+
+/// 文件跟踪：探测单个路径是否已丢失。`Some(true)`=确证不存在、`Some(false)`=
+/// 存在、`None`=不可判定（I/O 错误 / 超时 / 权限）。调用方对 `None` 保持原
+/// 标志不变，避免把「临时不可访问」误判为「已删除」（防误报）；掉盘等瞬时
+/// 误报由「双向自愈」（下轮探到存在即翻回）兜底。
+async fn probe_missing(path: &Path) -> Option<bool> {
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(FILE_SCAN_STAT_TIMEOUT_SECS),
+        tokio::fs::try_exists(path),
+    )
+    .await
+    {
+        Ok(Ok(true)) => Some(false),
+        Ok(Ok(false)) => Some(true),
+        _ => None,
+    }
+}
+
+/// 文件跟踪：并发探测所有 completed 任务的目标文件是否仍在磁盘上，把变化
+/// 落库并通过 [`EngineEvent::FileMissingChanged`] 上报。仅由
+/// [`DownloadManager::spawn_file_scan`] 在 detached task 中调用；`scanning`
+/// 标志确保同一时刻只有一个扫描在跑。双向判定（探到存在即把标志翻回 false），
+/// 无棘轮，文件移回后自愈。
+async fn scan_missing_files(db: Db, sink: Arc<dyn EventSink>, scanning: Arc<AtomicBool>) {
+    // 防重叠：已有扫描在跑就直接返回。
+    if scanning.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    // RAII 复位守卫：无论正常返回还是 panic 都把标志清回 false。
+    struct ScanGuard(Arc<AtomicBool>);
+    impl Drop for ScanGuard {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::SeqCst);
+        }
+    }
+    let _guard = ScanGuard(scanning);
+
+    let tasks = match db.load_all_tasks().await {
+        Ok(t) => t,
+        Err(e) => {
+            log_info!("[file-scan] load_all_tasks error: {}", e);
+            return;
+        }
+    };
+
+    // 活跃任务（pending/downloading/preparing）占用的目标路径：避免正在重下
+    // 同名文件时把旧的 completed 任务误判为丢失。
+    let active_paths: HashSet<(&str, &str)> = tasks
+        .iter()
+        .filter(|t| matches!(t.status, 0 | 1 | 5))
+        .map(|t| (t.save_dir.as_str(), t.file_name.as_str()))
+        .collect();
+
+    let sem = Arc::new(Semaphore::new(FILE_SCAN_CONCURRENCY));
+    let mut futs = Vec::new();
+    for t in tasks.iter().filter(|t| t.status == 3) {
+        if active_paths.contains(&(t.save_dir.as_str(), t.file_name.as_str())) {
+            continue;
+        }
+        let Some(path) = task_target_path(&t.save_dir, &t.file_name) else {
+            continue;
+        };
+        let sem = sem.clone();
+        let id = t.task_id.clone();
+        let was_missing = t.file_missing;
+        futs.push(async move {
+            let _permit = sem.acquire_owned().await.ok()?;
+            let missing = probe_missing(&path).await?;
+            (missing != was_missing).then_some((id, missing))
+        });
+    }
+
+    let mut changes: Vec<(String, bool)> = Vec::new();
+    for (id, missing) in futures_util::future::join_all(futs).await.into_iter().flatten() {
+        match db.update_task_file_missing(&id, missing).await {
+            Ok(true) => changes.push((id, missing)),
+            Ok(false) => {} // 任务已离开 status=3（被删/状态变化）→ 良性空操作
+            Err(e) => log_info!("[file-scan] update {} error: {}", id, e),
+        }
+    }
+
+    if !changes.is_empty() {
+        sink.emit(EngineEvent::FileMissingChanged(changes));
+    }
 }
 
 /// Returns true only when `name` is safe to join onto a base directory for
@@ -476,6 +579,9 @@ pub struct DownloadManager {
     /// 该矫正仅需在第一次 load_and_send_all_tasks 时执行一次，
     /// 后续由 create_task / batch_create 触发时不得重复重置。
     startup_reset_done: bool,
+    /// 文件跟踪扫描是否正在进行（防重叠）。内存级；`Arc` 以便 detached 扫描
+    /// task 与调用方共享同一标志。
+    scanning: Arc<AtomicBool>,
     /// Boost 模式当前优先任务 ID（内存级，重启清空）。None = 无优先任务。
     priority_task_id: Option<String>,
     /// 因 Boost 模式自动暂停的任务 ID 集合（内存级，重启清空）。
@@ -572,6 +678,7 @@ impl DownloadManager {
             queues: HashMap::new(),
             queue_limiters: HashMap::new(),
             startup_reset_done: false,
+            scanning: Arc::new(AtomicBool::new(false)),
             priority_task_id: None,
             auto_paused_ids: HashSet::new(),
             auto_retry_counts: HashMap::new(),
@@ -1149,6 +1256,34 @@ impl DownloadManager {
         }
     }
 
+    /// 启动一次后台「文件跟踪」扫描：检查所有已完成任务的目标文件是否仍在
+    /// 磁盘上，把变化落库并通过 [`crate::events::EngineEvent::FileMissingChanged`]
+    /// 上报。detached spawn，立即返回、不阻塞调用方；内部 `scanning` 标志避免
+    /// 重叠扫描。由启动流程、桌面窗口聚焦（`RescanFiles`）、headless 定时器触发。
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use std::sync::Arc;
+    /// # use fluxdown_engine::{Engine, EngineConfig, NoopSelection, NoopSink};
+    /// # use fluxdown_engine::bt_downloader::BtConfig;
+    /// # use fluxdown_engine::proxy_config::ProxyConfig;
+    /// # async fn run() -> Result<(), fluxdown_engine::EngineError> {
+    /// # let config = EngineConfig { max_concurrent: 5, speed_limit_bps: 0, default_save_dir: "/tmp/downloads".to_string(), app_data_dir: "/tmp/fluxdown".to_string(), bt_config: BtConfig::default(), proxy_config: ProxyConfig::default(), user_agent: String::new(), data_dir_override: None, database_url: None };
+    /// let engine = Engine::new(config, Arc::new(NoopSink), Arc::new(NoopSelection)).await?;
+    /// engine.manager.spawn_file_scan();
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn spawn_file_scan(&self) {
+        let db = self.db.clone();
+        let sink = self.sink.clone();
+        let scanning = self.scanning.clone();
+        tokio::spawn(async move {
+            scan_missing_files(db, sink, scanning).await;
+        });
+    }
+
     pub async fn load_and_send_all_tasks(&mut self) {
         // 启动时将残留的 downloading/pending 状态矫正为 paused（仅首次执行）
         // 后续由 create_task / batch_create 触发时不重复重置，避免将刚插入的
@@ -1416,6 +1551,11 @@ impl DownloadManager {
         // download distribution immediately after app restart.
         for (task_id, total_bytes) in &task_snapshots {
             self.send_segments_from_db(task_id, *total_bytes).await;
+        }
+        if is_first_run {
+            // 文件跟踪：仅进程启动时扫一次；运行期检测交给 RescanFiles（桌面/
+            // 移动聚焦）与 headless 定时器两条专属触发路径。
+            self.spawn_file_scan();
         }
     }
 
@@ -3920,6 +4060,7 @@ pub async fn progress_reporter(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -3994,5 +4135,305 @@ mod tests {
             !is_retriable_error(msg),
             "magnet metadata timeout must not trigger auto-retry"
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // 文件跟踪（FluxDown #11）：task_target_path / probe_missing / scan_missing_files
+    // -------------------------------------------------------------------------
+
+    /// FluxDown #11：空名与路径穿越/绝对路径必须解析为 `None`——无法安全判定
+    /// 存在性时跳过该任务，而不是把 `save_dir` 本身或盘外路径当成目标文件。
+    #[test]
+    fn task_target_path_rejects_unsafe_or_empty_names() {
+        assert_eq!(
+            task_target_path("save/dir", ""),
+            None,
+            "empty name must be rejected"
+        );
+        assert_eq!(
+            task_target_path("save/dir", "."),
+            None,
+            "CurDir must be rejected"
+        );
+        assert_eq!(
+            task_target_path("save/dir", ".."),
+            None,
+            "ParentDir must be rejected"
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            task_target_path("save/dir", "/etc/passwd"),
+            None,
+            "absolute path must be rejected"
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            task_target_path("C:\\save\\dir", "C:\\Windows\\System32"),
+            None,
+            "absolute path must be rejected"
+        );
+    }
+
+    /// 正常文件名必须解析为 `save_dir` 下的直接子路径。
+    #[test]
+    fn task_target_path_joins_safe_name_onto_save_dir() {
+        assert_eq!(
+            task_target_path("save/dir", "movie.mp4"),
+            Some(PathBuf::from("save/dir").join("movie.mp4"))
+        );
+    }
+
+    /// 文件跟踪测试专用的唯一临时目录（防并行测试互相干扰，测后自行清理）。
+    fn unique_filetrack_test_dir(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "fluxdown_filetrack_test_{tag}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ))
+    }
+
+    #[tokio::test]
+    async fn probe_missing_reports_existing_file_as_present() {
+        let dir = unique_filetrack_test_dir("probe_file");
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        let file = dir.join("movie.mp4");
+        std::fs::write(&file, b"data").expect("write test file");
+
+        assert_eq!(probe_missing(&file).await, Some(false));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn probe_missing_reports_deleted_file_as_missing() {
+        let dir = unique_filetrack_test_dir("probe_deleted");
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        let file = dir.join("movie.mp4");
+        std::fs::write(&file, b"data").expect("write test file");
+        std::fs::remove_file(&file).expect("delete test file");
+
+        assert_eq!(probe_missing(&file).await, Some(true));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// BT 单顶层目录任务的目标路径是目录而非文件；目录存在也必须判定为
+    /// "未丢失"。
+    #[tokio::test]
+    async fn probe_missing_treats_existing_directory_as_present() {
+        let dir = unique_filetrack_test_dir("probe_dir");
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        let target = dir.join("Torrent Folder");
+        std::fs::create_dir_all(&target).expect("create target dir");
+
+        assert_eq!(probe_missing(&target).await, Some(false));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 文件跟踪 e2e 测试用的记录型 sink：原样收集每个 `emit` 的事件，供测试
+    /// 断言 `scan_missing_files` 触发的 `FileMissingChanged` 的内容与次数。
+    struct RecordingSink {
+        events: std::sync::Mutex<Vec<EngineEvent>>,
+    }
+
+    impl RecordingSink {
+        fn new() -> Self {
+            Self {
+                events: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn events(&self) -> Vec<EngineEvent> {
+            self.events.lock().expect("sink mutex poisoned").clone()
+        }
+    }
+
+    impl EventSink for RecordingSink {
+        fn emit(&self, event: EngineEvent) {
+            self.events.lock().expect("sink mutex poisoned").push(event);
+        }
+    }
+
+    /// 插入一个任务并把状态推进到 `status`：`Db::insert_task` 固定以
+    /// status=0 落库，文件跟踪测试需要 completed(3)/downloading(1) 等具体
+    /// 状态。
+    async fn insert_task_at_status(
+        db: &Db,
+        id: &str,
+        save_dir: &str,
+        file_name: &str,
+        status: i32,
+    ) {
+        db.insert_task(
+            id,
+            "http://example.com/file.bin",
+            file_name,
+            save_dir,
+            1,
+            0,
+            "",
+            "",
+            "",
+        )
+        .await
+        .expect("insert task");
+        if status != 0 {
+            db.update_task_status(id, status, "")
+                .await
+                .expect("advance task status");
+        }
+    }
+
+    /// FluxDown #11 核心契约：completed 任务的目标文件消失后 `file_missing`
+    /// 落库为 true 并定向上报 `FileMissingChanged`；文件移回后无棘轮地翻回
+    /// false 并再次上报（双向自愈）。文件仍存在时不落库变化、不发事件。
+    #[tokio::test]
+    async fn scan_missing_files_round_trip_self_heals_when_file_returns() {
+        let dir = unique_filetrack_test_dir("scan_roundtrip");
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        let file_name = "movie.mp4";
+        let file_path = dir.join(file_name);
+        std::fs::write(&file_path, b"data").expect("write test file");
+        let save_dir = dir.to_string_lossy().to_string();
+
+        let db = Db::connect("sqlite::memory:").await.expect("connect mem db");
+        insert_task_at_status(&db, "t-roundtrip", &save_dir, file_name, 3).await;
+
+        let sink = Arc::new(RecordingSink::new());
+
+        // (a) 文件仍在：不落库变化、不发事件。
+        scan_missing_files(db.clone(), sink.clone(), Arc::new(AtomicBool::new(false))).await;
+        let task = db
+            .load_task_by_id("t-roundtrip")
+            .await
+            .expect("load")
+            .expect("task present");
+        assert!(
+            !task.file_missing,
+            "file_missing must stay false while the file exists"
+        );
+        assert!(
+            sink.events().is_empty(),
+            "no-change scan must not emit FileMissingChanged"
+        );
+
+        // (b) 文件被删：翻为 true，发一次事件。
+        std::fs::remove_file(&file_path).expect("delete test file");
+        scan_missing_files(db.clone(), sink.clone(), Arc::new(AtomicBool::new(false))).await;
+        let task = db
+            .load_task_by_id("t-roundtrip")
+            .await
+            .expect("load")
+            .expect("task present");
+        assert!(
+            task.file_missing,
+            "file_missing must flip true once the file disappears"
+        );
+        let events = sink.events();
+        assert_eq!(
+            events.len(),
+            1,
+            "exactly one FileMissingChanged expected after deletion"
+        );
+        match &events[0] {
+            EngineEvent::FileMissingChanged(changes) => {
+                assert_eq!(changes.len(), 1);
+                assert_eq!(changes[0], ("t-roundtrip".to_string(), true));
+            }
+            other => panic!("expected FileMissingChanged(true), got {other:?}"),
+        }
+
+        // (c) 文件移回：翻回 false，再发一次事件（双向自愈，无棘轮）。
+        std::fs::write(&file_path, b"data").expect("recreate test file");
+        scan_missing_files(db.clone(), sink.clone(), Arc::new(AtomicBool::new(false))).await;
+        let task = db
+            .load_task_by_id("t-roundtrip")
+            .await
+            .expect("load")
+            .expect("task present");
+        assert!(
+            !task.file_missing,
+            "file_missing must self-heal back to false once the file returns"
+        );
+        let events = sink.events();
+        assert_eq!(
+            events.len(),
+            2,
+            "second FileMissingChanged expected after the file returns"
+        );
+        match &events[1] {
+            EngineEvent::FileMissingChanged(changes) => {
+                assert_eq!(changes.len(), 1);
+                assert_eq!(changes[0], ("t-roundtrip".to_string(), false));
+            }
+            other => panic!("expected FileMissingChanged(false), got {other:?}"),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// R7 回归：非 completed 任务（status=1，下载中）即便目标文件不存在也
+    /// 绝不能被文件跟踪标记——下载中的文件本就还没落地，误标会在 UI 上产生
+    /// 假的"文件已丢失"提示。
+    #[tokio::test]
+    async fn scan_missing_files_never_marks_downloading_task_with_missing_file() {
+        let dir = unique_filetrack_test_dir("scan_downloading");
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        let save_dir = dir.to_string_lossy().to_string();
+
+        let db = Db::connect("sqlite::memory:").await.expect("connect mem db");
+        insert_task_at_status(&db, "t-downloading", &save_dir, "movie.mp4", 1).await;
+
+        let sink = Arc::new(RecordingSink::new());
+        scan_missing_files(db.clone(), sink.clone(), Arc::new(AtomicBool::new(false))).await;
+
+        let task = db
+            .load_task_by_id("t-downloading")
+            .await
+            .expect("load")
+            .expect("task present");
+        assert!(
+            !task.file_missing,
+            "status != 3 tasks must never be scanned or marked missing"
+        );
+        assert!(sink.events().is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 同名竞态回归：一个 completed 任务与一个 active(downloading) 任务共享
+    /// 同一 `(save_dir, file_name)`（例如用户删除文件后用同名重新发起下
+    /// 载）。目标文件在磁盘上不存在时，completed 任务必须被跳过而不是被误
+    /// 标为丢失——它的"丢失"只是因为 active 任务尚未把文件写回原处。
+    #[tokio::test]
+    async fn scan_missing_files_skips_completed_task_when_active_task_shares_path() {
+        let dir = unique_filetrack_test_dir("scan_race");
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        let save_dir = dir.to_string_lossy().to_string();
+        let file_name = "movie.mp4"; // 磁盘上不存在
+
+        let db = Db::connect("sqlite::memory:").await.expect("connect mem db");
+        insert_task_at_status(&db, "t-completed-stale", &save_dir, file_name, 3).await;
+        insert_task_at_status(&db, "t-active-redownload", &save_dir, file_name, 1).await;
+
+        let sink = Arc::new(RecordingSink::new());
+        scan_missing_files(db.clone(), sink.clone(), Arc::new(AtomicBool::new(false))).await;
+
+        let completed = db
+            .load_task_by_id("t-completed-stale")
+            .await
+            .expect("load")
+            .expect("task present");
+        assert!(
+            !completed.file_missing,
+            "completed task sharing a target path with an active task must be skipped"
+        );
+        assert!(sink.events().is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

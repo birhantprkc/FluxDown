@@ -25,7 +25,7 @@ use crate::signals::{
     DeleteQueue, DetectSystemProxy, DownloadUpdate, Ed2kServerSubscriptionResult,
     ExternalDownloadRequest, FileAssociationStatus, InstallUpdate, MoveTaskToQueue,
     OpenFile, ProbeTorrentMeta, ProxyTestResult, RequestAllQueues, RequestAllTasks, RequestConfig,
-    RequestUpdateFailureMarker, RevealFile, SaveConfig, SelectBtFiles, SelectHlsQuality,
+    RequestUpdateFailureMarker, RescanFiles, RevealFile, SaveConfig, SelectBtFiles, SelectHlsQuality,
     SetFileAssociation, SetPriorityTask, SetUrlProtocol, SystemProxyInfo, TestProxyConnection,
     TrackerSubscriptionResult, UpdateCheckResult, UpdateEd2kServerSubscription,
     UpdateFailureMarker, UpdateQueue, UpdateTrackerSubscription, UrlProtocolStatus,
@@ -424,6 +424,7 @@ pub async fn run(db_dir: PathBuf) {
     let reveal_file_recv = RevealFile::get_dart_signal_receiver();
     let open_file_recv = OpenFile::get_dart_signal_receiver();
     let update_tracker_sub_recv = UpdateTrackerSubscription::get_dart_signal_receiver();
+    let rescan_recv = RescanFiles::get_dart_signal_receiver();
 
     // Tracker 订阅刷新通道：后台 fetch 任务完成后把结果送回 actor 循环，
     // 由循环更新 BtConfig、失效 BT 会话并通知 Dart。
@@ -643,6 +644,10 @@ pub async fn run(db_dir: PathBuf) {
                 engine.manager.load_and_send_all_tasks().await;
                 // Also send queue list so Dart sidebar can show named queues.
                 engine.manager.send_all_queues().await;
+            }
+            Some(_) = rescan_recv.recv() => {
+                // 文件跟踪：桌面窗口聚焦 / 移动端回前台 → 重扫已完成任务文件是否仍在。
+                engine.manager.spawn_file_scan();
             }
             Some(signal) = config_save_recv.recv() => {
                 let msg = signal.message;

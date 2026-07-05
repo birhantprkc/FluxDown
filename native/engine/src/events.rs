@@ -84,6 +84,11 @@ pub enum EngineEvent {
         /// 拆分后的当前分段总数。
         total_segments: i32,
     },
+
+    /// 文件跟踪：一批已完成任务的「文件已丢失」标志发生变化（true=丢失，
+    /// false=恢复存在）。仅携带发生变化的任务 `(task_id, missing)`，避免重发
+    /// 整表快照导致活跃下载 UI 闪烁。对应 `hub::signals::FileMissingChanged`。
+    FileMissingChanged(Vec<(String, bool)>),
 }
 
 /// 引擎事件的接收端,由宿主实现并注入 [`crate::Engine`]。

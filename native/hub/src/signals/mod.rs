@@ -255,7 +255,30 @@ pub struct TaskInfo {
     /// Checksum spec for integrity verification (empty = skip).
     #[serde(default)]
     pub checksum: String,
+    /// 文件跟踪：completed 任务的目标文件是否已丢失（被删除/移动）。默认 false。
+    #[serde(default)]
+    pub file_missing: bool,
 }
+
+/// 文件跟踪：一批已完成任务的「文件已丢失」标志变化（Rust → Dart）。
+/// 只携带发生变化的任务，Dart 侧按 task_id 定向更新，避免整表重建导致活跃
+/// 下载 UI 闪烁。
+#[derive(Serialize, RustSignal)]
+pub struct FileMissingChanged {
+    pub updates: Vec<FileMissingUpdate>,
+}
+
+/// 文件跟踪：单个任务的「文件已丢失」标志更新（true=丢失，false=恢复存在）。
+#[derive(Serialize, Deserialize, SignalPiece)]
+pub struct FileMissingUpdate {
+    pub task_id: String,
+    pub missing: bool,
+}
+
+/// 文件跟踪：请求引擎重扫所有已完成任务的文件是否仍在（Dart → Rust）。
+/// 桌面窗口聚焦 / 移动端回前台时发送，触发一次即时扫描。
+#[derive(Deserialize, DartSignal)]
+pub struct RescanFiles {}
 
 /// Notification that a dynamic segment split occurred (IDM-style coordinator).
 /// Sent in real-time so the Dart UI can animate the split transition.

@@ -99,6 +99,7 @@ class DownloadController extends ChangeNotifier {
   StreamSubscription<RustSignalPack<QueuePositionsUpdate>>? _queuePosSub;
   StreamSubscription<RustSignalPack<AllQueues>>? _allQueuesSub;
   StreamSubscription<RustSignalPack<PriorityTaskChanged>>? _prioritySub;
+  StreamSubscription<RustSignalPack<FileMissingChanged>>? _fileMissingSub;
 
   bool _disposed = false;
 
@@ -124,6 +125,7 @@ class DownloadController extends ChangeNotifier {
     _queuePosSub?.cancel();
     _allQueuesSub?.cancel();
     _prioritySub?.cancel();
+    _fileMissingSub?.cancel();
     super.dispose();
     logInfo(_tag, 'dispose done');
   }
@@ -985,6 +987,9 @@ class DownloadController extends ChangeNotifier {
     _prioritySub = PriorityTaskChanged.rustSignalStream.listen(
       _onPriorityTaskChanged,
     );
+    _fileMissingSub = FileMissingChanged.rustSignalStream.listen(
+      _onFileMissingChanged,
+    );
   }
 
   void _onAllTasks(RustSignalPack<AllTasks> pack) {
@@ -1025,6 +1030,23 @@ class DownloadController extends ChangeNotifier {
       _tasks.add(task);
     }
     _safeNotifyListeners();
+  }
+
+  /// 文件跟踪：引擎扫描后定向更新受影响任务的 fileMissing 标志。只 copyWith
+  /// 单个字段、不重建整表，避免活跃下载 UI 闪烁。沿用 _deletedTaskIds 守卫
+  /// 防止对已删除任务的残余更新。
+  void _onFileMissingChanged(RustSignalPack<FileMissingChanged> pack) {
+    if (_disposed) return;
+    var changed = false;
+    for (final u in pack.message.updates) {
+      if (_deletedTaskIds.contains(u.taskId)) continue;
+      final idx = _tasks.indexWhere((t) => t.id == u.taskId);
+      if (idx >= 0 && _tasks[idx].fileMissing != u.missing) {
+        _tasks[idx] = _tasks[idx].copyWith(fileMissing: u.missing);
+        changed = true;
+      }
+    }
+    if (changed) _safeNotifyListeners();
   }
 
   void _onProgress(RustSignalPack<TaskProgress> pack) {

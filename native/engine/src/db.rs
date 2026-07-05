@@ -65,7 +65,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     bt_selected_files TEXT NOT NULL DEFAULT '',
     bt_custom_name TEXT NOT NULL DEFAULT '',
     orig_etag TEXT NOT NULL DEFAULT '',
-    orig_last_modified TEXT NOT NULL DEFAULT ''
+    orig_last_modified TEXT NOT NULL DEFAULT '',
+    file_missing INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS task_segments (
     task_id TEXT NOT NULL,
@@ -136,7 +137,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     bt_selected_files TEXT NOT NULL DEFAULT '',
     bt_custom_name TEXT NOT NULL DEFAULT '',
     orig_etag TEXT NOT NULL DEFAULT '',
-    orig_last_modified TEXT NOT NULL DEFAULT ''
+    orig_last_modified TEXT NOT NULL DEFAULT '',
+    file_missing INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS task_segments (
     task_id TEXT NOT NULL,
@@ -203,8 +205,9 @@ pub struct Db {
 
 /// 把 `AnyRow` 手动映射为 [`TaskInfo`]（列名 `id`→字段 `task_id`）。
 ///
-/// 迁移新增列（`proxy_url`/`queue_id`/`checksum`）用 `unwrap_or_default`
-/// 容忍尚未迁移的旧库快照。
+/// 迁移新增列（`proxy_url`/`queue_id`/`checksum`/`file_missing`）用防御性
+/// `unwrap_or_default`/`unwrap_or`，与既有字段风格一致；运行路径下这些列已由
+/// `add_column_if_missing` 补齐。
 fn task_from_row(row: &AnyRow) -> Result<TaskInfo, sqlx::Error> {
     Ok(TaskInfo {
         task_id: row.try_get("id")?,
@@ -219,10 +222,11 @@ fn task_from_row(row: &AnyRow) -> Result<TaskInfo, sqlx::Error> {
         proxy_url: row.try_get("proxy_url").unwrap_or_default(),
         queue_id: row.try_get("queue_id").unwrap_or_default(),
         checksum: row.try_get("checksum").unwrap_or_default(),
+        file_missing: row.try_get::<i32, _>("file_missing").unwrap_or(0) != 0,
     })
 }
 
-const TASK_COLUMNS: &str = "id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at, proxy_url, queue_id, checksum";
+const TASK_COLUMNS: &str = "id, url, file_name, save_dir, status, downloaded_bytes, total_bytes, error_message, created_at, proxy_url, queue_id, checksum, file_missing";
 
 impl Db {
     /// 在 `dir` 目录下打开（不存在则创建）SQLite 数据库 `flux_down.db`。
@@ -298,6 +302,8 @@ impl Db {
         self.add_column_if_missing("tasks", "orig_etag", "TEXT NOT NULL DEFAULT ''")
             .await?;
         self.add_column_if_missing("tasks", "orig_last_modified", "TEXT NOT NULL DEFAULT ''")
+            .await?;
+        self.add_column_if_missing("tasks", "file_missing", "INTEGER NOT NULL DEFAULT 0")
             .await?;
         Ok(())
     }
@@ -429,6 +435,32 @@ impl Db {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    /// 更新任务的「文件已丢失」标志（文件跟踪）。仅当任务仍处于 completed
+    /// (`status = 3`) 时生效——文件扫描的「读快照 → 异步 stat → 写回」三阶段间，
+    /// 任务可能已被删除或状态变化，`WHERE id AND status = 3` 让这类竞态退化为
+    /// 良性空操作，绝不复活已删除的行。返回是否真的更新了行
+    /// (`rows_affected > 0`)，供调用方仅对实际变更下发事件。
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn run() -> Result<(), fluxdown_engine::db::DbError> {
+    /// use fluxdown_engine::db::Db;
+    /// let db = Db::connect("sqlite::memory:").await?;
+    /// let changed = db.update_task_file_missing("task-1", true).await?;
+    /// assert!(!changed); // 无此任务 → 未更新
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn update_task_file_missing(&self, id: &str, missing: bool) -> Result<bool, DbError> {
+        let result = sqlx::query("UPDATE tasks SET file_missing = $1 WHERE id = $2 AND status = 3")
+            .bind(missing as i32)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
     }
 
     pub async fn update_task_file_info(
@@ -2247,5 +2279,122 @@ mod tests {
 
         db.delete_task(&id).await.expect("clean");
         db.delete_config("pg_smoke_key").await.expect("clean cfg");
+    }
+
+    // -----------------------------------------------------------------------
+    // 文件跟踪（FluxDown #11）：update_task_file_missing / file_missing 读回一致性
+    // -----------------------------------------------------------------------
+
+    /// 对 completed(status=3) 任务落库 file_missing=true 必须成功（返回
+    /// true）且能读回。
+    #[tokio::test]
+    async fn update_task_file_missing_marks_completed_task() {
+        let db = Db::connect("sqlite::memory:").await.expect("connect mem db");
+        insert_task(&db, "t1").await;
+        db.update_task_status("t1", 3, "")
+            .await
+            .expect("mark completed");
+
+        let changed = db
+            .update_task_file_missing("t1", true)
+            .await
+            .expect("update file_missing");
+        assert!(
+            changed,
+            "update on a completed task must report a changed row"
+        );
+
+        let task = db
+            .load_task_by_id("t1")
+            .await
+            .expect("load")
+            .expect("task present");
+        assert!(
+            task.file_missing,
+            "file_missing must read back true after update"
+        );
+    }
+
+    /// 对非 completed 任务（status=1，下载中）更新必须是空操作：WHERE 子句
+    /// 的 `AND status = 3` 保护带竞态窗口的调用方，绝不误改活跃任务的标志。
+    #[tokio::test]
+    async fn update_task_file_missing_noop_for_non_completed_task() {
+        let db = Db::connect("sqlite::memory:").await.expect("connect mem db");
+        insert_task(&db, "t1").await;
+        db.update_task_status("t1", 1, "")
+            .await
+            .expect("mark downloading");
+
+        let changed = db
+            .update_task_file_missing("t1", true)
+            .await
+            .expect("update attempt");
+        assert!(!changed, "update must be a no-op for tasks not in status=3");
+
+        let task = db
+            .load_task_by_id("t1")
+            .await
+            .expect("load")
+            .expect("task present");
+        assert!(
+            !task.file_missing,
+            "file_missing must remain unchanged for a non-completed task"
+        );
+    }
+
+    /// 不存在的任务 id：更新必须是空操作而不是报错。
+    #[tokio::test]
+    async fn update_task_file_missing_noop_for_unknown_task_id() {
+        let db = Db::connect("sqlite::memory:").await.expect("connect mem db");
+
+        let changed = db
+            .update_task_file_missing("no-such-task", true)
+            .await
+            .expect("update attempt");
+        assert!(!changed, "update on a nonexistent id must report no change");
+    }
+
+    /// `load_all_tasks` 与 `load_task_by_id` 共用 `task_from_row` 映射
+    /// `file_missing` 列；两条读路径在更新前后必须始终一致，防止迁移新增列
+    /// 的防御性映射（`unwrap_or_default`）在某一条路径上失配。
+    #[tokio::test]
+    async fn load_all_and_load_by_id_agree_on_file_missing_across_states() {
+        let db = Db::connect("sqlite::memory:").await.expect("connect mem db");
+        insert_task(&db, "t1").await;
+        db.update_task_status("t1", 3, "")
+            .await
+            .expect("mark completed");
+
+        let by_id = db
+            .load_task_by_id("t1")
+            .await
+            .expect("load by id")
+            .expect("task present");
+        let all = db.load_all_tasks().await.expect("load all");
+        let by_all = all
+            .iter()
+            .find(|t| t.task_id == "t1")
+            .expect("task present in load_all");
+        assert_eq!(
+            by_id.file_missing, by_all.file_missing,
+            "both load paths must agree before any scan has run"
+        );
+
+        db.update_task_file_missing("t1", true)
+            .await
+            .expect("mark missing");
+
+        let by_id = db
+            .load_task_by_id("t1")
+            .await
+            .expect("load by id")
+            .expect("task present");
+        let all = db.load_all_tasks().await.expect("load all");
+        let by_all = all
+            .iter()
+            .find(|t| t.task_id == "t1")
+            .expect("task present in load_all");
+        assert!(by_id.file_missing, "load_task_by_id must reflect the update");
+        assert!(by_all.file_missing, "load_all_tasks must reflect the same update");
     }
 }
