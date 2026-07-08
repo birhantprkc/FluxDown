@@ -147,6 +147,8 @@ export type TokenGroupKey =
   | "alpha"
   | "mobile";
 
+export type PreviewArea = "downloads" | "settings";
+
 export interface TokenDescriptor {
   path: string;
   label: string;
@@ -158,6 +160,39 @@ export interface TokenDescriptor {
   min?: number;
   max?: number;
   step?: number;
+}
+
+/** 该 token 在预览里被承载的主视图（供「区域徽标」与「聚焦自动切换预览视图」用）。
+ * 与实际客户端页面对应：downloads = 主下载窗口；settings = 设置页。
+ * 多处出现的 token 取最能体现其效果的主视图。 */
+const SETTINGS_METRIC_PATHS = new Set<string>([
+  "metrics.radius.progress",
+  "metrics.radius.xs",
+  "metrics.radius.sm",
+  "metrics.radius.chipLg",
+  "metrics.radius.chipXl",
+  "metrics.radius.pill",
+  "metrics.radius.dialog",
+  "metrics.stroke.thin",
+  "metrics.stroke.thick",
+  "metrics.spacing.xs",
+  "metrics.spacing.sm",
+  "metrics.spacing.md",
+  "metrics.spacing.lg",
+  "metrics.spacing.xl",
+  "metrics.button.heightSm",
+  "metrics.button.heightMd",
+  "metrics.button.heightLg",
+]);
+
+export function tokenArea(path: string): PreviewArea {
+  if (SETTINGS_METRIC_PATHS.has(path)) return "settings";
+  if (path.startsWith("metrics.alpha.")) {
+    return path === "metrics.alpha.shadowStrong" ? "downloads" : "settings";
+  }
+  if (path.startsWith("colors.switch.")) return "settings";
+  if (path.startsWith("colors.dialog.")) return "settings";
+  return "downloads";
 }
 
 const DEFAULT_SEGMENT_PALETTE = [
@@ -320,12 +355,10 @@ export const METRIC_TOKEN_DESCRIPTORS: ReadonlyArray<TokenDescriptor> = [
   { path: "metrics.radius.card", label: "Card", groupKey: "radius", kind: "number", unit: "px", min: 0, max: 2000, step: 0.5 },
   { path: "metrics.radius.iconTile", label: "Icon Tile", groupKey: "radius", kind: "number", unit: "px", min: 0, max: 2000, step: 0.5 },
   { path: "metrics.radius.dialog", label: "Dialog", groupKey: "radius", kind: "number", unit: "px", min: 0, max: 2000, step: 0.5 },
-  { path: "metrics.radius.fieldMobile", label: "Mobile Field", groupKey: "radius", kind: "number", unit: "px", min: 0, max: 2000, step: 0.5 },
   { path: "metrics.radius.chipLg", label: "Chip Large", groupKey: "radius", kind: "number", unit: "px", min: 0, max: 2000, step: 0.5 },
   { path: "metrics.radius.chipXl", label: "Chip Extra Large", groupKey: "radius", kind: "number", unit: "px", min: 0, max: 2000, step: 0.5 },
   { path: "metrics.radius.badge", label: "Badge", groupKey: "radius", kind: "number", unit: "px", min: 0, max: 2000, step: 0.5 },
   { path: "metrics.radius.pill", label: "Pill", groupKey: "radius", kind: "number", unit: "px", min: 0, max: 2000, step: 1 },
-  { path: "metrics.radius.sheet", label: "Sheet Top", groupKey: "radius", kind: "number", unit: "px", min: 0, max: 2000, step: 0.5 },
 
   { path: "metrics.stroke.thin", label: "Thin", groupKey: "stroke", kind: "number", unit: "px", min: 0, max: 8, step: 0.5 },
   { path: "metrics.stroke.thick", label: "Thick", groupKey: "stroke", kind: "number", unit: "px", min: 0, max: 8, step: 0.5 },

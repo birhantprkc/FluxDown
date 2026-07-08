@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, MouseEvent as ReactMouseEvent } from "react";
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import {
+  Check,
   Copy,
   Download,
+  Globe,
   Minus,
+  Monitor,
   Moon,
+  Palette,
   Pause,
   Play,
   Plus,
@@ -31,6 +35,7 @@ import {
   exportFluxThemeJson,
   getPathValue,
   getTokenDescriptors,
+  tokenArea,
   normalizeHex8,
   parseFluxThemeJson,
   setPathValue,
@@ -634,9 +639,17 @@ export default function ThemeBuilderPage() {
             </button>
           </div>
         )}
+        <div className="flex flex-col items-center justify-center gap-4 rounded-2xl border border-dark-border/60 bg-dark-surface1/60 px-6 py-16 text-center backdrop-blur-sm lg:hidden">
+          <div className="flex h-14 w-14 items-center justify-center rounded-full border border-brand-blue/30 bg-brand-blue/10">
+            <Monitor className="h-7 w-7 text-brand-blue" />
+          </div>
+          <h2 className="text-lg font-semibold text-dark-text">{t("tb.mobileTitle")}</h2>
+          <p className="max-w-xs text-sm leading-relaxed text-dark-text-muted">{t("tb.mobileHint")}</p>
+        </div>
+
 
         <div
-          className="grid gap-4 lg:grid-cols-[380px_minmax(0,1fr)]"
+          className="hidden gap-4 lg:grid lg:grid-cols-[380px_minmax(0,1fr)]"
           onContextMenu={openInspector}
           {...tokenAttrs("colors.surface.background")}
         >
@@ -753,7 +766,14 @@ export default function ThemeBuilderPage() {
 
             <input ref={fileInputRef} type="file" accept=".json,application/json" className="hidden" onChange={handleImport} />
 
-            <div className="tb-scrollbar min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1">
+            <div
+              className="tb-scrollbar min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1"
+              onFocusCapture={(event) => {
+                const row = (event.target as HTMLElement)?.closest<HTMLElement>("[data-token-row-path]");
+                const path = row?.dataset.tokenRowPath;
+                if (path) setFocusedPath(path);
+              }}
+            >
               {descriptorsByGroup.map(({ group, tokens }) => (
                 <details key={group.key} open className="rounded-lg border border-dark-border/70 bg-dark-surface2/40">
                   <summary className="cursor-pointer list-none px-2.5 py-1.5 text-xs font-semibold text-dark-text">
@@ -796,7 +816,7 @@ export default function ThemeBuilderPage() {
             </div>
           </div>
 
-          <PreviewPanel theme={theme} t={t} onToggleAppearance={toggleAppearance} />
+          <PreviewPanel theme={theme} t={t} onToggleAppearance={toggleAppearance} focusedPath={focusedPath} />
         </div>
       </div>
 
@@ -849,6 +869,21 @@ export default function ThemeBuilderPage() {
   );
 }
 
+/** token 所属预览区域徽标：让用户一眼看出该 token 影响哪个页面/区域。 */
+function AreaBadge({ path }: { path: string }) {
+  const { t } = useLocale();
+  const area = tokenArea(path);
+  const label = area === "settings" ? t("tb.area.settings") : t("tb.area.downloads");
+  const cls = area === "settings"
+    ? "border-brand-cyan/30 bg-brand-cyan/10 text-brand-cyan"
+    : "border-brand-blue/30 bg-brand-blue/10 text-brand-blue";
+  return (
+    <span className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[8px] font-semibold leading-none ${cls}`} title={t("tb.areaHint")}>
+      {label}
+    </span>
+  );
+}
+
 function TokenRow({
   token,
   value,
@@ -879,7 +914,10 @@ function TokenRow({
       {...tokenAttrs(token.path)}
     >
       <div className="min-w-0">
-        <div className="truncate text-[11px] font-medium text-dark-text">{token.label}</div>
+        <div className="flex items-center gap-1">
+          <span className="truncate text-[11px] font-medium text-dark-text">{token.label}</span>
+          <AreaBadge path={token.path} />
+        </div>
         <code className="block truncate text-[9px] leading-tight text-dark-text-muted">{token.path}</code>
       </div>
 
@@ -950,7 +988,10 @@ function NumberTokenRow({
       {...tokenAttrs(token.path)}
     >
       <div className="min-w-0">
-        <div className="truncate text-[11px] font-medium text-dark-text">{token.label}</div>
+        <div className="flex items-center gap-1">
+          <span className="truncate text-[11px] font-medium text-dark-text">{token.label}</span>
+          <AreaBadge path={token.path} />
+        </div>
         <code className="block truncate text-[9px] leading-tight text-dark-text-muted">{token.path}</code>
       </div>
 
@@ -980,20 +1021,433 @@ function NumberTokenRow({
   );
 }
 
+/** 基色路径 + alpha 路径 → CSS rgba()，供设置视图各元素的 alpha 派生。 */
+function alphaOf(theme: FluxThemeJson, colorPath: string, alphaPath: string): string {
+  return rgbaWithAlpha(hexFromTheme(theme, colorPath), numberFromTheme(theme, alphaPath));
+}
+
+/** 设置视图卡片：对应真实客户端 `_SettingCard`（brDialog 圆角 + borderMedium 边框 + spacing 内距）。 */
+function SettingsCard({
+  theme,
+  title,
+  description,
+  children,
+}: {
+  theme: FluxThemeJson;
+  title: string;
+  description?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      style={{
+        backgroundColor: rgbaFromTheme(theme, "colors.surface.surface1"),
+        borderRadius: numberFromTheme(theme, "metrics.radius.dialog"),
+        border: `${numberFromTheme(theme, "metrics.stroke.thin")}px solid ${alphaOf(theme, "colors.border.default", "metrics.alpha.borderMedium")}`,
+        paddingLeft: numberFromTheme(theme, "metrics.spacing.lg"),
+        paddingRight: numberFromTheme(theme, "metrics.spacing.lg"),
+        paddingTop: numberFromTheme(theme, "metrics.spacing.md"),
+        paddingBottom: numberFromTheme(theme, "metrics.spacing.md"),
+      }}
+      {...tokenAttrs(
+        "colors.surface.surface1",
+        "colors.border.default",
+        "metrics.radius.dialog",
+        "metrics.stroke.thin",
+        "metrics.alpha.borderMedium",
+        "metrics.spacing.lg",
+        "metrics.spacing.md",
+      )}
+    >
+      <div
+        className="text-[12px] font-semibold"
+        style={{ color: rgbaFromTheme(theme, "colors.text.primary") }}
+        {...tokenAttrs("colors.text.primary")}
+      >
+        {title}
+      </div>
+      {description && (
+        <div className="mt-0.5 text-[10px]" style={{ color: rgbaFromTheme(theme, "colors.text.muted") }} {...tokenAttrs("colors.text.muted")}>
+          {description}
+        </div>
+      )}
+      <div style={{ marginTop: numberFromTheme(theme, "metrics.spacing.sm") }} {...tokenAttrs("metrics.spacing.sm")}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+const SETTINGS_NAV: Array<{ key: string; labelKey: keyof Messages; icon: typeof Settings }> = [
+  { key: "general", labelKey: "mockup.settingsGeneral", icon: Settings },
+  { key: "appearance", labelKey: "mockup.settingsAppearance", icon: Palette },
+  { key: "download", labelKey: "mockup.settingsDownload", icon: Download },
+  { key: "language", labelKey: "mockup.settingsLanguage", icon: Globe },
+];
+
+/** 设置页预览：镜像真实客户端设置页（导航侧栏 + 外观内容区），承载主窗口未出现的孤立 token。 */
+function SettingsPreview({
+  theme,
+  t,
+  onBack,
+}: {
+  theme: FluxThemeJson;
+  t: (key: keyof Messages, params?: Record<string, string>) => string;
+  onBack: () => void;
+}) {
+  const accent = rgbaFromTheme(theme, "colors.accent.color");
+  const accentFg = rgbaFromTheme(theme, "colors.accent.foreground");
+  const textPrimary = rgbaFromTheme(theme, "colors.text.primary");
+  const textSecondary = rgbaFromTheme(theme, "colors.text.secondary");
+  const textMuted = rgbaFromTheme(theme, "colors.text.muted");
+  const border = rgbaFromTheme(theme, "colors.border.default");
+
+  return (
+    <div className="flex min-h-0 flex-1">
+      {/* 设置导航侧栏 */}
+      <aside
+        className="hidden w-[150px] flex-col border-r md:flex"
+        style={{ borderColor: border, backgroundColor: rgbaFromTheme(theme, "colors.surface.surface1") }}
+        {...tokenAttrs("colors.surface.surface1", "colors.border.default")}
+      >
+        <button
+          type="button"
+          onClick={onBack}
+          className="m-2 inline-flex items-center gap-1.5 self-start px-2 py-1 text-[11px] font-medium"
+          style={{
+            color: textSecondary,
+            borderRadius: numberFromTheme(theme, "metrics.radius.md"),
+            backgroundColor: alphaOf(theme, "colors.accent.color", "metrics.alpha.soft"),
+          }}
+          {...tokenAttrs("colors.text.secondary", "colors.accent.color", "metrics.radius.md", "metrics.alpha.soft")}
+        >
+          <X className="h-3 w-3" />
+          {t("mockup.settingsBack")}
+        </button>
+        <div className="mt-1 space-y-0.5 px-2">
+          {SETTINGS_NAV.map((item, index) => {
+            const active = index === 1;
+            const Icon = item.icon;
+            return (
+              <div
+                key={item.key}
+                className="flex h-8 items-center gap-2 px-2 text-[11px]"
+                style={{
+                  color: active ? accent : textSecondary,
+                  backgroundColor: active ? rgbaFromTheme(theme, "colors.element.selected") : "transparent",
+                  borderRadius: numberFromTheme(theme, "metrics.radius.md"),
+                }}
+                {...tokenAttrs("colors.element.selected", "colors.accent.color", "colors.text.secondary", "metrics.radius.md")}
+              >
+                <Icon className="h-3.5 w-3.5" />
+                {t(item.labelKey)}
+              </div>
+            );
+          })}
+        </div>
+      </aside>
+
+      {/* 外观内容区 */}
+      <div
+        className="tb-scrollbar min-h-0 flex-1 overflow-y-auto"
+        style={{ backgroundColor: rgbaFromTheme(theme, "colors.surface.background"), ...themedScrollbarVars(theme) }}
+        {...tokenAttrs("colors.surface.background")}
+      >
+        <div
+          className="flex flex-col"
+          style={{ gap: numberFromTheme(theme, "metrics.spacing.xl"), padding: numberFromTheme(theme, "metrics.spacing.lg") }}
+          {...tokenAttrs("metrics.spacing.xl", "metrics.spacing.lg")}
+        >
+          {/* 主题选择：迷你主题预览卡片（承载 xs/sm/progress + 多数 alpha） */}
+          <SettingsCard theme={theme} title={t("mockup.settingsThemeSelect")} description={t("mockup.settingsThemeSelectHint")}>
+            <div className="flex" style={{ gap: numberFromTheme(theme, "metrics.spacing.sm") }} {...tokenAttrs("metrics.spacing.sm")}>
+              {[0, 1, 2].map((i) => {
+                const selected = i === 1;
+                return (
+                  <div
+                    key={i}
+                    className="w-[110px] p-2"
+                    style={{
+                      backgroundColor: rgbaFromTheme(theme, "colors.surface.surface1"),
+                      borderRadius: numberFromTheme(theme, "metrics.radius.dialog"),
+                      border: `${selected ? numberFromTheme(theme, "metrics.stroke.thick") : numberFromTheme(theme, "metrics.stroke.thin")}px solid ${selected ? accent : alphaOf(theme, "colors.border.default", "metrics.alpha.borderMedium")}`,
+                      boxShadow: selected ? `0 4px 12px ${alphaOf(theme, "colors.shadow", "metrics.alpha.shadowSoft")}` : `0 1px 3px ${alphaOf(theme, "colors.shadow", "metrics.alpha.shadowFaint")}`,
+                    }}
+                    {...tokenAttrs("metrics.radius.dialog", "metrics.stroke.thick", "metrics.stroke.thin", "metrics.alpha.borderMedium", "metrics.alpha.shadowSoft", "metrics.alpha.shadowFaint")}
+                  >
+                    {/* 迷你窗口预览 */}
+                    <div
+                      className="flex h-[52px] overflow-hidden"
+                      style={{
+                        backgroundColor: rgbaFromTheme(theme, "colors.surface.background"),
+                        borderRadius: numberFromTheme(theme, "metrics.radius.md"),
+                        border: `${numberFromTheme(theme, "metrics.stroke.thin")}px solid ${alphaOf(theme, "colors.border.default", "metrics.alpha.borderFaint")}`,
+                      }}
+                      {...tokenAttrs("metrics.radius.md", "metrics.alpha.borderFaint")}
+                    >
+                      <div className="flex w-7 flex-col justify-center gap-1 px-1" style={{ backgroundColor: rgbaFromTheme(theme, "colors.surface.surface1") }}>
+                        <div className="h-[3px] w-4" style={{ backgroundColor: accent, borderRadius: numberFromTheme(theme, "metrics.radius.progress") }} {...tokenAttrs("metrics.radius.progress")} />
+                        <div className="h-[3px] w-4" style={{ backgroundColor: alphaOf(theme, "colors.text.muted", "metrics.alpha.borderSubtle"), borderRadius: numberFromTheme(theme, "metrics.radius.progress") }} {...tokenAttrs("metrics.alpha.borderSubtle")} />
+                        <div className="h-[3px] w-4" style={{ backgroundColor: alphaOf(theme, "colors.text.muted", "metrics.alpha.borderSubtle"), borderRadius: numberFromTheme(theme, "metrics.radius.progress") }} />
+                      </div>
+                      <div className="flex flex-1 flex-col justify-center gap-1 px-1">
+                        <div className="h-[3px] w-full" style={{ backgroundColor: alphaOf(theme, "colors.text.primary", "metrics.alpha.borderFaint"), borderRadius: numberFromTheme(theme, "metrics.radius.progress") }} />
+                        <div className="h-[3px] w-3/4" style={{ backgroundColor: alphaOf(theme, "colors.text.muted", "metrics.alpha.faint"), borderRadius: numberFromTheme(theme, "metrics.radius.progress") }} {...tokenAttrs("metrics.alpha.faint")} />
+                        <div className="h-[5px] w-full" style={{ backgroundColor: rgbaFromTheme(theme, "colors.surface.surface3"), borderRadius: numberFromTheme(theme, "metrics.radius.xs") }} {...tokenAttrs("colors.surface.surface3", "metrics.radius.xs")}>
+                          <div className="h-full w-1/2" style={{ backgroundColor: accent, borderRadius: numberFromTheme(theme, "metrics.radius.xs") }} />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-1.5 flex items-center justify-between">
+                      <span className="text-[10px]" style={{ color: selected ? accent : textSecondary }}>{t("mockup.settingsThemeName", { n: String(i + 1) })}</span>
+                      {selected && <Check className="h-3 w-3" style={{ color: accent }} />}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </SettingsCard>
+
+          {/* 主题色：颜色圆点（承载 pill 圆角 + selectedBorder/borderMedium/shadowStrong alpha） */}
+          <SettingsCard theme={theme} title={t("mockup.settingsColorScheme")}>
+            <div className="flex flex-wrap items-center" style={{ gap: numberFromTheme(theme, "metrics.spacing.sm") }} {...tokenAttrs("metrics.spacing.sm")}>
+              {theme.colors.segmentPalette.slice(0, 16).map((c, i) => {
+                const selected = i === 0;
+                return (
+                  <div
+                    key={i}
+                    className="h-6 w-6"
+                    style={{
+                      backgroundColor: argbToCssRgba(c),
+                      borderRadius: numberFromTheme(theme, "metrics.radius.pill"),
+                      border: `${numberFromTheme(theme, "metrics.stroke.thick")}px solid ${selected ? alphaOf(theme, "colors.accent.color", "metrics.alpha.selectedBorder") : alphaOf(theme, "colors.border.default", "metrics.alpha.borderMedium")}`,
+                      boxShadow: selected ? `0 0 6px ${alphaOf(theme, "colors.shadow", "metrics.alpha.shadowStrong")}` : "none",
+                    }}
+                    {...tokenAttrs(`colors.segmentPalette.${i}`, "metrics.radius.pill", "metrics.stroke.thick", "metrics.alpha.selectedBorder", "metrics.alpha.borderMedium", "metrics.alpha.shadowStrong")}
+                  />
+                );
+              })}
+            </div>
+          </SettingsCard>
+
+          {/* 语言/主题模式/界面缩放：chip 段控（承载 chipLg/chipXl/sm 圆角 + active/subtle/soft alpha + spacing.xs） */}
+          <SettingsCard theme={theme} title={t("mockup.settingsLanguage")}>
+            <div className="flex" style={{ gap: numberFromTheme(theme, "metrics.spacing.xs") }} {...tokenAttrs("metrics.spacing.xs")}>
+              {["English", "简体中文"].map((lang, i) => {
+                const selected = i === 0;
+                return (
+                  <div
+                    key={lang}
+                    className="px-3 py-1 text-[11px]"
+                    style={{
+                      color: selected ? accent : textSecondary,
+                      backgroundColor: selected ? alphaOf(theme, "colors.accent.color", "metrics.alpha.active") : "transparent",
+                      borderRadius: numberFromTheme(theme, "metrics.radius.chipLg"),
+                      border: `${numberFromTheme(theme, "metrics.stroke.thin")}px solid ${selected ? alphaOf(theme, "colors.accent.color", "metrics.alpha.selectedBorder") : alphaOf(theme, "colors.border.default", "metrics.alpha.border")}`,
+                    }}
+                    {...tokenAttrs("metrics.radius.chipLg", "metrics.alpha.active", "metrics.alpha.selectedBorder", "metrics.alpha.border", "colors.accent.color")}
+                  >
+                    {lang}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="mt-2 flex" style={{ gap: numberFromTheme(theme, "metrics.spacing.xs") }}>
+              {["100%", "125%", "150%"].map((scale, i) => {
+                const selected = i === 0;
+                return (
+                  <div
+                    key={scale}
+                    className="px-2.5 py-1 text-[11px]"
+                    style={{
+                      color: selected ? accent : textSecondary,
+                      backgroundColor: selected ? alphaOf(theme, "colors.accent.color", "metrics.alpha.subtle") : rgbaFromTheme(theme, "colors.surface.surface1"),
+                      borderRadius: numberFromTheme(theme, "metrics.radius.chipXl"),
+                      border: `${numberFromTheme(theme, "metrics.stroke.thin")}px solid ${alphaOf(theme, "colors.border.default", "metrics.alpha.border")}`,
+                    }}
+                    {...tokenAttrs("metrics.radius.chipXl", "metrics.alpha.subtle")}
+                  >
+                    {scale}
+                  </div>
+                );
+              })}
+            </div>
+          </SettingsCard>
+
+          {/* 下载设置：输入框 + 分割线 + 按钮组（承载 input 圆角 + focusRing/textSelection/borderFaint/borderSubtle alpha + button 高度 + sm 圆角） */}
+          <SettingsCard theme={theme} title={t("mockup.settingsDownload")} description={t("mockup.settingsDownloadHint")}>
+            <input
+              readOnly
+              value="D:\\Downloads\\FluxDown"
+              className="w-full px-2.5 text-[11px] outline-none"
+              style={{
+                height: numberFromTheme(theme, "metrics.button.heightMd"),
+                color: textPrimary,
+                backgroundColor: rgbaFromTheme(theme, "colors.input.background"),
+                borderRadius: numberFromTheme(theme, "metrics.radius.input"),
+                border: `${numberFromTheme(theme, "metrics.stroke.thick")}px solid ${alphaOf(theme, "colors.input.focusBorder", "metrics.alpha.focusRing")}`,
+              }}
+              {...tokenAttrs("colors.input.background", "colors.input.focusBorder", "metrics.radius.input", "metrics.button.heightMd", "metrics.stroke.thick", "metrics.alpha.focusRing")}
+            />
+            <div className="mt-1.5 text-[10px]" style={{ color: textMuted }}>
+              <span style={{ backgroundColor: alphaOf(theme, "colors.accent.color", "metrics.alpha.textSelection"), color: textPrimary }} {...tokenAttrs("metrics.alpha.textSelection")}>
+                {t("mockup.settingsSelectionSample")}
+              </span>
+            </div>
+            <div
+              className="my-2"
+              style={{ height: numberFromTheme(theme, "metrics.stroke.thin"), backgroundColor: alphaOf(theme, "colors.border.default", "metrics.alpha.borderFaint") }}
+              {...tokenAttrs("metrics.stroke.thin", "metrics.alpha.borderFaint")}
+            />
+            <div className="flex items-center" style={{ gap: numberFromTheme(theme, "metrics.spacing.sm") }}>
+              <button
+                type="button"
+                className="px-2.5 text-[11px] font-medium"
+                style={{ height: numberFromTheme(theme, "metrics.button.heightSm"), color: textSecondary, backgroundColor: rgbaFromTheme(theme, "colors.surface.surface2"), borderRadius: numberFromTheme(theme, "metrics.radius.sm"), border: `${numberFromTheme(theme, "metrics.stroke.thin")}px solid ${alphaOf(theme, "colors.border.default", "metrics.alpha.borderSubtle")}` }}
+                {...tokenAttrs("metrics.button.heightSm", "metrics.radius.sm", "metrics.alpha.borderSubtle")}
+              >
+                {t("mockup.settingsBtnSmall")}
+              </button>
+              <button
+                type="button"
+                className="px-3 text-[11px] font-semibold"
+                style={{ height: numberFromTheme(theme, "metrics.button.heightMd"), color: accentFg, backgroundColor: accent, borderRadius: numberFromTheme(theme, "metrics.radius.md") }}
+                {...tokenAttrs("metrics.button.heightMd", "metrics.radius.md")}
+              >
+                {t("mockup.settingsBtnMedium")}
+              </button>
+              <button
+                type="button"
+                className="px-4 text-[11px] font-semibold"
+                style={{ height: numberFromTheme(theme, "metrics.button.heightLg"), color: accentFg, backgroundColor: accent, borderRadius: numberFromTheme(theme, "metrics.radius.md") }}
+                {...tokenAttrs("metrics.button.heightLg")}
+              >
+                {t("mockup.settingsBtnLarge")}
+              </button>
+            </div>
+          </SettingsCard>
+
+          {/* 代理/开关行：开关 + 玻璃面板 + 禁用态（承载 switch 颜色 + glass/glassSubtle/disabled/mutedStrong/muted/scrim/borderStrong/emphasis alpha + chipXl/pill 圆角） */}
+          <SettingsCard theme={theme} title={t("mockup.settingsMisc")}>
+            <div className="flex items-center justify-between">
+              <span className="text-[11px]" style={{ color: textSecondary }}>{t("mockup.settingsSwitchOn")}</span>
+              <div
+                className="flex h-4 w-7 items-center px-0.5"
+                style={{ backgroundColor: rgbaFromTheme(theme, "colors.accent.color"), borderRadius: numberFromTheme(theme, "metrics.radius.pill"), justifyContent: "flex-end" }}
+                {...tokenAttrs("colors.switch.track", "colors.switch.thumb", "metrics.radius.pill")}
+              >
+                <div className="h-3 w-3" style={{ backgroundColor: rgbaFromTheme(theme, "colors.switch.thumb"), borderRadius: numberFromTheme(theme, "metrics.radius.pill") }} />
+              </div>
+            </div>
+            <div className="mt-1.5 flex items-center justify-between">
+              <span className="text-[11px]" style={{ color: alphaOf(theme, "colors.text.primary", "metrics.alpha.disabled") }} {...tokenAttrs("metrics.alpha.disabled")}>{t("mockup.settingsSwitchOff")}</span>
+              <div
+                className="flex h-4 w-7 items-center px-0.5"
+                style={{ backgroundColor: rgbaFromTheme(theme, "colors.switch.track"), borderRadius: numberFromTheme(theme, "metrics.radius.pill") }}
+              >
+                <div className="h-3 w-3" style={{ backgroundColor: alphaOf(theme, "colors.switch.thumb", "metrics.alpha.mutedStrong"), borderRadius: numberFromTheme(theme, "metrics.radius.pill") }} {...tokenAttrs("metrics.alpha.mutedStrong")} />
+              </div>
+            </div>
+            <div
+              className="mt-2 flex items-center gap-2 px-2.5 py-1.5"
+              style={{ backgroundColor: alphaOf(theme, "colors.surface.surface2", "metrics.alpha.glass"), borderRadius: numberFromTheme(theme, "metrics.radius.chipXl"), border: `${numberFromTheme(theme, "metrics.stroke.thin")}px solid ${alphaOf(theme, "colors.border.default", "metrics.alpha.emphasis")}` }}
+              {...tokenAttrs("metrics.alpha.glass", "metrics.radius.chipXl", "metrics.alpha.emphasis")}
+            >
+              <span className="h-2 w-2" style={{ backgroundColor: alphaOf(theme, "colors.text.secondary", "metrics.alpha.borderStrong"), borderRadius: numberFromTheme(theme, "metrics.radius.pill") }} {...tokenAttrs("metrics.alpha.borderStrong")} />
+              <span className="text-[10px]" style={{ color: textMuted }}>{t("mockup.settingsGlassPanel")}</span>
+            </div>
+            <div
+              className="mt-1.5 flex items-center gap-2 px-2.5 py-1.5"
+              style={{ backgroundColor: alphaOf(theme, "colors.surface.surface3", "metrics.alpha.glassSubtle"), borderRadius: numberFromTheme(theme, "metrics.radius.chipXl") }}
+              {...tokenAttrs("metrics.alpha.glassSubtle")}
+            >
+              <span className="h-2 w-2" style={{ backgroundColor: alphaOf(theme, "colors.text.muted", "metrics.alpha.muted"), borderRadius: numberFromTheme(theme, "metrics.radius.pill") }} {...tokenAttrs("metrics.alpha.muted")} />
+              <span className="text-[10px]" style={{ color: textMuted }}>{t("mockup.settingsGlassSubtle")}</span>
+            </div>
+            <div
+              className="mt-2 flex items-center justify-center py-2 text-[10px]"
+              style={{ backgroundColor: alphaOf(theme, "colors.dialog.barrier", "metrics.alpha.scrim"), color: textMuted, borderRadius: numberFromTheme(theme, "metrics.radius.sm") }}
+              {...tokenAttrs("colors.dialog.barrier", "metrics.alpha.scrim")}
+            >
+              {t("mockup.settingsScrim")}
+            </div>
+          </SettingsCard>
+
+          {/* 状态与对话框：承载 accent.hover/background、border.focused、text.disabled、input.focusBackground、dialog.background、element.active 等未在主窗口出现的颜色 token。 */}
+          <SettingsCard theme={theme} title={t("mockup.settingsStates")}>
+            <div className="flex flex-wrap items-center" style={{ gap: numberFromTheme(theme, "metrics.spacing.sm") }}>
+              <button
+                type="button"
+                className="px-3 py-1 text-[11px] font-semibold"
+                style={{ color: accentFg, backgroundColor: rgbaFromTheme(theme, "colors.accent.hover"), borderRadius: numberFromTheme(theme, "metrics.radius.md") }}
+                {...tokenAttrs("colors.accent.hover", "colors.accent.foreground")}
+              >
+                {t("mockup.settingsStateHover")}
+              </button>
+              <span
+                className="px-2 py-0.5 text-[10px] font-medium"
+                style={{ color: accent, backgroundColor: rgbaFromTheme(theme, "colors.accent.background"), borderRadius: numberFromTheme(theme, "metrics.radius.badge") }}
+                {...tokenAttrs("colors.accent.background", "colors.accent.color")}
+              >
+                {t("mockup.settingsStateBadge")}
+              </span>
+              <span
+                className="px-2 py-0.5 text-[10px]"
+                style={{ color: alphaOf(theme, "colors.text.disabled", "metrics.alpha.disabled"), backgroundColor: rgbaFromTheme(theme, "colors.element.active"), borderRadius: numberFromTheme(theme, "metrics.radius.sm") }}
+                {...tokenAttrs("colors.text.disabled", "colors.element.active")}
+              >
+                {t("mockup.settingsStateDisabled")}
+              </span>
+            </div>
+            <input
+              readOnly
+              value={t("mockup.settingsStateFocused")}
+              className="mt-2 w-full px-2.5 py-1.5 text-[11px] outline-none"
+              style={{
+                color: textPrimary,
+                backgroundColor: rgbaFromTheme(theme, "colors.input.focusBackground"),
+                borderRadius: numberFromTheme(theme, "metrics.radius.input"),
+                border: `${numberFromTheme(theme, "metrics.stroke.thick")}px solid ${rgbaFromTheme(theme, "colors.border.focused")}`,
+              }}
+              {...tokenAttrs("colors.input.focusBackground", "colors.border.focused")}
+            />
+            <div
+              className="mt-2 px-3 py-2 text-[10px]"
+              style={{ color: textSecondary, backgroundColor: rgbaFromTheme(theme, "colors.dialog.background"), borderRadius: numberFromTheme(theme, "metrics.radius.dialog"), border: `${numberFromTheme(theme, "metrics.stroke.thin")}px solid ${alphaOf(theme, "colors.border.default", "metrics.alpha.borderFaint")}` }}
+              {...tokenAttrs("colors.dialog.background")}
+            >
+              {t("mockup.settingsStateDialog")}
+            </div>
+          </SettingsCard>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PreviewPanel({
   theme,
   t,
   onToggleAppearance,
+  focusedPath,
 }: {
   theme: FluxThemeJson;
   t: (key: keyof Messages, params?: Record<string, string>) => string;
   onToggleAppearance: () => void;
+  focusedPath: string | null;
 }) {
   const [activeFile, setActiveFile] = useState<PreviewFileCategory>("all");
+  const [activeView, setActiveView] = useState<"downloads" | "settings">("downloads");
   const [activeTab, setActiveTab] = useState<"all" | PreviewTaskStatus>("all");
   const [selectedTaskId, setSelectedTaskId] = useState<string>(
     PREVIEW_TASKS[1]?.id ?? PREVIEW_TASKS[0]!.id,
   );
+
+  // 聚焦某 token 时自动切到承载它的预览视图，让用户立即看到该 token 影响的元素。
+  useEffect(() => {
+    if (!focusedPath) return;
+    setActiveView(tokenArea(focusedPath));
+  }, [focusedPath]);
 
   const filteredTasks = useMemo(
     () =>
@@ -1047,14 +1501,13 @@ function PreviewPanel({
       </div>
 
       <div
-        className="flex min-h-0 flex-1 flex-col overflow-hidden border shadow-2xl"
+        className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[10px] border shadow-2xl"
         style={{
           borderColor: rgbaFromTheme(theme, "colors.border.default"),
           backgroundColor: rgbaFromTheme(theme, "colors.surface.surface1"),
           boxShadow: `0 24px 64px ${rgbaWithAlpha(theme.colors.shadow, numberFromTheme(theme, "metrics.alpha.shadowStrong"))}`,
-          borderRadius: numberFromTheme(theme, "metrics.radius.dialog"),
         }}
-        {...tokenAttrs("colors.surface.surface1", "colors.border.default", "colors.shadow", "metrics.radius.dialog", "metrics.alpha.shadowStrong")}
+        {...tokenAttrs("colors.surface.surface1", "colors.border.default", "colors.shadow", "metrics.alpha.shadowStrong")}
       >
         <div
           className="flex h-9 items-center justify-between border-b px-3"
@@ -1085,8 +1538,9 @@ function PreviewPanel({
             </button>
             <button
               type="button"
+              onClick={() => setActiveView((v) => (v === "settings" ? "downloads" : "settings"))}
               className="inline-flex h-8 w-8 items-center justify-center rounded-sm"
-              style={{ color: rgbaFromTheme(theme, "colors.text.secondary") }}
+              style={{ color: activeView === "settings" ? rgbaFromTheme(theme, "colors.accent.color") : rgbaFromTheme(theme, "colors.text.secondary") }}
             >
               <Settings className="h-3.5 w-3.5" />
             </button>
@@ -1123,6 +1577,7 @@ function PreviewPanel({
           </div>
         </div>
 
+        {activeView === "downloads" ? (
         <div className="flex min-h-0 flex-1">
           <aside
             className="hidden w-[170px] flex-col border-r md:flex"
@@ -1208,6 +1663,7 @@ function PreviewPanel({
                 </button>
                 <button
                   type="button"
+                  onClick={() => setActiveView("settings")}
                   className="inline-flex h-7 w-7 items-center justify-center rounded-md border"
                   style={{
                     borderColor: rgbaFromTheme(theme, "colors.border.default"),
@@ -1296,8 +1752,8 @@ function PreviewPanel({
                       </div>
                       <span className="text-[10px] tabular-nums" style={{ color: rgbaFromTheme(theme, "colors.text.secondary") }}>{task.progress.toFixed(1)}%</span>
                     </div>
-                    <div className="hidden w-[80px] text-center text-[10px] sm:block" style={{ color: task.status === "downloading" ? rgbaFromTheme(theme, "colors.status.success") : rgbaFromTheme(theme, "colors.text.muted") }}>{task.speed}</div>
-                    <div className="hidden w-[56px] text-right text-[10px] sm:block" style={{ color: statusColor }}>{getTaskStatusText(task, t)}</div>
+                    <div className="hidden w-[80px] text-center text-[10px] sm:block" style={{ color: task.status === "downloading" ? rgbaFromTheme(theme, "colors.status.success") : rgbaFromTheme(theme, "colors.text.muted") }} {...tokenAttrs("colors.status.success")}>{task.speed}</div>
+                    <div className="hidden w-[56px] text-right text-[10px] sm:block" style={{ color: statusColor }} {...tokenAttrs("colors.status.success", "colors.status.warning", "colors.status.error", "colors.accent.color")}>{getTaskStatusText(task, t)}</div>
                   </button>
                 );
               })}
@@ -1406,10 +1862,10 @@ function PreviewPanel({
               </div>
             </div>
 
-            <div className="flex items-center gap-2 border-t px-3 py-2" style={{ borderColor: rgbaFromTheme(theme, "colors.border.default") }}>
+            <div className="flex flex-col gap-2 border-t px-3 py-2" style={{ borderColor: rgbaFromTheme(theme, "colors.border.default") }}>
               <button
                 type="button"
-                className="inline-flex items-center justify-center px-2.5 py-1 text-[11px] font-semibold"
+                className="inline-flex w-full items-center justify-center px-2.5 py-1.5 text-[11px] font-semibold"
                 style={{
                   backgroundColor: rgbaFromTheme(theme, "colors.accent.color"),
                   color: rgbaFromTheme(theme, "colors.accent.foreground"),
@@ -1420,7 +1876,7 @@ function PreviewPanel({
               </button>
               <button
                 type="button"
-                className="inline-flex items-center justify-center border px-2.5 py-1 text-[11px] font-semibold"
+                className="inline-flex w-full items-center justify-center border px-2.5 py-1.5 text-[11px] font-semibold"
                 style={{
                   borderColor: rgbaFromTheme(theme, "colors.status.error"),
                   color: rgbaFromTheme(theme, "colors.status.error"),
@@ -1433,6 +1889,9 @@ function PreviewPanel({
             </div>
           </aside>
         </div>
+        ) : (
+          <SettingsPreview theme={theme} t={t} onBack={() => setActiveView("downloads")} />
+        )}
       </div>
 
     </div>
