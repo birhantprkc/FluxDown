@@ -7,6 +7,7 @@ import '../models/settings_provider.dart';
 import '../services/file_picker_service.dart';
 import '../services/quick_download_submitter.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_metrics.dart';
 import 'quick_download_form.dart';
 
 /// 浏览器扩展下载请求的快速确认对话框（主窗口内回退路径）。
@@ -89,6 +90,7 @@ class _QuickDownloadDialogShell extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
     final s = LocaleScope.of(context);
+    final m = AppMetrics.of(context);
 
     return ShadDialog(
       title: Row(
@@ -97,8 +99,8 @@ class _QuickDownloadDialogShell extends StatelessWidget {
             width: 28,
             height: 28,
             decoration: BoxDecoration(
-              color: c.accent.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(6),
+              color: m.soft(c.accent),
+              borderRadius: m.brMd,
             ),
             child: Icon(LucideIcons.download, size: 14, color: c.accent),
           ),

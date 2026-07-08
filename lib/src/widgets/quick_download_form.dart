@@ -27,6 +27,7 @@ import 'package:shadcn_ui/shadcn_ui.dart';
 import '../i18n/locale_provider.dart';
 import '../services/file_picker_service.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_metrics.dart';
 import 'dir_picker_field.dart';
 import 'thread_selector.dart';
 
@@ -398,6 +399,7 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
     final s = LocaleScope.of(context);
+    final m = AppMetrics.of(context);
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -428,7 +430,7 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
             type: MaterialType.transparency,
             child: TextSelectionTheme(
               data: TextSelectionThemeData(
-                selectionColor: c.accent.withValues(alpha: 0.25),
+                selectionColor: m.textSelection(c.accent),
                 cursorColor: c.accent,
                 selectionHandleColor: c.accent,
               ),
@@ -460,15 +462,15 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
                   fillColor: c.inputBg,
                   hoverColor: Colors.transparent,
                   border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
+                    borderRadius: m.brInput,
                     borderSide: BorderSide(color: c.inputBorder),
                   ),
                   enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
+                    borderRadius: m.brInput,
                     borderSide: BorderSide(color: c.inputBorder),
                   ),
                   focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
+                    borderRadius: m.brInput,
                     borderSide: BorderSide(color: c.inputFocusBorder),
                   ),
                 ),
@@ -809,11 +811,12 @@ class QuickInfoTag extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final m = AppMetrics.of(context);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
         color: c.surface2,
-        borderRadius: BorderRadius.circular(4),
+        borderRadius: m.brSm,
       ),
       child: Text(
         text,
