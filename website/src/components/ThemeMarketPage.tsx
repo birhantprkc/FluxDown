@@ -473,7 +473,17 @@ export default function ThemeMarketPage() {
             <ol className="space-y-2 text-xs text-dark-text-secondary leading-relaxed list-decimal list-inside">
               <li>{t("themes.howTo.step1")}</li>
               <li>{t("themes.howTo.step2")}</li>
-              <li>{t("themes.howTo.step3")}</li>
+              <li>
+                {t("themes.howTo.step3")}{" "}
+                <a
+                  href={`${REPO_URL}?tab=contributing-ov-file`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-brand-sky hover:underline"
+                >
+                  {t("themes.howTo.guideLink")}
+                </a>
+              </li>
             </ol>
           </motion.div>
         )}

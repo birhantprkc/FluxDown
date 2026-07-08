@@ -164,6 +164,7 @@ const zhCN: Messages = {
   "themes.howTo.step1": "下载你喜欢的变体（暗色 / 亮色）对应的主题 JSON 文件。",
   "themes.howTo.step2": "打开 FluxDown → 设置 → 外观 → 导入主题，选择下载的文件。",
   "themes.howTo.step3": "想分享自己的主题？请先查看贡献指南了解规范与流程，再提交你的主题：",
+  "themes.howTo.guideLink": "贡献指南 →",
 
   // Theme Builder
   "tb.badge": "主题构建器",

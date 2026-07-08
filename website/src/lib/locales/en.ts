@@ -171,6 +171,7 @@ const en = {
   "themes.howTo.step1": "Download the theme JSON for the variant you like (dark / light).",
   "themes.howTo.step2": "Open FluxDown → Settings → Appearance → Import Theme, and pick the downloaded file.",
   "themes.howTo.step3": "Want to share your own? Read the contribution guide first, then submit your theme:",
+  "themes.howTo.guideLink": "Contribution Guide →",
 
   // Theme Builder
   "tb.badge": "Theme Builder",
