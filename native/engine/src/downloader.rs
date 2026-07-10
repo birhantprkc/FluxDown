@@ -1058,6 +1058,7 @@ async fn resolve_file_info_once(
     let (head_result, get_result) = tokio::join!(head_fut, get_fut);
 
     // Extract HEAD response (if successful)
+    let mut head_status_desc = String::new();
     let head_data = match head_result {
         Ok(r) if r.status().is_success() => {
             let u = r.url().clone();
@@ -1065,6 +1066,7 @@ async fn resolve_file_info_once(
             Some((h, u))
         }
         Ok(r) => {
+            head_status_desc = r.status().as_u16().to_string();
             log_info!(
                 "[resolve] HEAD failed: status={}, url={}, cookies_len={}",
                 r.status(),
@@ -1074,6 +1076,7 @@ async fn resolve_file_info_once(
             None
         }
         Err(e) => {
+            head_status_desc = format!("network-error: {}", e);
             log_info!(
                 "[resolve] HEAD network error: {}{}, cookies_len={}",
                 e,
@@ -1085,6 +1088,7 @@ async fn resolve_file_info_once(
     };
 
     // Extract GET response (if successful)
+    let mut get_status_desc = String::new();
     let get_data = match get_result {
         Ok(r) if r.status().is_success() => {
             let u = r.url().clone();
@@ -1098,6 +1102,7 @@ async fn resolve_file_info_once(
             Some((h, u, got_206, get_range_compressed))
         }
         Ok(r) => {
+            get_status_desc = r.status().as_u16().to_string();
             log_info!(
                 "[resolve] GET failed: status={}, url={}, cookies_len={}",
                 r.status(),
@@ -1107,6 +1112,7 @@ async fn resolve_file_info_once(
             None
         }
         Err(e) => {
+            get_status_desc = format!("network-error: {}", e);
             log_info!(
                 "[resolve] GET network error: {}{}, cookies_len={}",
                 e,
@@ -1131,9 +1137,19 @@ async fn resolve_file_info_once(
         (Some((hh, hu)), _) => (hh.clone(), hu.clone()),
         (None, Some((gh, gu, _, _))) => (gh.clone(), gu.clone()),
         (None, None) => {
-            return Err(DownloadError::Other(
-                "both HEAD and GET probes failed".to_string(),
-            ));
+            // 双探测（HEAD + Range GET）均失败。部分合法服务器（如飞牛 OS
+            // multiple-download 端点）对下载 token 有并发/次数配额：HEAD 恒
+            // 405，带 Range 的 GET 恒 400（配额已耗尽/不支持 Range），但一次
+            // 【无 Range 的普通 GET】能正常 200。在判死这次探测前，再试一次
+            // 普通 GET 作为最后的降级路径，避免把可下载的任务误判为失败。
+            return resolve_file_info_plain_get_fallback(
+                client,
+                url,
+                spec,
+                &head_status_desc,
+                &get_status_desc,
+            )
+            .await;
         }
     };
 
@@ -1292,6 +1308,150 @@ async fn resolve_file_info_once(
             supports_range
         );
     }
+
+    Ok(FileInfo {
+        file_name,
+        total_bytes,
+        supports_range,
+        content_type,
+        etag,
+        last_modified,
+        content_encoding_compressed,
+    })
+}
+
+/// 拼接三次探测（HEAD / ranged GET / plain GET）全部失败时的诊断文案，
+/// 形如 `"probes failed: HEAD=405, ranged GET=400, plain GET=400"`。抽成
+/// 纯函数（不涉及网络 I/O）便于单元测试覆盖格式，不必依赖 mock HTTP server。
+fn format_probe_failure(
+    head_status_desc: &str,
+    get_status_desc: &str,
+    plain_status_desc: &str,
+) -> String {
+    format!(
+        "probes failed: HEAD={}, ranged GET={}, plain GET={}",
+        head_status_desc, get_status_desc, plain_status_desc
+    )
+}
+
+/// 双探测（HEAD + Range GET）失败后的最后一次降级尝试：发一次【无 Range 头】
+/// 的普通 GET，只读响应头后立即 drop response（绝不读 body），从中提取文件
+/// 元数据。
+///
+/// 背景（例如飞牛 OS「多文件下载」multiple-download 端点）：一次性/限配额
+/// 下载 token 只允许消耗有限次数的请求——HEAD 方法本身不被支持（恒 405），
+/// 带 Range 的 GET 也被拒绝（恒 400，配额已耗尽或该端点根本不支持 Range），
+/// 但不带 Range 的普通 GET 能正常返回 200。旧逻辑在双探测失败时直接判死
+/// 任务，而这类服务器其实是可下载的——只是探测方式不对路。
+///
+/// 这是 `resolve_file_info` 重试循环里【每一轮】最多发出的第 3 个请求
+/// （HEAD + ranged GET + 这次的 plain GET），不会叠加成
+/// `PROBE_MAX_RETRIES` × 3 次请求；每轮只在前两个探测都失败时才会触发。
+///
+/// 不区分"服务器可达但状态码错误"与"纯网络错误（连不上）"两种失败：后者
+/// 再发一次请求大概率也会失败，但无害，为简单起见不做区分。
+async fn resolve_file_info_plain_get_fallback(
+    client: &Client,
+    url: &str,
+    spec: &RequestSpec,
+    head_status_desc: &str,
+    get_status_desc: &str,
+) -> Result<FileInfo, DownloadError> {
+    log_info!(
+        "[resolve] both probes failed (HEAD={}, ranged GET={}), falling back to plain GET \
+         (no Range header) — some servers (e.g. fnOS multiple-download) reject HEAD and \
+         Range requests due to a limited-quota token but serve a normal GET",
+        head_status_desc,
+        get_status_desc
+    );
+
+    let resp = match build_request(client, url, reqwest::Method::GET, spec)
+        .timeout(PROBE_TIMEOUT)
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => r,
+        Ok(r) => {
+            let plain_status_desc = r.status().as_u16().to_string();
+            log_info!(
+                "[resolve] plain GET fallback also failed: status={}, url={}",
+                r.status(),
+                r.url()
+            );
+            return Err(DownloadError::Other(format_probe_failure(
+                head_status_desc,
+                get_status_desc,
+                &plain_status_desc,
+            )));
+        }
+        Err(e) => {
+            let plain_status_desc = format!("network-error: {}", e);
+            log_info!(
+                "[resolve] plain GET fallback network error: {}{}",
+                e,
+                format_error_chain(e.source())
+            );
+            return Err(DownloadError::Other(format_probe_failure(
+                head_status_desc,
+                get_status_desc,
+                &plain_status_desc,
+            )));
+        }
+    };
+
+    let final_url = resp.url().clone();
+    let headers = resp.headers().clone();
+    // 只读响应头，立即 drop response——绝不读取 body，避免消耗一次性 token
+    // 或对配额受限的连接造成额外压力。真正的下载阶段会重新发起独立请求。
+    drop(resp);
+
+    let total_bytes = headers
+        .get(reqwest::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(0);
+
+    let content_type = headers
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    let file_name = extract_filename(&headers, final_url.as_str());
+
+    let etag = headers
+        .get(reqwest::header::ETAG)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    let last_modified = headers
+        .get(reqwest::header::LAST_MODIFIED)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    let content_encoding_compressed = detect_content_encoding(&headers).is_some();
+
+    // supports_range 决策：这条降级路径【没有 206 佐证】——我们只拿到一次
+    // 普通 200 响应，从未验证过服务器真的会诚实响应 Range 请求；而且走到
+    // 这里之前，带 Range 的 GET 已经被服务器以 400 明确拒绝过（见调用方的
+    // both-probes-failed 分支）。哪怕这次响应头里带了 `Accept-Ranges: bytes`，
+    // 也不能采信：这类一次性/限配额 token 的 Accept-Ranges 广告与实际行为
+    // 经常脱节，继续相信它会让多段下载阶段对同一个受限 token 再次发起 Range
+    // 请求，大概率复现同样的 400，甚至提前耗尽配额导致连单流都下不成。因此
+    // 这里保守地强制单流（false），宁可错过少数"这次探测恰好用坏了 token、
+    // 其实支持 Range"的场景，也要保证已确认可用的普通 GET 单流路径不被多段
+    // 探测拖下水。
+    let supports_range = false;
+
+    log_info!(
+        "[resolve] plain GET fallback succeeded: name={}, size={}, range={}, ct={}",
+        file_name,
+        total_bytes,
+        supports_range,
+        content_type
+    );
 
     Ok(FileInfo {
         file_name,
@@ -3328,8 +3488,8 @@ async fn download_multi_segment(
 mod tests {
     use super::{
         PROBE_MAX_RETRIES, PROBE_RETRY_BASE_DELAY, PROBE_TIMEOUT, TEMP_EXT, dedup_filename,
-        extract_filename, extract_from_content_disposition, extract_from_url, mime_to_ext,
-        sanitize_filename, urlencoding_decode,
+        extract_filename, extract_from_content_disposition, extract_from_url, format_probe_failure,
+        mime_to_ext, sanitize_filename, urlencoding_decode,
     };
     use std::time::Duration;
 
@@ -3780,6 +3940,34 @@ mod tests {
         assert!(
             worst_total <= Duration::from_secs(60),
             "worst-case probe time {worst_total:?} should be <= 60s"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // format_probe_failure — plain-GET fallback diagnostic message (pure fn,
+    // no network I/O; covers the fnOS multiple-download HEAD=405/GET=400
+    // triple-probe-failure scenario without needing a mock HTTP server).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn format_probe_failure_reports_all_three_statuses() {
+        let msg = format_probe_failure("405", "400", "400");
+        assert_eq!(
+            msg,
+            "probes failed: HEAD=405, ranged GET=400, plain GET=400"
+        );
+    }
+
+    #[test]
+    fn format_probe_failure_reports_network_errors_verbatim() {
+        let msg = format_probe_failure(
+            "network-error: connection refused",
+            "network-error: connection refused",
+            "403",
+        );
+        assert_eq!(
+            msg,
+            "probes failed: HEAD=network-error: connection refused, ranged GET=network-error: connection refused, plain GET=403"
         );
     }
 

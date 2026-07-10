@@ -479,10 +479,7 @@ async fn run_dash_download_inner(p: &DownloadParams) -> Result<i64, DownloadErro
 /// 可直接 GET 的完整轨道直链（如 DASH 分离的 m4s）。分别下载后用 ffmpeg mux
 /// 合并为单 mp4。与 MPD manifest 解析路径共用 `download_track` / `mux_audio_video`
 /// / `build_audio_path`，不依赖 `dash_mpd` 解析，因此对任何提供离散轨对的站点通用。
-async fn run_track_pair_inner(
-    p: &DownloadParams,
-    audio_url: &str,
-) -> Result<i64, DownloadError> {
+async fn run_track_pair_inner(p: &DownloadParams, audio_url: &str) -> Result<i64, DownloadError> {
     log_info!(
         "[dash-download] task {} track-pair mode: video={} audio={}",
         p.task_id,
@@ -504,7 +501,8 @@ async fn run_track_pair_inner(
     let save_dir = PathBuf::from(&p.save_dir);
     let dest_path = save_dir.join(&auto_name);
 
-    p.db.update_task_file_info(&p.task_id, &auto_name, 0).await?;
+    p.db.update_task_file_info(&p.task_id, &auto_name, 0)
+        .await?;
 
     if p.cancel_token.is_cancelled() {
         return Err(DownloadError::Cancelled);

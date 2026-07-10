@@ -1033,7 +1033,7 @@ export default defineBackground(() => {
         parseContentDispositionFilename(contentDisposition);
       const itemInfo: DownloadItemInfo = {
         url: details.url,
-        fileSize: contentLength > 0 ? contentLength : undefined,
+        fileSize: contentLength > 0 ? contentLength : -1,
         mime: contentType || undefined,
         filename: dispositionFilename || undefined,
       };
@@ -1313,7 +1313,7 @@ export default defineBackground(() => {
 
     const itemInfo: DownloadItemInfo = {
       url,
-      fileSize: rc.contentLength > 0 ? rc.contentLength : undefined,
+      fileSize: rc.contentLength > 0 ? rc.contentLength : -1,
       mime: rc.contentType || undefined,
       filename: rc.dispositionFilename || originalItem.filename || undefined,
     };
@@ -1375,7 +1375,8 @@ export default defineBackground(() => {
     const mime = freshItem.mime || originalItem.mime || undefined;
     const fileSize =
       (freshItem.fileSize > 0 ? freshItem.fileSize : undefined) ??
-      (originalItem.fileSize > 0 ? originalItem.fileSize : undefined);
+      (originalItem.fileSize > 0 ? originalItem.fileSize : undefined) ??
+      -1;
     const filename = freshItem.filename || originalItem.filename || undefined;
 
     const itemInfo: DownloadItemInfo = {
@@ -1577,7 +1578,8 @@ export default defineBackground(() => {
             (downloadItem.fileSize > 0 ? downloadItem.fileSize : undefined) ??
             (_syncCached && _syncCached.fileSize > 0
               ? _syncCached.fileSize
-              : undefined);
+              : undefined) ??
+            -1;
           const _syncFilename =
             downloadItem.filename || _syncCached?.filename || undefined;
           const _syncReferrer = _syncCached?.referrer || undefined;
@@ -1733,7 +1735,10 @@ export default defineBackground(() => {
                 (downloadItem.fileSize > 0
                   ? downloadItem.fileSize
                   : undefined) ??
-                (cached && cached.fileSize > 0 ? cached.fileSize : undefined);
+                (cached && cached.fileSize > 0
+                  ? cached.fileSize
+                  : undefined) ??
+                -1;
               const filename =
                 downloadItem.filename || cached?.filename || undefined;
               const referrer = cached?.referrer || undefined;
@@ -1879,7 +1884,8 @@ export default defineBackground(() => {
             const mime = downloadItem.mime || cached?.mime || undefined;
             const fileSize =
               (downloadItem.fileSize > 0 ? downloadItem.fileSize : undefined) ??
-              (cached && cached.fileSize > 0 ? cached.fileSize : undefined);
+              (cached && cached.fileSize > 0 ? cached.fileSize : undefined) ??
+              -1;
             const referrer = cached?.referrer || undefined;
 
             const itemInfo: DownloadItemInfo = {

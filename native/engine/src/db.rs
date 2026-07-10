@@ -1376,6 +1376,37 @@ impl Db {
         Ok(())
     }
 
+    /// 原子持久化【开放式首段合并】：延长父段 `end_byte` 并删除全部被吸收的
+    /// Pending 段行，单事务提交（与 `persist_split` 对称——防止崩溃残留
+    /// 重叠/缺口区间，否则 resume 时 `validate_coverage` 会整体重置进度）。
+    pub async fn persist_merge(
+        &self,
+        task_id: &str,
+        parent_index: i32,
+        parent_new_end: i64,
+        absorbed: &[i32],
+    ) -> Result<(), DbError> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "UPDATE task_segments SET end_byte = $1
+             WHERE task_id = $2 AND segment_index = $3",
+        )
+        .bind(parent_new_end)
+        .bind(task_id)
+        .bind(parent_index)
+        .execute(&mut *tx)
+        .await?;
+        for idx in absorbed {
+            sqlx::query("DELETE FROM task_segments WHERE task_id = $1 AND segment_index = $2")
+                .bind(task_id)
+                .bind(*idx)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Update the total_bytes for a task.
     pub async fn update_task_total_bytes(&self, id: &str, total_bytes: i64) -> Result<(), DbError> {
         sqlx::query("UPDATE tasks SET total_bytes = $1 WHERE id = $2")
@@ -1719,6 +1750,36 @@ mod tests {
                 .expect("query count");
 
         assert_eq!(count, 0, "task_segments must be empty after task delete");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn persist_merge_extends_parent_and_deletes_absorbed() {
+        let (db, dir) = open_test_db().await;
+        insert_task(&db, "merge-task").await;
+        // 布局：父段 #0 [0,999]，被吸收段 #1/#2，无关段 #3（必须原样保留）。
+        db.insert_segments(
+            "merge-task",
+            &[
+                (0, 0, 999),
+                (1, 1000, 1999),
+                (2, 2000, 2999),
+                (3, 3000, 3999),
+            ],
+        )
+        .await
+        .expect("insert segments");
+
+        db.persist_merge("merge-task", 0, 2999, &[1, 2])
+            .await
+            .expect("persist merge");
+
+        let segs = db.load_segments("merge-task").await.expect("load");
+        assert_eq!(segs.len(), 2, "absorbed rows must be deleted");
+        assert_eq!(segs[0].index, 0);
+        assert_eq!(segs[0].end_byte, 2999, "parent end_byte must extend");
+        assert_eq!(segs[1].index, 3, "unrelated segment must survive");
+        assert_eq!(segs[1].end_byte, 3999);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -2315,7 +2376,9 @@ mod tests {
     /// true）且能读回。
     #[tokio::test]
     async fn update_task_file_missing_marks_completed_task() {
-        let db = Db::connect("sqlite::memory:").await.expect("connect mem db");
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
         insert_task(&db, "t1").await;
         db.update_task_status("t1", 3, "")
             .await
@@ -2345,7 +2408,9 @@ mod tests {
     /// 的 `AND status = 3` 保护带竞态窗口的调用方，绝不误改活跃任务的标志。
     #[tokio::test]
     async fn update_task_file_missing_noop_for_non_completed_task() {
-        let db = Db::connect("sqlite::memory:").await.expect("connect mem db");
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
         insert_task(&db, "t1").await;
         db.update_task_status("t1", 1, "")
             .await
@@ -2371,7 +2436,9 @@ mod tests {
     /// 不存在的任务 id：更新必须是空操作而不是报错。
     #[tokio::test]
     async fn update_task_file_missing_noop_for_unknown_task_id() {
-        let db = Db::connect("sqlite::memory:").await.expect("connect mem db");
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
 
         let changed = db
             .update_task_file_missing("no-such-task", true)
@@ -2385,7 +2452,9 @@ mod tests {
     /// 的防御性映射（`unwrap_or_default`）在某一条路径上失配。
     #[tokio::test]
     async fn load_all_and_load_by_id_agree_on_file_missing_across_states() {
-        let db = Db::connect("sqlite::memory:").await.expect("connect mem db");
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
         insert_task(&db, "t1").await;
         db.update_task_status("t1", 3, "")
             .await
@@ -2420,8 +2489,14 @@ mod tests {
             .iter()
             .find(|t| t.task_id == "t1")
             .expect("task present in load_all");
-        assert!(by_id.file_missing, "load_task_by_id must reflect the update");
-        assert!(by_all.file_missing, "load_all_tasks must reflect the same update");
+        assert!(
+            by_id.file_missing,
+            "load_task_by_id must reflect the update"
+        );
+        assert!(
+            by_all.file_missing,
+            "load_all_tasks must reflect the same update"
+        );
     }
 
     /// 新插入的普通任务默认没有音频轨：`audio_url` 列默认空串，
@@ -2432,7 +2507,10 @@ mod tests {
         insert_task(&db, "plain1").await;
 
         let audio_url = db.load_audio_url("plain1").await.expect("load audio_url");
-        assert_eq!(audio_url, None, "plain task must not be mistaken for a paired-track task");
+        assert_eq!(
+            audio_url, None,
+            "plain task must not be mistaken for a paired-track task"
+        );
 
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2468,7 +2546,10 @@ mod tests {
             .expect("clear audio_url");
 
         let audio_url = db.load_audio_url("pair2").await.expect("load audio_url");
-        assert_eq!(audio_url, None, "clearing the audio track must fall back to the default state");
+        assert_eq!(
+            audio_url, None,
+            "clearing the audio track must fall back to the default state"
+        );
 
         let _ = std::fs::remove_dir_all(dir);
     }

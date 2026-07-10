@@ -568,6 +568,12 @@ struct WorkerAssignment {
     seg_start: i64,
     actual_start: i64,
     seg_end: i64,
+    /// 开放式首段：Range 头用 `bytes={actual_start}-`（不带终点），服务器把
+    /// 响应流一直送到文件末尾，worker 按共享 seg_states 的 end_byte 预算截断。
+    /// 仅从字节 0 起始的初始派工置 true——配额型端点（fnOS multiple-download
+    /// 的 token 请求次数配额）拒绝其余连接时，coordinator 可把右侧 Pending 段
+    /// 并入本段，复用这条已建立的流下完整个文件，无需任何新请求。
+    open_ended: bool,
 }
 
 /// Result of `find_next_work`: an assignment plus optionally the index of the
@@ -996,6 +1002,9 @@ pub async fn run_coordinated_download(
             seg_start: s.start_byte,
             actual_start: s.start_byte + s.downloaded_bytes,
             seg_end: s.end_byte,
+            // 从字节 0 起始的段用开放式 Range（fresh 下载恒有且仅有一个；
+            // resume 时仅当该段零进度）。其余段闭区间。
+            open_ended: s.start_byte + s.downloaded_bytes == 0,
         })
         .collect();
     let mut assign_iter = pending_assignments.drain(..);
@@ -1039,17 +1048,25 @@ pub async fn run_coordinated_download(
         sync_gate: sync_gate.clone(),
     };
 
+    // 开放式首段跟踪：当前仍由某 worker 持有开放式响应流的段索引；
+    // 该段 Done/Failed 时清除（流已不在）。
+    let mut open_ended_streaming: Option<i32> = None;
+
     for worker_id in 0..initial_workers {
         let (assign_tx, handle) = ctx.spawn(worker_id);
 
         // Send initial assignment (if available).
         if let Some(assignment) = assign_iter.next() {
             let seg_idx = assignment.seg_index;
+            let is_open_ended = assignment.open_ended;
             if let Some(seg) = segments.get_mut(&seg_idx) {
                 seg.state = SegState::Active;
             }
             // This send cannot fail — channel just created with capacity 4.
             let _ = assign_tx.try_send(assignment);
+            if is_open_ended {
+                open_ended_streaming = Some(seg_idx);
+            }
         }
 
         worker_assign_txs.push(Some(assign_tx));
@@ -1120,14 +1137,56 @@ pub async fn run_coordinated_download(
             event = event_rx.recv() => {
                 match event {
                     Some(WorkerEvent::Done { worker_id, seg_index, downloaded_bytes }) => {
+                        if open_ended_streaming == Some(seg_index) {
+                            open_ended_streaming = None;
+                        }
                         // Mark segment completed in our authoritative map.
+                        // 合并竞态兜底：开放式首段被 merge 扩容的瞬间，worker 可能
+                        // 已在【旧边界】break 并上报 Done——downloaded < size。直接
+                        // 标 Completed 会把未下载的尾部当成已完成（静默空洞）。此时
+                        // 把余量拆成新 Pending 段、本段收缩为已下区间后标记完成。
+                        let mut shortfall_child: Option<i32> = None;
                         if let Some(seg) = segments.get_mut(&seg_index) {
-                            // Cap downloaded_bytes to segment size: a worker may
-                            // have written one chunk past the split boundary before
-                            // seg_states reflected the shrunk end_byte.  Clamping
-                            // here keeps the coordinator's total accurate.
-                            seg.downloaded_bytes = downloaded_bytes.min(seg.size());
-                            seg.state = SegState::Completed;
+                            if downloaded_bytes > 0 && downloaded_bytes < seg.size() {
+                                let rem_start = seg.start_byte + downloaded_bytes;
+                                let rem_end = seg.end_byte;
+                                seg.end_byte = rem_start - 1;
+                                seg.downloaded_bytes = downloaded_bytes;
+                                seg.state = SegState::Completed;
+                                let child_idx = next_index;
+                                next_index += 1;
+                                segments.insert(child_idx, LiveSegment {
+                                    index: child_idx,
+                                    start_byte: rem_start,
+                                    end_byte: rem_end,
+                                    downloaded_bytes: 0,
+                                    state: SegState::Pending,
+                                });
+                                shortfall_child = Some(child_idx);
+                            } else {
+                                // Cap downloaded_bytes to segment size: a worker may
+                                // have written one chunk past the split boundary before
+                                // seg_states reflected the shrunk end_byte.  Clamping
+                                // here keeps the coordinator's total accurate.
+                                seg.downloaded_bytes = downloaded_bytes.min(seg.size());
+                                seg.state = SegState::Completed;
+                            }
+                        }
+                        if let Some(child_idx) = shortfall_child {
+                            log_info!(
+                                "[coordinator] task {} seg {} Done 短量（{} < 段大小），余量拆回 Pending 段 #{}",
+                                task_id,
+                                seg_index,
+                                downloaded_bytes,
+                                child_idx
+                            );
+                            persist_segment_change(
+                                db, task_id, &segments, child_idx, Some(seg_index),
+                            ).await;
+                            send_split_event(
+                                sink, task_id, seg_index, child_idx, &segments, false,
+                            );
+                            rebuild_seg_states(&segments, &seg_states);
                         }
 
                         // Sync the coordinator's view of active segments'
@@ -1225,6 +1284,11 @@ pub async fn run_coordinated_download(
                     }
 
                     Some(WorkerEvent::Failed { worker_id, seg_index, error }) => {
+                        // 段失败即其响应流已断；若正是开放式首段则解除跟踪
+                        //（重派 assignment 均为闭区间，不再具备开放式语义）。
+                        if open_ended_streaming == Some(seg_index) {
+                            open_ended_streaming = None;
+                        }
                         // --- 就地扩容：服务器自报真实大小 > 当前规划 ----------
                         // （BUG-HTTP-HINT-UNDERSIZED）hint 偏小/文件在下载中增长。
                         // 处理方式是【就地扩容】而非清空重下：延长预分配 → 追加
@@ -1394,8 +1458,14 @@ pub async fn run_coordinated_download(
                         // 绝不能当永久错误（取消任务 + 删数据 + 投毒主机）处理。
                         let transient_range = is_range_err && any_data;
                         let server_rejection = is_server_rejection(&error);
+                        // 400 亦按连接级拒绝处理，但仅当 other_working（同 URL 其他
+                        // 连接工作正常，证明请求本身合法）：配额型端点（如 fnOS
+                        // multiple-download 的 token 请求次数配额）对超额连接回 400
+                        // 而非 403/429。与 403/429 不同，400 语义宽泛，绝不写入
+                        // 域名连接数缓存（下方两处 record 仍只看 server_rejection）。
+                        let conn_rejection = server_rejection || is_http_400(&error);
 
-                        if (server_rejection && other_working) || transient_range {
+                        if (conn_rejection && other_working) || transient_range {
                             // ---- 分级自适应降级 ----
                             // 第 1 次拒绝且存活连接充足：乘性减半连接额度，冻结扩容，
                             // 保留所有存活连接（超额部分完成当前段后自然退休）；
@@ -1454,6 +1524,70 @@ pub async fn run_coordinated_download(
                                 seg.state = SegState::Pending;
                             }
 
+                            // ---- 开放式首段吸收（连接配额自救）----
+                            // 服务器拒绝新连接，但开放式首段的响应流仍活着：把它
+                            // 右侧【字节连续且零进度】的 Pending 段全部并入该段。
+                            // 开放式请求（bytes=X-）的流本就覆盖到文件末尾，worker
+                            // 写循环每 chunk 重读共享 end_byte，预算扩大后自然续写
+                            // ——无需任何新请求即可下完整个文件。这是"一个 token
+                            // 只允许固定次数成功 GET"的配额型端点（fnOS
+                            // multiple-download）唯一能下完的方式。
+                            if let Some(open_idx) = open_ended_streaming
+                                && let Some(open_end) = segments
+                                    .get(&open_idx)
+                                    .filter(|s| s.state == SegState::Active)
+                                    .map(|s| s.end_byte)
+                            {
+                                let mut new_end = open_end;
+                                let mut absorbed: Vec<i32> = Vec::new();
+                                while let Some((idx, end)) = segments
+                                    .values()
+                                    .find(|s| {
+                                        s.state == SegState::Pending
+                                            && s.downloaded_bytes == 0
+                                            && s.start_byte == new_end + 1
+                                    })
+                                    .map(|s| (s.index, s.end_byte))
+                                {
+                                    new_end = end;
+                                    absorbed.push(idx);
+                                }
+                                if !absorbed.is_empty() {
+                                    // DB 先行（单事务）：失败则放弃合并（内存不动，
+                                    // 降级照常进行），避免内存/DB 段布局分叉。
+                                    match db
+                                        .persist_merge(task_id, open_idx, new_end, &absorbed)
+                                        .await
+                                    {
+                                        Ok(()) => {
+                                            for idx in &absorbed {
+                                                segments.remove(idx);
+                                            }
+                                            if let Some(seg) = segments.get_mut(&open_idx) {
+                                                seg.end_byte = new_end;
+                                            }
+                                            rebuild_seg_states(&segments, &seg_states);
+                                            log_info!(
+                                                "[coordinator] task {} 开放式首段 #{} 吸收 {} 个 \
+                                                 Pending 段（新终点 {}），复用现有连接续流到文件尾",
+                                                task_id,
+                                                open_idx,
+                                                absorbed.len(),
+                                                new_end
+                                            );
+                                        }
+                                        Err(e) => {
+                                            log_info!(
+                                                "[coordinator] task {} persist_merge 失败：{}，\
+                                                 放弃合并走常规降级",
+                                                task_id,
+                                                e
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+
                             // 退休当前失败的 worker（关闭其分配通道）
                             if let Some(slot) = worker_assign_txs.get_mut(worker_id) {
                                 *slot = None;
@@ -1464,10 +1598,9 @@ pub async fn run_coordinated_download(
                             let any_alive = worker_assign_txs.iter().any(|tx| tx.is_some())
                                 || segments.values().any(|s| s.state == SegState::Active);
                             if !any_alive && !all_done(&segments) {
-                                final_error = Some(DownloadError::Other(
-                                    "服务器拒绝所有下载连接（包括单连接），无法继续下载"
-                                        .to_string(),
-                                ));
+                                final_error = Some(DownloadError::Other(format!(
+                                    "服务器拒绝所有下载连接（包括单连接），无法继续下载：{error}"
+                                )));
                                 break;
                             }
 
@@ -1994,6 +2127,7 @@ fn find_next_work(
             seg_start: seg.start_byte,
             actual_start: seg.start_byte + seg.downloaded_bytes,
             seg_end: seg.end_byte,
+            open_ended: false,
         };
         let idx = seg.index;
         if let Some(s) = segments.get_mut(&idx) {
@@ -2064,6 +2198,7 @@ fn find_next_pending_only(segments: &mut BTreeMap<i32, LiveSegment>) -> Option<N
         seg_start: seg.start_byte,
         actual_start: seg.start_byte + seg.downloaded_bytes,
         seg_end: seg.end_byte,
+        open_ended: false,
     };
     let idx = seg.index;
     if let Some(s) = segments.get_mut(&idx) {
@@ -2149,6 +2284,7 @@ fn try_split_largest(
         seg_start: split_point,
         actual_start: split_point,
         seg_end: old_end,
+        open_ended: false,
     };
 
     segments.insert(new_index, new_seg);
@@ -2244,6 +2380,7 @@ fn try_proactive_split(
         seg_start: split_point,
         actual_start: split_point,
         seg_end: old_end,
+        open_ended: false,
     };
 
     segments.insert(new_index, new_seg);
@@ -2525,6 +2662,7 @@ fn spawn_worker(
                 assignment.seg_start,
                 assignment.actual_start,
                 assignment.seg_end,
+                assignment.open_ended,
                 &client,
                 &cancel_token,
                 &conn_sensitive,
@@ -2584,6 +2722,20 @@ fn spawn_worker(
 // Segment download with retry
 // ---------------------------------------------------------------------------
 
+/// HTTP 400 Bad Request 判定。
+///
+/// 配额型下载端点（fnOS `multiple-download?token=`：一个 token 只允许固定次数
+/// 成功 GET）对超额请求返回 400 而非 403/429。coordinator 仅在有其他连接正常
+/// 工作（other_working，证明同一 URL 请求合法）时把 400 归入连接级拒绝走降级；
+/// 且 400 绝不写入域名连接数缓存（语义宽泛，避免把坏 URL 学习成主机级降速）。
+fn is_http_400(e: &DownloadError) -> bool {
+    matches!(
+        e,
+        DownloadError::Request(req_err)
+            if req_err.status() == Some(reqwest::StatusCode::BAD_REQUEST)
+    )
+}
+
 /// Download a single segment with automatic retry on transient failures.
 /// Returns the total `downloaded_bytes` for this segment on success.
 #[allow(clippy::too_many_arguments)]
@@ -2595,6 +2747,7 @@ async fn do_segment_with_retry(
     seg_start: i64,
     mut actual_start: i64,
     mut seg_end: i64,
+    open_ended: bool,
     client: &Client,
     cancel: &CancellationToken,
     conn_sensitive: &AtomicBool,
@@ -2622,6 +2775,7 @@ async fn do_segment_with_retry(
             seg_start,
             actual_start,
             seg_end,
+            open_ended,
             client,
             cancel,
             conn_sensitive,
@@ -2669,9 +2823,11 @@ async fn do_segment_with_retry(
                 return Err(e);
             }
             Err(e) => {
-                // 403/429 是服务器明确拒绝多连接，重试毫无意义——
-                // 立即返回让 coordinator 进行降级处理。
-                if is_server_rejection(&e) {
+                // 403/429 是服务器明确拒绝多连接；400 在配额型端点同样意味着
+                // "这条连接不会被服务"（见 is_http_400）——重试只会空烧退避，
+                // 还会拖慢 coordinator 的开放式首段吸收时机（需要在其余 worker
+                // 尽快报告失败后立即扩容其预算）。跳过重试直接上报分类处置。
+                if is_server_rejection(&e) || is_http_400(&e) {
                     log_info!(
                         "[segment-retry] task {} seg {} 收到服务器拒绝，跳过重试直接上报",
                         task_id,
@@ -2719,6 +2875,7 @@ async fn do_segment(
     seg_start: i64,
     actual_start: i64,
     seg_end: i64,
+    open_ended: bool,
     client: &Client,
     cancel: &CancellationToken,
     conn_sensitive: &AtomicBool,
@@ -2745,7 +2902,14 @@ async fn do_segment(
         return Ok(seg_end - seg_start + 1);
     }
 
-    let range = format!("bytes={}-{}", actual_start, seg_end);
+    // 开放式段不给终点：服务器把流一直送到文件尾，写循环按共享 end_byte 预算
+    // 截断。coordinator 可在其余连接被拒时就地扩容本段预算续流（吸收合并），
+    // 也天然兼容"对带终点 Range 返回 400"的怪异端点。
+    let range = if open_ended {
+        format!("bytes={actual_start}-")
+    } else {
+        format!("bytes={}-{}", actual_start, seg_end)
+    };
     // 多段下载始终用 GET——上游 resolve_file_info 已确保 spec.is_get_like()，
     // 此处显式传入 GET 以规避：（1）调用方误传 non-GET spec；（2）spec.method
     // 是 HEAD（HEAD 不携带 body，没有意义）。
@@ -2821,29 +2985,44 @@ async fn do_segment(
         if version_changed {
             return Err(DownloadError::VersionChanged(resp.status().to_string()));
         }
-        // 连接敏感信号：服务器对 Range 请求返回了非 206（且非版本变化）——典型于 alist
-        // 代理云盘在连接压力下偶发全量响应。置位后 coordinator 衰减【主动拆分】以降低连接
-        // churn，减少后续瞬时 200 的发生（保留 reactive 拆分做尾段抢救）。一次性 latch，
-        // 仅首次置位打日志。
-        if !conn_sensitive.swap(true, Ordering::Relaxed) {
-            log_info!(
-                "[coordinator] task {} 检测到连接敏感（服务器对 Range 请求返回 {}），\
+
+        // 开放式首段 + 从 0 起：200 全量流与我们请求的字节完全一致（服务器
+        // 忽略/不支持 Range 时对 `bytes=0-` 返回整文件），直接采用——写循环按
+        // 共享预算截断，行为与 206 无异。不置 conn_sensitive、不记录单连接
+        // 缓存（这条流本身就是最优路径；其余 worker 的非 206 照常走信号路径）。
+        let accepted_open_ended_200 =
+            open_ended && actual_start == 0 && resp.status() == reqwest::StatusCode::OK;
+        if !accepted_open_ended_200 {
+            // 连接敏感信号：服务器对 Range 请求返回了非 206（且非版本变化）——典型于 alist
+            // 代理云盘在连接压力下偶发全量响应。置位后 coordinator 衰减【主动拆分】以降低连接
+            // churn，减少后续瞬时 200 的发生（保留 reactive 拆分做尾段抢救）。一次性 latch，
+            // 仅首次置位打日志。
+            if !conn_sensitive.swap(true, Ordering::Relaxed) {
+                log_info!(
+                    "[coordinator] task {} 检测到连接敏感（服务器对 Range 请求返回 {}），\
                  停止主动拆分以降低连接 churn",
-                task_id,
-                resp.status()
-            );
+                    task_id,
+                    resp.status()
+                );
+            }
+            //   • 非版本变化的 200：仅当【从未下载到任何数据】(total_downloaded==0，从头到尾
+            //     没有一个段拿到过 206) 才记录主机——这是真·服务器无视 Range（如 FnOS NAS）。
+            //     若已下载过数据（Range 明确工作过），本次 200 是【瞬时】的（alist 代理迅雷/
+            //     光鸭云盘在连接压力下偶发全量响应），绝不能因一次瞬时 200 把整个主机打成
+            //     单连接 24h、阻断续传与多段吞吐（BUG-COORD-TRANSIENT-200-POISONS-HOST）。
+            //     判定与 coordinator transient_range 一致，均以 total_downloaded>0 为
+            //     "Range 工作过"的证据。
+            if total_downloaded.load(Ordering::Relaxed) == 0 {
+                record_single_conn_domain_persist(url, db);
+            }
+            return Err(DownloadError::RangeNotSupported(resp.status().to_string()));
         }
-        //   • 非版本变化的 200：仅当【从未下载到任何数据】(total_downloaded==0，从头到尾
-        //     没有一个段拿到过 206) 才记录主机——这是真·服务器无视 Range（如 FnOS NAS）。
-        //     若已下载过数据（Range 明确工作过），本次 200 是【瞬时】的（alist 代理迅雷/
-        //     光鸭云盘在连接压力下偶发全量响应），绝不能因一次瞬时 200 把整个主机打成
-        //     单连接 24h、阻断续传与多段吞吐（BUG-COORD-TRANSIENT-200-POISONS-HOST）。
-        //     判定与 coordinator transient_range 一致，均以 total_downloaded>0 为
-        //     "Range 工作过"的证据。
-        if total_downloaded.load(Ordering::Relaxed) == 0 {
-            record_single_conn_domain_persist(url, db);
-        }
-        return Err(DownloadError::RangeNotSupported(resp.status().to_string()));
+        log_info!(
+            "[coordinator] task {} seg {} 开放式首段收到 200 全量流（服务器忽略 Range），\
+             从 0 起字节等价，直接采用",
+            task_id,
+            seg_idx
+        );
     }
 
     // --- Content-Range 起点对齐校验（BUG-CDN-206-BYTE0-FULLSTREAM）----------
@@ -2971,7 +3150,21 @@ async fn do_segment(
     //     与磁盘上的分段边界一致。沿用 resume 端一致的 CDN 漂移容差（1%，上限 1MB），
     //     仅在真实大小【明显】更大时才触发，避免与 resume 的“trust DB segments”小漂移
     //     决策相互打架；正常多段（规划值==真实大小，分母相等）永不触发，不影响吞吐。
-    if let Some(true_total) = crate::downloader::parse_content_range_total(resp.headers()) {
+    // 开放式首段的 200 全量流没有 Content-Range，但其 Content-Length 就是服务器
+    // 自报的真实总大小，同样参与"规划偏小"检查（hint 偏小时照常触发就地扩容）。
+    let reported_total =
+        crate::downloader::parse_content_range_total(resp.headers()).or_else(|| {
+            if resp.status() == reqwest::StatusCode::OK {
+                resp.headers()
+                    .get(reqwest::header::CONTENT_LENGTH)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.parse::<i64>().ok())
+                    .filter(|v| *v > 0)
+            } else {
+                None
+            }
+        });
+    if let Some(true_total) = reported_total {
         let planned = planned_total.load(Ordering::Relaxed);
         let drift_tolerance = if size_is_estimate {
             0
@@ -3348,6 +3541,51 @@ mod tests {
             downloaded_bytes: downloaded,
             state,
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // is_http_400（配额型端点连接级拒绝分类）
+    // -----------------------------------------------------------------------
+
+    /// 构造带指定 HTTP 状态码的 DownloadError::Request（与 downloader.rs 测试
+    /// 的同名辅助一致：从合成响应调用 error_for_status 得到真实 reqwest::Error）。
+    fn make_status_error(status: u16) -> DownloadError {
+        let http_resp = ::reqwest::Response::from(
+            ::http::Response::builder()
+                .status(status)
+                .body("")
+                .unwrap_or_else(|_| {
+                    panic!("failed to build http::Response with status {}", status)
+                }),
+        );
+        let err = http_resp.error_for_status().unwrap_err();
+        DownloadError::Request(err)
+    }
+
+    #[test]
+    fn http_400_detected() {
+        assert!(super::is_http_400(&make_status_error(400)));
+    }
+
+    #[test]
+    fn http_400_is_not_server_rejection() {
+        // 分类必须与 403/429 区分：400 走连接级拒绝降级（需 other_working 佐证），
+        // 但绝不写入域名连接数缓存（record 只看 is_server_rejection）。
+        assert!(!is_server_rejection(&make_status_error(400)));
+    }
+
+    #[test]
+    fn http_400_ignores_other_statuses() {
+        assert!(!super::is_http_400(&make_status_error(403)));
+        assert!(!super::is_http_400(&make_status_error(404)));
+        assert!(!super::is_http_400(&make_status_error(500)));
+    }
+
+    #[test]
+    fn http_400_ignores_non_request_errors() {
+        assert!(!super::is_http_400(&DownloadError::Other(
+            "400".to_string()
+        )));
     }
 
     // -----------------------------------------------------------------------

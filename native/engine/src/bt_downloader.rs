@@ -4608,13 +4608,19 @@ mod tests {
             dst: dst.clone(),
             expected_len: 13,
         };
-        let resolved =
-            super::resolve_completion_verify_path(src.clone(), std::slice::from_ref(&completion_move), true);
+        let resolved = super::resolve_completion_verify_path(
+            src.clone(),
+            std::slice::from_ref(&completion_move),
+            true,
+        );
         assert_eq!(resolved, src);
 
         let _ = std::fs::remove_file(&src);
-        let resolved =
-            super::resolve_completion_verify_path(src.clone(), std::slice::from_ref(&completion_move), true);
+        let resolved = super::resolve_completion_verify_path(
+            src.clone(),
+            std::slice::from_ref(&completion_move),
+            true,
+        );
         assert_eq!(resolved, dst);
 
         let no_retry =

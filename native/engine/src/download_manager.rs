@@ -253,7 +253,11 @@ async fn scan_missing_files(db: Db, sink: Arc<dyn EventSink>, scanning: Arc<Atom
     }
 
     let mut changes: Vec<(String, bool)> = Vec::new();
-    for (id, missing) in futures_util::future::join_all(futs).await.into_iter().flatten() {
+    for (id, missing) in futures_util::future::join_all(futs)
+        .await
+        .into_iter()
+        .flatten()
+    {
         match db.update_task_file_missing(&id, missing).await {
             Ok(true) => changes.push((id, missing)),
             Ok(false) => {} // 任务已离开 status=3（被删/状态变化）→ 良性空操作
@@ -4401,7 +4405,9 @@ mod tests {
         std::fs::write(&file_path, b"data").expect("write test file");
         let save_dir = dir.to_string_lossy().to_string();
 
-        let db = Db::connect("sqlite::memory:").await.expect("connect mem db");
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
         insert_task_at_status(&db, "t-roundtrip", &save_dir, file_name, 3).await;
 
         let sink = Arc::new(RecordingSink::new());
@@ -4486,7 +4492,9 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("create test dir");
         let save_dir = dir.to_string_lossy().to_string();
 
-        let db = Db::connect("sqlite::memory:").await.expect("connect mem db");
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
         insert_task_at_status(&db, "t-downloading", &save_dir, "movie.mp4", 1).await;
 
         let sink = Arc::new(RecordingSink::new());
@@ -4517,7 +4525,9 @@ mod tests {
         let save_dir = dir.to_string_lossy().to_string();
         let file_name = "movie.mp4"; // 磁盘上不存在
 
-        let db = Db::connect("sqlite::memory:").await.expect("connect mem db");
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
         insert_task_at_status(&db, "t-completed-stale", &save_dir, file_name, 3).await;
         insert_task_at_status(&db, "t-active-redownload", &save_dir, file_name, 1).await;
 
@@ -4546,7 +4556,9 @@ mod tests {
     #[tokio::test]
     async fn progress_reporter_emits_bt_data_finished_once_and_dedupes_repeat() {
         let (tx, rx) = mpsc::channel(8);
-        let db = Db::connect("sqlite::memory:").await.expect("connect mem db");
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
         let sink = Arc::new(RecordingSink::new());
         let handle = tokio::spawn(progress_reporter(rx, db, sink.clone()));
 
@@ -4584,7 +4596,9 @@ mod tests {
     #[tokio::test]
     async fn progress_reporter_forwards_upload_speed_then_zeroes_on_terminal() {
         let (tx, rx) = mpsc::channel(8);
-        let db = Db::connect("sqlite::memory:").await.expect("connect mem db");
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
         let sink = Arc::new(RecordingSink::new());
         let handle = tokio::spawn(progress_reporter(rx, db, sink.clone()));
 

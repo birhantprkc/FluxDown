@@ -18,7 +18,11 @@ fn main() {
             text.lines().find_map(|line| {
                 let rest = line.strip_prefix("version:")?;
                 let v = rest.trim().split('+').next().unwrap_or("").trim();
-                if v.is_empty() { None } else { Some(v.to_string()) }
+                if v.is_empty() {
+                    None
+                } else {
+                    Some(v.to_string())
+                }
             })
         })
         .unwrap_or_else(|| "1.0".to_string());
