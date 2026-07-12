@@ -237,6 +237,11 @@ const zhCN = {
   "options.rules.minFileSizeDesc": "小于该大小的文件不会被拦截",
   "options.rules.domainDesc": "这些域名下的下载将不会被拦截",
 
+  // 自定义协议（fluxdown://）
+  "options.protocol.label": "FluxDown 自定义协议",
+  "options.protocol.enabled": "已启用，重定向到 fluxdown://",
+  "options.protocol.disabled": "关闭（默认）",
+
   // 任务完成通知（任务面板）
   "notify.taskCompletedTitle": "下载完成",
   "notify.taskCompletedDetail": "{name} 已下载完成",

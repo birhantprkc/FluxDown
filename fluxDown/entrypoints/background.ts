@@ -2365,6 +2365,30 @@ export default defineBackground(() => {
     // 引擎收到后分别下载 + mux 合并。追加为末位可选参数，不影响既有调用方。
     audioUrl?: string,
   ): Promise<boolean> {
+    // === fluxdown:// 自定义协议模式 ===
+    // 启用后跳过 NMH/远端投递，直接在浏览器中打开协议 URL，
+    // 由已注册该协议的应用（如 Android FluxDown）接管下载。
+    // 协议格式：fluxdown://download?url=<encoded-url>&filename=<name>
+    // 因为不经过 NMH，Cookie/Headers 等认证信息无法携带，适用于无需登录的公开文件。
+    {
+      const protocolSettings = await getCachedSettings();
+      if (protocolSettings.enableFluxdownProtocol) {
+        const params = new URLSearchParams({ url });
+        if (filename) params.set("filename", filename);
+        const protocolUrl = `fluxdown://download?${params.toString()}`;
+        console.log(
+          "[FluxDown] Fluxdown protocol mode — opening:",
+          protocolUrl,
+        );
+        // 创建新标签页导航到协议 URL；浏览器（Chrome/Edge/Firefox）触达不到
+        // 时会在新标签页展示协议错误，对桌面用户无副作用（且开关默认关闭）。
+        browser.tabs.create({ url: protocolUrl, active: true }).catch(() => {
+          console.warn("[FluxDown] Failed to open fluxdown:// URL");
+        });
+        return true;
+      }
+    }
+
     // === 预热 NMH 链路（fire-and-forget） ===
     // App 冷启动 ~0.7-1s，下方 cookie/认证收集最多 ~500ms。先发 warmup
     // 让两者并行；App 已运行时 warmup 是 ~1ms 本地应答，无副作用。

@@ -251,6 +251,11 @@ const en: Record<MessageKey, string> = {
   "options.rules.minFileSizeDesc": "Files smaller than this are not intercepted",
   "options.rules.domainDesc": "Downloads from these domains are never intercepted",
 
+  // Custom protocol (fluxdown://)
+  "options.protocol.label": "FluxDown Protocol",
+  "options.protocol.enabled": "On — redirect to fluxdown://",
+  "options.protocol.disabled": "Off (default)",
+
   // Task completion notification (task panel)
   "notify.taskCompletedTitle": "Download Complete",
   "notify.taskCompletedDetail": "{name} has finished downloading",
