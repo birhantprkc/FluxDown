@@ -27,15 +27,13 @@
 //!   • Shell injection and escaping edge-cases in POSIX shell scripts
 //!
 //! All HTTP requests go through the website API (`/api/release`, `/api/download/:fn`).
-//! The download endpoint geo-routes by client IP (Cloudflare `CF-IPCountry`):
-//! mainland-China users get a 302 to a GitHub accelerator mirror (fallback R2),
-//! everyone else goes straight to the GitHub release CDN. Mirrors and the CDN
-//! both support Range requests, so the multi-segment download below works
+//! Desktop auto-update always appends `source=github` to the download URL so the
+//! endpoint 302s straight to the GitHub release CDN, bypassing the mainland-China
+//! accelerator-mirror geo-routing (that routing still applies to website downloads).
+//! The CDN supports Range requests, so the multi-segment download below works
 //! transparently through the redirect.
 
-#[cfg(target_os = "windows")]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
@@ -43,7 +41,7 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use reqwest::Client;
 use rinf::RustSignal;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
@@ -57,6 +55,15 @@ const UPDATE_SEGMENTS: i32 = 8;
 /// Minimum file size (bytes) to use multi-segment download. Below this
 /// threshold the overhead of multiple connections is not worth it.
 const MIN_SIZE_FOR_MULTI_SEGMENT: i64 = 2 * 1024 * 1024; // 2 MB
+
+/// Per-segment retry budget for transient network errors. Each retry resumes
+/// from the bytes already flushed to disk, never re-downloading the range.
+const SEGMENT_RETRIES: u32 = 3;
+
+/// Flush-to-disk interval. Resume progress counters only advance after a
+/// flush, so on abrupt failure the sidecar never claims bytes that were still
+/// sitting in tokio's write buffer (which would corrupt a resumed download).
+const FLUSH_INTERVAL: i64 = 1024 * 1024; // 1 MB
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -382,11 +389,17 @@ async fn check_inner(current_version: &str) -> Result<(), UpdateError> {
 
     let (download_url, file_size) = match select_asset(&release.assets) {
         Some(asset) => {
-            let full_url = if asset.download_url.starts_with('/') {
+            let mut full_url = if asset.download_url.starts_with('/') {
                 format!("{UPDATE_API_BASE}{}", asset.download_url)
             } else {
                 asset.download_url.clone()
             };
+            // PC 自动更新固定直连 GitHub CDN，绕过 /api/download 的大陆镜像加速路由。
+            full_url.push_str(if full_url.contains('?') {
+                "&source=github"
+            } else {
+                "?source=github"
+            });
             (full_url, asset.size)
         }
         None => (String::new(), 0),
@@ -478,6 +491,9 @@ async fn check_inner(current_version: &str) -> Result<(), UpdateError> {
 /// Uses multi-segment concurrent downloading (like the main download engine)
 /// to maximise throughput and showcase the product's core capability.
 /// Falls back to single-stream when the server does not support Range requests.
+/// A failed or interrupted download leaves the partial artifact plus a
+/// `<file>.resume.json` sidecar behind; the next download attempt for the
+/// same version resumes from the recorded per-segment offsets.
 pub async fn download(url: &str, version: &str, file_size: i64) {
     let result = download_inner(url, version, file_size).await;
     if let Err(e) = result {
@@ -629,7 +645,15 @@ async fn download_inner(url: &str, version: &str, hint_file_size: i64) -> Result
     if use_multi {
         download_multi_segment(url, version, &file_path, total_bytes, &client).await?;
     } else {
-        download_single_stream(url, version, &file_path, total_bytes, &client).await?;
+        download_single_stream(
+            url,
+            version,
+            &file_path,
+            total_bytes,
+            &client,
+            supports_range,
+        )
+        .await?;
     }
 
     let installer_path = file_path.to_string_lossy().to_string();
@@ -661,28 +685,96 @@ async fn download_single_stream(
     file_path: &PathBuf,
     total_bytes: i64,
     client: &Client,
+    supports_range: bool,
 ) -> Result<(), UpdateError> {
-    let resp = client.get(url).send().await?;
+    // Resume is possible only when the server honours Range and the final
+    // size is known (the file is then pre-allocated to full size, exactly
+    // like the multi-segment path, so `load_resume`'s length check applies).
+    let track_resume = supports_range && total_bytes > 0;
+    let ranges = [SegmentRange {
+        start: 0,
+        end: total_bytes - 1,
+    }];
+
+    let mut resume_from: i64 = 0;
+    if track_resume && let Some(done) = load_resume(file_path, version, total_bytes, &ranges).await
+    {
+        resume_from = done[0].min(total_bytes);
+    }
+    if track_resume && resume_from >= total_bytes {
+        // Everything already on disk from a previous attempt.
+        let _ = tokio::fs::remove_file(resume_path(file_path)).await;
+        return Ok(());
+    }
+
+    let mut request = client.get(url);
+    if resume_from > 0 {
+        request = request.header("Range", format!("bytes={resume_from}-"));
+    }
+    let resp = request.send().await?;
     if !resp.status().is_success() {
         return Err(UpdateError::Other(format!(
             "Download returned status {}",
             resp.status()
         )));
     }
+    if resume_from > 0 && resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+        // Server ignored the Range header after all — restart from scratch.
+        log_info!(
+            "[updater] resume rejected (got {}), restarting",
+            resp.status()
+        );
+        resume_from = 0;
+    }
 
-    let mut file = tokio::fs::File::create(file_path).await?;
+    let mut file = if track_resume {
+        let file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(file_path)
+            .await?;
+        file.set_len(total_bytes as u64).await?;
+        file
+    } else {
+        tokio::fs::File::create(file_path).await?
+    };
+    if resume_from > 0 {
+        file.seek(std::io::SeekFrom::Start(resume_from as u64))
+            .await?;
+    }
+
     let mut stream = resp.bytes_stream();
 
-    let mut downloaded: i64 = 0;
+    let mut downloaded: i64 = resume_from;
+    let mut flushed: i64 = resume_from;
+    let mut unflushed: i64 = 0;
     let mut last_report = std::time::Instant::now();
-    let mut last_downloaded_for_speed: i64 = 0;
+    let mut last_downloaded_for_speed: i64 = downloaded;
     let mut last_speed_time = std::time::Instant::now();
     let report_interval = Duration::from_millis(200);
+    let mut ticks: u32 = 0;
 
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
+        let chunk = match chunk {
+            Ok(c) => c,
+            Err(e) => {
+                // Persist progress (flushed bytes only) so the next attempt
+                // resumes instead of restarting.
+                if track_resume {
+                    save_resume(file_path, version, total_bytes, &ranges, &[flushed]).await;
+                }
+                return Err(UpdateError::Http(e));
+            }
+        };
         file.write_all(&chunk).await?;
         downloaded += chunk.len() as i64;
+        unflushed += chunk.len() as i64;
+        if unflushed >= FLUSH_INTERVAL {
+            file.flush().await?;
+            flushed = downloaded;
+            unflushed = 0;
+        }
 
         let now = std::time::Instant::now();
         if now.duration_since(last_report) >= report_interval {
@@ -709,11 +801,111 @@ async fn download_single_stream(
             .send_signal_to_dart();
 
             last_report = now;
+            ticks += 1;
+            if track_resume && ticks.is_multiple_of(5) {
+                save_resume(file_path, version, total_bytes, &ranges, &[flushed]).await;
+            }
         }
     }
 
     file.flush().await?;
+    flushed = downloaded;
+
+    if track_resume {
+        if downloaded < total_bytes {
+            // Connection closed early — keep state for the next attempt.
+            save_resume(file_path, version, total_bytes, &ranges, &[flushed]).await;
+            return Err(UpdateError::Other(format!(
+                "connection closed early: {downloaded}/{total_bytes} bytes"
+            )));
+        }
+        let _ = tokio::fs::remove_file(resume_path(file_path)).await;
+    }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Resume state (sidecar file next to the partially-downloaded artifact)
+// ---------------------------------------------------------------------------
+
+/// Sidecar recording per-segment progress so a failed/interrupted update
+/// download resumes instead of restarting. The `version` field guards against
+/// resuming a stale partial from a previous release (asset filenames are
+/// version-less, so the artifact path alone cannot disambiguate).
+#[derive(Serialize, Deserialize)]
+struct ResumeState {
+    version: String,
+    total_bytes: i64,
+    starts: Vec<i64>,
+    ends: Vec<i64>,
+    done: Vec<i64>,
+}
+
+/// `<artifact>.resume.json` next to the download artifact.
+fn resume_path(file_path: &Path) -> PathBuf {
+    let mut name = file_path
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
+    name.push(".resume.json");
+    file_path.with_file_name(name)
+}
+
+/// Load and validate resume state. Returns the per-segment completed byte
+/// counts only when the artifact is already pre-allocated to `total_bytes`
+/// and the sidecar matches version, size, and the exact segment layout.
+async fn load_resume(
+    file_path: &Path,
+    version: &str,
+    total_bytes: i64,
+    ranges: &[SegmentRange],
+) -> Option<Vec<i64>> {
+    let meta = tokio::fs::metadata(file_path).await.ok()?;
+    if meta.len() as i64 != total_bytes {
+        return None;
+    }
+    let bytes = tokio::fs::read(resume_path(file_path)).await.ok()?;
+    let state: ResumeState = serde_json::from_slice(&bytes).ok()?;
+    if state.version != version
+        || state.total_bytes != total_bytes
+        || state.starts.len() != ranges.len()
+        || state.ends.len() != ranges.len()
+        || state.done.len() != ranges.len()
+    {
+        return None;
+    }
+    for (i, r) in ranges.iter().enumerate() {
+        let seg_len = r.end - r.start + 1;
+        if state.starts[i] != r.start
+            || state.ends[i] != r.end
+            || state.done[i] < 0
+            || state.done[i] > seg_len
+        {
+            return None;
+        }
+    }
+    Some(state.done)
+}
+
+/// Best-effort persist of resume state; failures are ignored (worst case the
+/// next attempt starts fresh).
+async fn save_resume(
+    file_path: &Path,
+    version: &str,
+    total_bytes: i64,
+    ranges: &[SegmentRange],
+    done: &[i64],
+) {
+    let state = ResumeState {
+        version: version.to_string(),
+        total_bytes,
+        starts: ranges.iter().map(|r| r.start).collect(),
+        ends: ranges.iter().map(|r| r.end).collect(),
+        done: done.to_vec(),
+    };
+    if let Ok(bytes) = serde_json::to_vec(&state) {
+        let _ = tokio::fs::write(resume_path(file_path), bytes).await;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -747,30 +939,48 @@ async fn download_multi_segment(
         };
         ranges.push(SegmentRange { start, end });
     }
+    let ranges = Arc::new(ranges);
 
-    // Pre-allocate the output file to the full size
-    {
+    // Resume: a matching sidecar + full-size artifact from a previous failed
+    // attempt lets every segment continue where it stopped.
+    let resumed = load_resume(file_path, version, total_bytes, &ranges).await;
+    if resumed.is_none() {
+        // Fresh start: pre-allocate the output file to the full size.
         let file = tokio::fs::File::create(file_path).await?;
         file.set_len(total_bytes as u64).await?;
     }
+    let initial: Vec<i64> = resumed.unwrap_or_else(|| vec![0; seg_count as usize]);
+    let initial_total: i64 = initial.iter().sum();
+    if initial_total > 0 {
+        log_info!(
+            "[updater] resuming update download: {}/{} bytes already on disk",
+            initial_total,
+            total_bytes
+        );
+    }
 
-    // Shared progress counters — each segment atomically increments its own
-    // counter so the reporter task can sum them lock-free.
+    // Shared progress counters — each segment atomically advances its own
+    // counter (absolute completed bytes within the segment) so the reporter
+    // task can sum them lock-free and persist resume state.
     let segment_progress: Arc<Vec<AtomicI64>> =
-        Arc::new((0..seg_count).map(|_| AtomicI64::new(0)).collect());
+        Arc::new(initial.iter().map(|v| AtomicI64::new(*v)).collect());
     let active_count = Arc::new(AtomicI64::new(seg_count));
 
-    // Spawn a progress reporter task
+    // Spawn a progress reporter task (also persists resume state ~1×/s)
     let ver = version.to_string();
     let prog = Arc::clone(&segment_progress);
     let active = Arc::clone(&active_count);
+    let reporter_ranges = Arc::clone(&ranges);
+    let reporter_path = file_path.clone();
     let reporter = tokio::spawn(async move {
         let report_interval = Duration::from_millis(200);
-        let mut last_total: i64 = 0;
+        let mut last_total: i64 = initial_total;
         let mut last_time = std::time::Instant::now();
+        let mut ticks: u32 = 0;
 
         loop {
             tokio::time::sleep(report_interval).await;
+            ticks += 1;
 
             let downloaded: i64 = prog.iter().map(|a| a.load(Ordering::Relaxed)).sum();
             let now = std::time::Instant::now();
@@ -802,20 +1012,27 @@ async fn download_multi_segment(
             if downloaded >= total_bytes {
                 break;
             }
+
+            if ticks.is_multiple_of(5) {
+                let done: Vec<i64> = prog.iter().map(|a| a.load(Ordering::Relaxed)).collect();
+                save_resume(&reporter_path, &ver, total_bytes, &reporter_ranges, &done).await;
+            }
         }
     });
 
     // Spawn one task per segment
     let mut handles = Vec::with_capacity(seg_count as usize);
-    for (idx, range) in ranges.into_iter().enumerate() {
+    for idx in 0..seg_count as usize {
         let client = client.clone();
         let url = url.to_string();
         let file_path = file_path.clone();
         let seg_prog = Arc::clone(&segment_progress);
         let active_cnt = Arc::clone(&active_count);
+        let ranges = Arc::clone(&ranges);
 
         let handle = tokio::spawn(async move {
-            let result = download_segment(&client, &url, &file_path, idx, &range, &seg_prog).await;
+            let result =
+                download_segment(&client, &url, &file_path, idx, &ranges[idx], &seg_prog).await;
             active_cnt.fetch_sub(1, Ordering::Relaxed);
             result
         });
@@ -847,16 +1064,23 @@ async fn download_multi_segment(
     let _ = reporter.await;
 
     if let Some(e) = first_error {
-        // Clean up partial file on error
-        let _ = tokio::fs::remove_file(file_path).await;
+        // Keep the partial artifact and persist final progress so the next
+        // attempt resumes instead of restarting from zero.
+        let done: Vec<i64> = segment_progress
+            .iter()
+            .map(|a| a.load(Ordering::Relaxed))
+            .collect();
+        save_resume(file_path, version, total_bytes, &ranges, &done).await;
         return Err(e);
     }
 
+    let _ = tokio::fs::remove_file(resume_path(file_path)).await;
     Ok(())
 }
 
-/// Download a single byte-range segment, writing directly to the correct
-/// offset in the pre-allocated file.
+/// Download a single byte-range segment with retry. Each retry (and each
+/// fresh `download` invocation, via the resume sidecar) continues from the
+/// bytes already flushed to disk instead of re-downloading the whole range.
 async fn download_segment(
     client: &Client,
     url: &str,
@@ -865,7 +1089,58 @@ async fn download_segment(
     range: &SegmentRange,
     progress: &Arc<Vec<AtomicI64>>,
 ) -> Result<(), UpdateError> {
-    let range_header = format!("bytes={}-{}", range.start, range.end);
+    let seg_len = range.end - range.start + 1;
+    let mut attempt: u32 = 0;
+
+    loop {
+        let done = progress[idx].load(Ordering::Relaxed).clamp(0, seg_len);
+        if done >= seg_len {
+            return Ok(());
+        }
+        match download_segment_attempt(client, url, file_path, idx, range, done, progress).await {
+            Ok(()) => {
+                log_info!(
+                    "[updater] segment {} finished: {}-{}",
+                    idx,
+                    range.start,
+                    range.end
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                attempt += 1;
+                if attempt > SEGMENT_RETRIES {
+                    return Err(e);
+                }
+                log_info!(
+                    "[updater] segment {} attempt {} failed: {}; retrying",
+                    idx,
+                    attempt,
+                    e
+                );
+                tokio::time::sleep(Duration::from_secs(2u64 << (attempt - 1))).await;
+            }
+        }
+    }
+}
+
+/// One attempt at a segment: requests only the missing tail of the range and
+/// writes at the correct offset. `done` = bytes already valid on disk.
+///
+/// The progress counter (which feeds the resume sidecar) only advances after
+/// `flush`, so an abrupt failure can never record bytes still sitting in
+/// tokio's write buffer.
+async fn download_segment_attempt(
+    client: &Client,
+    url: &str,
+    file_path: &PathBuf,
+    idx: usize,
+    range: &SegmentRange,
+    done: i64,
+    progress: &Arc<Vec<AtomicI64>>,
+) -> Result<(), UpdateError> {
+    let start = range.start + done;
+    let range_header = format!("bytes={}-{}", start, range.end);
 
     let resp = client
         .get(url)
@@ -873,9 +1148,8 @@ async fn download_segment(
         .send()
         .await?;
 
-    // Accept both 206 Partial Content and 200 OK (some CDNs ignore Range for
-    // small files).  For 200 OK we must NOT write — only segment 0 would be
-    // valid.  Return an error so the caller can fall back.
+    // Accept only 206 Partial Content. A 200 OK would be the whole file —
+    // writing it at this offset would corrupt the artifact.
     if resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
         return Err(UpdateError::Other(format!(
             "segment {idx} expected 206 Partial Content, got {}",
@@ -887,29 +1161,47 @@ async fn download_segment(
         .write(true)
         .open(file_path)
         .await?;
-    file.seek(std::io::SeekFrom::Start(range.start as u64))
-        .await?;
+    file.seek(std::io::SeekFrom::Start(start as u64)).await?;
 
+    let expected = range.end - start + 1;
     let mut stream = resp.bytes_stream();
     let mut written: i64 = 0;
+    let mut unflushed: i64 = 0;
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(UpdateError::Http)?;
+        if written + chunk.len() as i64 > expected {
+            return Err(UpdateError::Other(format!(
+                "segment {idx} server sent more bytes than requested"
+            )));
+        }
         file.write_all(&chunk).await?;
         written += chunk.len() as i64;
-        progress[idx].store(written, Ordering::Relaxed);
+        unflushed += chunk.len() as i64;
+        if unflushed >= FLUSH_INTERVAL {
+            file.flush().await?;
+            unflushed = 0;
+            progress[idx].store(done + written, Ordering::Relaxed);
+        }
     }
 
     file.flush().await?;
 
-    log_info!(
-        "[updater] segment {} finished: {}-{} ({} bytes written)",
-        idx,
-        range.start,
-        range.end,
-        written
-    );
+    if written < expected {
+        // Short read: keep flushed progress, report as retryable error.
+        progress[idx].store(done + written, Ordering::Relaxed);
+        return Err(UpdateError::Other(format!(
+            "segment {idx} truncated: got {written} of {expected} bytes"
+        )));
+    }
 
+    progress[idx].store(done + written, Ordering::Relaxed);
+    log_info!(
+        "[updater] segment {} wrote {} bytes at offset {}",
+        idx,
+        written,
+        start
+    );
     Ok(())
 }
 
@@ -1477,4 +1769,87 @@ fn install_portable_tarball(tarball_path: &str) -> Result<(), UpdateError> {
         .map_err(UpdateError::Io)?;
 
     std::process::exit(0);
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::{SegmentRange, load_resume, resume_path, save_resume};
+
+    fn ranges() -> Vec<SegmentRange> {
+        vec![
+            SegmentRange { start: 0, end: 499 },
+            SegmentRange {
+                start: 500,
+                end: 999,
+            },
+        ]
+    }
+
+    /// Roundtrip: saved progress is loaded back verbatim when the artifact
+    /// exists at full size and version/layout match.
+    #[tokio::test]
+    async fn resume_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("fd_resume_rt_{}", std::process::id()));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let artifact = dir.join("pkg.zip");
+        tokio::fs::write(&artifact, vec![0u8; 1000]).await.unwrap();
+
+        let r = ranges();
+        save_resume(&artifact, "1.2.3", 1000, &r, &[100, 250]).await;
+        assert_eq!(
+            load_resume(&artifact, "1.2.3", 1000, &r).await,
+            Some(vec![100, 250])
+        );
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    /// Stale state must be rejected: version mismatch (new release, same
+    /// filename), artifact size mismatch, and segment-layout mismatch.
+    #[tokio::test]
+    async fn resume_rejects_stale_state() {
+        let dir = std::env::temp_dir().join(format!("fd_resume_stale_{}", std::process::id()));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let artifact = dir.join("pkg.zip");
+        tokio::fs::write(&artifact, vec![0u8; 1000]).await.unwrap();
+
+        let r = ranges();
+        save_resume(&artifact, "1.2.3", 1000, &r, &[100, 250]).await;
+
+        // Different version → fresh start.
+        assert_eq!(load_resume(&artifact, "1.2.4", 1000, &r).await, None);
+        // Different total size → fresh start.
+        assert_eq!(load_resume(&artifact, "1.2.3", 2000, &r).await, None);
+        // Different segment layout → fresh start.
+        let other = vec![SegmentRange { start: 0, end: 999 }];
+        assert_eq!(load_resume(&artifact, "1.2.3", 1000, &other).await, None);
+        // Artifact truncated on disk → fresh start.
+        tokio::fs::write(&artifact, vec![0u8; 400]).await.unwrap();
+        assert_eq!(load_resume(&artifact, "1.2.3", 1000, &r).await, None);
+        // Missing sidecar → fresh start.
+        tokio::fs::write(&artifact, vec![0u8; 1000]).await.unwrap();
+        tokio::fs::remove_file(resume_path(&artifact))
+            .await
+            .unwrap();
+        assert_eq!(load_resume(&artifact, "1.2.3", 1000, &r).await, None);
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    /// Done counts outside the segment range invalidate the sidecar.
+    #[tokio::test]
+    async fn resume_rejects_out_of_range_done() {
+        let dir = std::env::temp_dir().join(format!("fd_resume_oor_{}", std::process::id()));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let artifact = dir.join("pkg.zip");
+        tokio::fs::write(&artifact, vec![0u8; 1000]).await.unwrap();
+
+        let r = ranges();
+        // 600 > segment length (500) → invalid.
+        save_resume(&artifact, "1.2.3", 1000, &r, &[600, 0]).await;
+        assert_eq!(load_resume(&artifact, "1.2.3", 1000, &r).await, None);
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
 }
