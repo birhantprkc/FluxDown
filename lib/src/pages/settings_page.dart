@@ -17,6 +17,7 @@ import '../i18n/locale_provider.dart';
 import '../models/custom_category.dart';
 import '../models/download_controller.dart';
 import '../models/download_queue.dart';
+import '../models/plugin_provider.dart';
 import '../models/settings_provider.dart';
 import '../services/app_icon_service.dart';
 import '../services/floating_ball/floating_ball_service.dart';
@@ -29,6 +30,7 @@ import '../theme/theme_provider.dart';
 import '../widgets/category_edit_dialog.dart';
 import '../widgets/dir_picker_field.dart';
 import '../widgets/number_selector.dart';
+import '../widgets/plugin_list_view.dart';
 import '../widgets/thread_selector.dart';
 import '../widgets/title_drag_area.dart';
 
@@ -44,6 +46,7 @@ enum SettingsCategory {
   ed2k(icon: LucideIcons.share2),
   proxy(icon: LucideIcons.globe),
   apiService(icon: LucideIcons.server),
+  plugins(icon: LucideIcons.puzzle),
   about(icon: LucideIcons.info);
 
   final IconData icon;
@@ -62,6 +65,7 @@ extension SettingsCategoryI18n on SettingsCategory {
       SettingsCategory.ed2k => s.settingsCatEd2k,
       SettingsCategory.proxy => s.settingsCatProxy,
       SettingsCategory.apiService => s.settingsCatApiService,
+      SettingsCategory.plugins => s.settingsCatPlugins,
       SettingsCategory.about => s.settingsCatAbout,
     };
   }
@@ -76,6 +80,7 @@ extension SettingsCategoryI18n on SettingsCategory {
       SettingsCategory.ed2k => s.settingsCatEd2kDesc,
       SettingsCategory.proxy => s.settingsCatProxyDesc,
       SettingsCategory.apiService => s.settingsCatApiServiceDesc,
+      SettingsCategory.plugins => s.settingsCatPluginsDesc,
       SettingsCategory.about => s.settingsCatAboutDesc,
     };
   }
@@ -351,6 +356,7 @@ List<SettingsSearchItem> get settingsSearchItems {
 class SettingsPage extends StatefulWidget {
   final VoidCallback onBack;
   final SettingsProvider settingsProvider;
+  final PluginProvider pluginProvider;
   final DownloadController? downloadController;
   final SettingsCategory? initialCategory;
 
@@ -361,6 +367,7 @@ class SettingsPage extends StatefulWidget {
     super.key,
     required this.onBack,
     required this.settingsProvider,
+    required this.pluginProvider,
     this.downloadController,
     this.initialCategory,
     this.initialHighlight,
@@ -571,6 +578,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   child: _SettingsContent(
                     category: _selected,
                     settingsProvider: widget.settingsProvider,
+                    pluginProvider: widget.pluginProvider,
                     downloadController: widget.downloadController,
                   ),
                 ),
@@ -894,11 +902,13 @@ class _SettingsNavItemState extends State<_SettingsNavItem> {
 class _SettingsContent extends StatefulWidget {
   final SettingsCategory category;
   final SettingsProvider settingsProvider;
+  final PluginProvider pluginProvider;
   final DownloadController? downloadController;
 
   const _SettingsContent({
     required this.category,
     required this.settingsProvider,
+    required this.pluginProvider,
     this.downloadController,
   });
 
@@ -928,6 +938,7 @@ class _SettingsContentState extends State<_SettingsContent> {
   Widget build(BuildContext context) {
     final category = widget.category;
     final settingsProvider = widget.settingsProvider;
+    final pluginProvider = widget.pluginProvider;
     final downloadController = widget.downloadController;
     return SingleChildScrollView(
       controller: _scrollController,
@@ -977,6 +988,10 @@ class _SettingsContentState extends State<_SettingsContent> {
                   SettingsCategory.apiService => _ApiServiceContent(
                     key: const ValueKey('apiService'),
                     settingsProvider: settingsProvider,
+                  ),
+                  SettingsCategory.plugins => PluginListView(
+                    key: const ValueKey('plugins'),
+                    provider: pluginProvider,
                   ),
                   SettingsCategory.about => _AboutContent(
                     key: const ValueKey('about'),

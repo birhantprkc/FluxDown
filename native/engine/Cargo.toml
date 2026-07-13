@@ -26,6 +26,7 @@ m3u8-rs = "6"
 md-5 = "0.10"
 md4 = "0.10"
 rand = "0.9"
+rquickjs = { version = "0.12.1", features = ["full-async", "parallel"], optional = true }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1"
 sha1 = "0.10"
@@ -39,6 +40,8 @@ tracing = "0.1"
 ts2mp4 = "0.3"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
+# 插件 zip 安装（跨桌面/服务端；仅 plugins feature 开启时启用）
+zip = { version = "2", default-features = false, features = ["deflate"], optional = true }
 
 [target."cfg(windows)".dependencies]
 librqbit = { version = "8", default-features = false, features = ["default-tls"] }
@@ -46,7 +49,6 @@ reqwest = { version = "0.12", features = ["stream", "native-tls", "cookies", "js
 # 固定 0.59：0.61 引入 windows-link(raw-dylib)，与 cdylib 构建在 CI 上不兼容
 windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
 winreg = "0.55"
-zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target."cfg(not(windows))".dependencies]
 libc = "0.2"
@@ -57,3 +59,7 @@ reqwest = { version = "0.12", default-features = false, features = ["stream", "r
 
 [dev-dependencies]
 http = "1.4.0"
+
+[features]
+# 默认关闭；desktop/server 构建显式开启，mobile（Android/iOS）保持关闭以免背 JS 引擎债。
+plugins = ["dep:rquickjs", "dep:zip"]

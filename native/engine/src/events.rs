@@ -100,6 +100,15 @@ pub enum EngineEvent {
     /// false=恢复存在）。仅携带发生变化的任务 `(task_id, missing)`，避免重发
     /// 整表快照导致活跃下载 UI 闪烁。对应 `hub::signals::FileMissingChanged`。
     FileMissingChanged(Vec<(String, bool)>),
+
+    /// 插件因连续超时/超内存被自动熔断禁用。宿主据此提示用户
+    /// （hub → `PluginAutoDisabledNotice` 信号；server → WS `pluginAutoDisabled`）。
+    /// 仅 `plugins` feature 下由 `PluginManager` 发出。
+    PluginAutoDisabled {
+        identity: String,
+        /// 同 `DisabledReason` 的 PascalCase 惯例（熔断路径固定 `CircuitBreaker`）。
+        reason: String,
+    },
 }
 
 /// 引擎事件的接收端,由宿主实现并注入 [`crate::Engine`]。

@@ -520,6 +520,12 @@ struct QueuedTask {
     /// 音频轨 URL（离散音视频轨对下载）。`Some` 时 `url` 为视频轨、此为音频轨，
     /// 引擎分别下载后 mux 合并；`None` 为普通单 URL 下载。
     audio_url: Option<String>,
+    /// 命中的 resolver 插件 ID（空 = 无插件）。始终存在（feature 关时恒空且不读取）。
+    #[cfg_attr(not(feature = "plugins"), allow(dead_code))]
+    resolver_plugin_id: String,
+    /// 是否已完成惰性解析（off-actor resolve 回流后置 true，避免重复解析）。
+    #[cfg_attr(not(feature = "plugins"), allow(dead_code))]
+    resolved: bool,
 }
 
 /// All state associated with a single actively-running download task.
@@ -544,6 +550,58 @@ struct ActiveTaskEntry {
     queue_id: String,
 }
 
+/// off-actor resolve 的种类（start 或 resume 侧再入）。
+#[cfg(feature = "plugins")]
+#[derive(Debug, Clone, Copy)]
+pub enum ResolveKind {
+    Start,
+    Resume,
+}
+
+/// off-actor resolve 的回流结果。worker 无条件发送（含 panic 归一），交
+/// `on_resolve_ready` 兜底，杜绝 pending_resolve/active_tasks 泄漏。
+#[cfg(feature = "plugins")]
+pub struct ResolveOutcome {
+    pub task_id: String,
+    pub identity: String,
+    pub kind: ResolveKind,
+    pub result: Result<Option<crate::plugin::ResolveResult>, crate::plugin::PluginError>,
+}
+
+/// resolve 等待中的任务状态。Start 携 `QueuedTask`（再入覆盖 res 后分派）；
+/// Resume 为标记（do_resume_task 从 DB 重读）。
+#[cfg(feature = "plugins")]
+enum PendingResolve {
+    Start(Box<QueuedTask>),
+    Resume,
+}
+
+/// 把 resolve 结果应用到 QueuedTask（再入前）。非 ephemeral 保持 hint_file_size=0
+/// 以正常 probe 取 ETag（保 resume If-Range 一致性）；ephemeral 且知大小才走
+/// skip-probe hint 路径。
+#[cfg(feature = "plugins")]
+fn apply_resolve_to_queued(queued: &mut QueuedTask, res: crate::plugin::ResolveResult) {
+    if !res.url.is_empty() {
+        queued.url = res.url;
+    }
+    if let Some(name) = res.file_name
+        && !name.is_empty()
+    {
+        queued.file_name = name;
+    }
+    if let Some(headers) = res.extra_headers {
+        queued.extra_headers = headers;
+    }
+    if res.audio_url.is_some() {
+        queued.audio_url = res.audio_url;
+    }
+    // ephemeral（一次性/签名直链）→ 用 total_bytes 走 skip-probe；否则正常 probe。
+    queued.hint_file_size = if res.ephemeral {
+        res.total_bytes.unwrap_or(0)
+    } else {
+        0
+    };
+}
 pub struct DownloadManager {
     db: Db,
     client: Client,
@@ -646,6 +704,26 @@ pub struct DownloadManager {
     sink: Arc<dyn EventSink>,
     /// 需要宿主介入决策的选择接口(HLS 画质/BT 文件选择)——由宿主注入。
     selector: Arc<dyn HostSelection>,
+    /// 插件管理器（Arc 共享）。`None` 直到 `install_plugin_manager` 注入。
+    /// 仅 `plugins` feature 下存在；feature 关时无此字段、下载主链路零变化。
+    #[cfg(feature = "plugins")]
+    plugin_manager: Option<Arc<crate::plugin::PluginManager>>,
+    /// off-actor resolve 回流通道（worker → actor `on_resolve_ready`）。
+    #[cfg(feature = "plugins")]
+    resolve_tx: mpsc::UnboundedSender<ResolveOutcome>,
+    #[cfg(feature = "plugins")]
+    resolve_rx: Option<mpsc::UnboundedReceiver<ResolveOutcome>>,
+    /// 插件 onError 命令式重试意图通道（bridge → actor `plugin_request_retry`）。
+    #[cfg(feature = "plugins")]
+    plugin_retry_tx: mpsc::UnboundedSender<(String, u64)>,
+    #[cfg(feature = "plugins")]
+    plugin_retry_rx: Option<mpsc::UnboundedReceiver<(String, u64)>>,
+    /// resolve 等待中的任务（start 携 QueuedTask，resume 为标记）。
+    #[cfg(feature = "plugins")]
+    pending_resolve: HashMap<String, PendingResolve>,
+    /// resume 侧再入的解析结果（on_resolve_ready → do_resume_task 传递，避免改签名）。
+    #[cfg(feature = "plugins")]
+    resume_applied: HashMap<String, crate::plugin::ResolveResult>,
 }
 
 /// Configuration parameters for [`DownloadManager::new`].
@@ -680,6 +758,10 @@ impl DownloadManager {
         let (tx, rx) = mpsc::channel(8192);
         let (done_tx, done_rx) = mpsc::channel(64);
         let (retry_tx, retry_rx) = mpsc::channel(32);
+        #[cfg(feature = "plugins")]
+        let (resolve_tx, resolve_rx) = mpsc::unbounded_channel();
+        #[cfg(feature = "plugins")]
+        let (plugin_retry_tx, plugin_retry_rx) = mpsc::unbounded_channel();
         let limiter = SpeedLimiter::new(speed_limit_bps);
         limiter.spawn_refill_task();
         Ok(Self {
@@ -717,6 +799,20 @@ impl DownloadManager {
             reserved_temp_paths: HashSet::new(),
             sink,
             selector,
+            #[cfg(feature = "plugins")]
+            plugin_manager: None,
+            #[cfg(feature = "plugins")]
+            resolve_tx,
+            #[cfg(feature = "plugins")]
+            resolve_rx: Some(resolve_rx),
+            #[cfg(feature = "plugins")]
+            plugin_retry_tx,
+            #[cfg(feature = "plugins")]
+            plugin_retry_rx: Some(plugin_retry_rx),
+            #[cfg(feature = "plugins")]
+            pending_resolve: HashMap::new(),
+            #[cfg(feature = "plugins")]
+            resume_applied: HashMap::new(),
         })
     }
 
@@ -734,6 +830,292 @@ impl DownloadManager {
     /// The actor loop should select on this to resume stalled tasks.
     pub fn take_retry_rx(&mut self) -> Option<mpsc::Receiver<String>> {
         self.retry_rx.take()
+    }
+
+    // ===================================================================
+    // 插件系统（off-actor 惰性 resolve / 通知 / 命令式重试）
+    // 仅 `plugins` feature 下编译；feature 关时下载主链路零变化。
+    // ===================================================================
+
+    /// 注入插件管理器（Engine::new 构造后调用）。
+    #[cfg(feature = "plugins")]
+    pub fn install_plugin_manager(&mut self, pm: Arc<crate::plugin::PluginManager>) {
+        self.plugin_manager = Some(pm);
+    }
+
+    /// 获取插件管理器（供 hub/server ApiHost 实现读操作 + 集成测试）。
+    #[cfg(feature = "plugins")]
+    pub fn plugin_manager(&self) -> Option<Arc<crate::plugin::PluginManager>> {
+        self.plugin_manager.clone()
+    }
+
+    /// 构造一个市场客户端（读 config `market_index_sources` 作为自定义索引源，
+    /// 空则用内置候选源）。供 hub/server ApiHost 的市场浏览/安装方法调用。
+    #[cfg(feature = "plugins")]
+    pub async fn market_client(&self) -> Option<crate::plugin::MarketClient> {
+        let pm = self.plugin_manager.clone()?;
+        let all = self.db.get_all_config().await.unwrap_or_default();
+        let sources = crate::plugin::MarketClient::source_config(&all);
+        Some(crate::plugin::MarketClient::new(pm, self.db.clone(), sources))
+    }
+
+    /// 暴露 plugin_retry_tx 供 bridge 构造（onError 命令式重试意图通道）。
+    #[cfg(feature = "plugins")]
+    pub fn plugin_retry_sender(&self) -> mpsc::UnboundedSender<(String, u64)> {
+        self.plugin_retry_tx.clone()
+    }
+
+    /// 交出 resolve 回流接收端给 actor loop。
+    #[cfg(feature = "plugins")]
+    pub fn take_resolve_rx(&mut self) -> Option<mpsc::UnboundedReceiver<ResolveOutcome>> {
+        self.resolve_rx.take()
+    }
+
+    /// 交出 plugin_retry 接收端给 actor loop。
+    #[cfg(feature = "plugins")]
+    pub fn take_plugin_retry_rx(&mut self) -> Option<mpsc::UnboundedReceiver<(String, u64)>> {
+        self.plugin_retry_rx.take()
+    }
+
+    /// 纯 Rust glob 首匹配（同步逻辑，async 仅因读 RwLock）。feature 关时恒空。
+    #[cfg(feature = "plugins")]
+    async fn plugin_match_resolver(&self, url: &str) -> String {
+        match &self.plugin_manager {
+            Some(pm) => pm.match_resolver(url).await.unwrap_or_default(),
+            None => String::new(),
+        }
+    }
+    #[cfg(not(feature = "plugins"))]
+    async fn plugin_match_resolver(&self, _url: &str) -> String {
+        String::new()
+    }
+
+    /// off-actor resolve worker：在插件专用 runtime 上 spawn（禁裸 tokio::spawn），
+    /// panic 隔离，无条件回流（交 on_resolve_ready 兜底）。
+    #[cfg(feature = "plugins")]
+    fn spawn_resolve_worker(
+        &self,
+        task_id: String,
+        identity: String,
+        req: crate::plugin::ResolveRequest,
+        kind: ResolveKind,
+    ) {
+        use futures_util::FutureExt;
+        let Some(pm) = self.plugin_manager.clone() else {
+            return;
+        };
+        let tx = self.resolve_tx.clone();
+        let handle = pm.runtime_handle();
+        let id_for_worker = identity.clone();
+        handle.spawn(async move {
+            let fut = std::panic::AssertUnwindSafe(pm.resolve(&id_for_worker, req));
+            let result = match fut.catch_unwind().await {
+                Ok(r) => r,
+                Err(panic) => {
+                    let msg = panic
+                        .downcast_ref::<&str>()
+                        .map(|s| s.to_string())
+                        .or_else(|| panic.downcast_ref::<String>().cloned())
+                        .unwrap_or_else(|| "resolver panicked".to_string());
+                    Err(crate::plugin::PluginError::Runtime(msg))
+                }
+            };
+            let _ = tx.send(ResolveOutcome {
+                task_id,
+                identity,
+                kind,
+                result,
+            });
+        });
+    }
+
+    /// resolve 回流再入（actor 上下文）。先复查 DB 生命周期，再按结果分派。
+    #[cfg(feature = "plugins")]
+    pub async fn on_resolve_ready(&mut self, out: ResolveOutcome) {
+        let task_id = out.task_id.clone();
+        // 用户在 resolve 窗口内 pause/cancel/delete 均经 clear_pending_resolve 移除本条目
+        // （见 pause_task/cancel_task/delete_task）；此处以 pending_resolve 成员资格作为
+        // 「窗口内用户已介入」的**权威信号**——不能用 DB status，因为 resume 天然从
+        // paused(2)/error(4) 起步，用 status 判定会把每次 resume 都误判为「已取消」而放弃
+        // （blocker）。同时天然去重 stale/重复 outcome（首次处理已 remove，后续找不到即放弃）。
+        if !self.pending_resolve.contains_key(&task_id) {
+            self.active_tasks.remove(&task_id);
+            self.drain_queue().await;
+            return;
+        }
+        // 任务已从 DB 删除（兜底；delete_task 亦已清 pending_resolve）→ 放弃再入。
+        let task = match self.db.load_task_by_id(&task_id).await {
+            Ok(Some(t)) => t,
+            _ => {
+                self.pending_resolve.remove(&task_id);
+                self.active_tasks.remove(&task_id);
+                self.drain_queue().await;
+                return;
+            }
+        };
+
+        match out.result {
+            Ok(applied) => {
+                // Ok(Some) = 改写；Ok(None) = 放行（用原 url）。
+                match out.kind {
+                    ResolveKind::Start => {
+                        if let Some(PendingResolve::Start(mut queued)) =
+                            self.pending_resolve.remove(&task_id)
+                        {
+                            if let Some(res) = applied {
+                                apply_resolve_to_queued(&mut queued, res);
+                            }
+                            queued.resolved = true;
+                            self.do_start_task(*queued).await;
+                            self.drain_queue().await;
+                        }
+                    }
+                    ResolveKind::Resume => {
+                        self.pending_resolve.remove(&task_id);
+                        self.active_tasks.remove(&task_id);
+                        // Some(res) 改写；None → 空 ResolveResult 表示放行（用原 url）。
+                        // 经 resume_applied 字段传给 do_resume_task（避免改其签名/所有调用点）。
+                        self.resume_applied
+                            .insert(task_id.clone(), applied.unwrap_or_default());
+                        self.do_resume_task(&task_id).await;
+                        self.drain_queue().await;
+                    }
+                }
+            }
+            Err(e) => {
+                let msg = format!("[插件] {}: {}", out.identity, e);
+                let _ = self.db.update_task_status(&task_id, 4, &msg).await;
+                self.sink.emit(EngineEvent::TaskProgress {
+                    task_id: task_id.clone(),
+                    status: 4,
+                    downloaded_bytes: task.downloaded_bytes,
+                    total_bytes: task.total_bytes,
+                    speed: 0,
+                    file_name: task.file_name.clone(),
+                    save_dir: task.save_dir.clone(),
+                    url: task.url.clone(),
+                    error_message: msg,
+                    upload_speed_bps: 0,
+                });
+                self.pending_resolve.remove(&task_id);
+                self.active_tasks.remove(&task_id);
+                self.drain_queue().await;
+            }
+        }
+    }
+
+    /// 插件 onError 命令式重试（actor 上下文，复用 auto_retry 账本限流）。
+    #[cfg(feature = "plugins")]
+    pub async fn plugin_request_retry(&mut self, task_id: &str, delay_ms: u64) {
+        let max_retries = self.max_auto_retries;
+        if max_retries == 0 {
+            return;
+        }
+        let terminal_error = self
+            .db
+            .load_task_by_id(task_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|t| t.status == 4)
+            .unwrap_or(false);
+        if !terminal_error {
+            return;
+        }
+        let count = self.auto_retry_counts.entry(task_id.to_string()).or_insert(0);
+        if max_retries != -1 && (*count as i32) >= max_retries {
+            log_info!("[plugin] task {} 重试已达上限，忽略 requestRetry", task_id);
+            return;
+        }
+        *count += 1;
+        let tx = self.retry_tx.clone();
+        let tid = task_id.to_string();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            let _ = tx.send(tid).await;
+        });
+    }
+
+    /// do_start_task 体首守卫调用：占位 + 存 pending_resolve + spawn off-actor worker。
+    #[cfg(feature = "plugins")]
+    async fn begin_resolve_start(&mut self, queued: QueuedTask) {
+        let task_id = queued.task_id.clone();
+        let identity = queued.resolver_plugin_id.clone();
+        // 占位插入 active_tasks（用原始 url 算 is_bt，真实 generation/cancel_token）：
+        // resolve 期间任务可被 pause/cancel 触达、正确占并发计数；再入时被覆盖。
+        self.generation += 1;
+        let spawn_gen = self.generation;
+        let is_bt = is_magnet(&queued.url)
+            || !queued.torrent_file_bytes.is_empty()
+            || is_torrent_file_url(&queued.url);
+        self.active_tasks.insert(
+            task_id.clone(),
+            ActiveTaskEntry {
+                token: CancellationToken::new(),
+                generation: spawn_gen,
+                handle: None,
+                is_bt,
+                queue_id: queued.queue_id.clone(),
+            },
+        );
+        let req = crate::plugin::ResolveRequest {
+            task_id: task_id.clone(),
+            url: queued.url.clone(),
+            cookies: queued.cookies.clone(),
+            referrer: queued.referrer.clone(),
+            user_agent: queued.user_agent.clone(),
+            extra_headers: queued.extra_headers.clone(),
+        };
+        self.pending_resolve
+            .insert(task_id.clone(), PendingResolve::Start(Box::new(queued)));
+        self.spawn_resolve_worker(task_id, identity, req, ResolveKind::Start);
+    }
+
+    /// do_resume_task 体首守卫调用：对称占位（防 resumeAll 并发双 resolve）+ spawn。
+    #[cfg(feature = "plugins")]
+    async fn begin_resolve_resume(&mut self, task_id: &str, identity: String) {
+        let task = match self.db.load_task_by_id(task_id).await {
+            Ok(Some(t)) => t,
+            _ => return,
+        };
+        // 对称占位：resolve-wait 期间 task 须在 active_tasks，否则 resume_task_inner
+        // 重入检查恒 false，resumeAll/双击/自动重试会并发 spawn 第二个 resolve。
+        self.generation += 1;
+        let spawn_gen = self.generation;
+        let is_bt = is_bt_url(&task.url);
+        self.active_tasks.insert(
+            task_id.to_string(),
+            ActiveTaskEntry {
+                token: CancellationToken::new(),
+                generation: spawn_gen,
+                handle: None,
+                is_bt,
+                queue_id: task.queue_id.clone(),
+            },
+        );
+        let (cookies, referrer, extra_headers) = self
+            .db
+            .load_task_request_context(task_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|(c, r, h)| {
+                let headers: std::collections::HashMap<String, String> =
+                    serde_json::from_str(&h).unwrap_or_default();
+                (c, r, headers)
+            })
+            .unwrap_or_default();
+        let req = crate::plugin::ResolveRequest {
+            task_id: task_id.to_string(),
+            url: task.url.clone(),
+            cookies,
+            referrer,
+            user_agent: String::new(),
+            extra_headers,
+        };
+        self.pending_resolve
+            .insert(task_id.to_string(), PendingResolve::Resume);
+        self.spawn_resolve_worker(task_id.to_string(), identity, req, ResolveKind::Resume);
     }
 
     /// 检查任务是否仍处于"可自动重试的 error(4)"状态，供 actor loop 在自动
@@ -1249,6 +1631,28 @@ impl DownloadManager {
                 // 任务成功完成，清除重试计数
                 self.auto_retry_counts.remove(task_id);
             }
+
+            // 通知平面：onDone / onError（fire-and-forget）。onError 内脚本可经
+            // flux.task.requestRetry 命令式重试（受 max_auto_retries 约束）。
+            #[cfg(feature = "plugins")]
+            if let Some(pm) = &self.plugin_manager {
+                if task.status == 3 {
+                    let file_path = format!("{}/{}", task.save_dir, task.file_name);
+                    pm.notify(crate::plugin::PluginEvent::Done {
+                        task_id: task_id.to_string(),
+                        url: task.url.clone(),
+                        file_path,
+                    })
+                    .await;
+                } else if task.status == 4 {
+                    pm.notify(crate::plugin::PluginEvent::Error {
+                        task_id: task_id.to_string(),
+                        url: task.url.clone(),
+                        message: task.error_message.clone(),
+                    })
+                    .await;
+                }
+            }
         }
 
         self.maybe_wal_checkpoint().await;
@@ -1749,6 +2153,13 @@ impl DownloadManager {
         });
 
         // BT tasks bypass the HTTP/FTP concurrency queue — they are managed
+        // 插件惰性解析：命中 resolver 则打标（仅存 ID）；协议判定/probe 推迟到实际
+        // 下载前的 off-actor resolve，此处不跑 JS。原始 url 参与匹配（非 db_url）。
+        let resolver_plugin_id = self.plugin_match_resolver(&url).await;
+        let has_resolver = !resolver_plugin_id.is_empty();
+        if has_resolver {
+            let _ = self.db.set_task_resolver(&task_id, &resolver_plugin_id).await;
+        }
         // by the shared librqbit session with its own concurrency controls.
         let is_bt = is_magnet(&url) || !torrent_file_bytes.is_empty();
         let queued = QueuedTask {
@@ -1771,6 +2182,8 @@ impl DownloadManager {
             method,
             body,
             audio_url,
+            resolver_plugin_id,
+            resolved: false,
         };
         if is_bt || (self.has_capacity() && self.has_queue_capacity(&queued.queue_id)) {
             self.do_start_task(queued).await;
@@ -1810,32 +2223,55 @@ impl DownloadManager {
             // 下载路径(do_start_task/do_resume_task)均调 .resolve()，后台探测须对齐。
             let probe_proxy = self.proxy_config.resolve();
             let probe_sink = self.sink.clone();
-            tokio::spawn(async move {
-                let (name, size) = crate::meta_prober::probe_task_meta(
-                    &probe_url,
-                    &probe_name,
-                    &probe_client,
-                    &probe_proxy,
-                    &probe_spec,
-                )
-                .await;
-                if !name.is_empty() || size > 0 {
-                    if !name.is_empty() {
-                        let _ = probe_db.update_task_file_name(&probe_tid, &name).await;
+            #[cfg(feature = "plugins")]
+            let probe_pm = self.plugin_manager.clone();
+            #[cfg(feature = "plugins")]
+            let probe_notify_url = probe_url.clone();
+            // 带 resolver 的任务跳过 probe（探测原始页面 URL 无意义）。
+            if !has_resolver {
+                tokio::spawn(async move {
+                    let (name, size) = crate::meta_prober::probe_task_meta(
+                        &probe_url,
+                        &probe_name,
+                        &probe_client,
+                        &probe_proxy,
+                        &probe_spec,
+                    )
+                    .await;
+                    if !name.is_empty() || size > 0 {
+                        if !name.is_empty() {
+                            let _ = probe_db.update_task_file_name(&probe_tid, &name).await;
+                        }
+                        probe_sink.emit(EngineEvent::TaskMetaProbed {
+                            task_id: probe_tid.clone(),
+                            file_name: name.clone(),
+                            total_bytes: size,
+                        });
+                        #[cfg(feature = "plugins")]
+                        if let Some(pm) = &probe_pm {
+                            pm.notify(crate::plugin::PluginEvent::MetaProbed {
+                                task_id: probe_tid,
+                                url: probe_notify_url,
+                                file_name: name,
+                                total_bytes: size,
+                            })
+                            .await;
+                        }
                     }
-                    probe_sink.emit(EngineEvent::TaskMetaProbed {
-                        task_id: probe_tid,
-                        file_name: name,
-                        total_bytes: size,
-                    });
-                }
-            });
+                });
+            }
         }
         Some(created_id)
     }
 
     /// Internal: actually spawn the download task (no concurrency check).
     async fn do_start_task(&mut self, queued: QueuedTask) {
+        // 插件惰性解析守卫（体首）：命中 resolver 且未解析 → off-actor resolve 后再入。
+        #[cfg(feature = "plugins")]
+        if !queued.resolver_plugin_id.is_empty() && !queued.resolved {
+            self.begin_resolve_start(queued).await;
+            return;
+        }
         let QueuedTask {
             task_id,
             url,
@@ -1856,6 +2292,8 @@ impl DownloadManager {
             method,
             body,
             audio_url,
+            resolver_plugin_id: _,
+            resolved: _,
         } = queued;
 
         // Four-tier segment count priority:
@@ -1891,6 +2329,16 @@ impl DownloadManager {
         } else {
             segments
         };
+
+        // 通知平面：onStart（fire-and-forget，用解析后的实际 url）。
+        #[cfg(feature = "plugins")]
+        if let Some(pm) = &self.plugin_manager {
+            pm.notify(crate::plugin::PluginEvent::Start {
+                task_id: task_id.clone(),
+                url: url.clone(),
+            })
+            .await;
+        }
 
         self.generation += 1;
         let spawn_gen = self.generation;
@@ -2285,7 +2733,18 @@ impl DownloadManager {
         }
     }
 
+    /// 清理某任务的 resolve 等待态（pause/cancel/delete 感知，即时生效 + 与
+    /// on_resolve_ready 的 DB 复查形成双保险）。feature 关时为空操作。
+    #[cfg(feature = "plugins")]
+    fn clear_pending_resolve(&mut self, task_id: &str) {
+        self.pending_resolve.remove(task_id);
+        self.resume_applied.remove(task_id);
+    }
+    #[cfg(not(feature = "plugins"))]
+    fn clear_pending_resolve(&mut self, _task_id: &str) {}
+
     pub async fn pause_task(&mut self, task_id: &str) {
+        self.clear_pending_resolve(task_id);
         // Remove from pending queue if queued (not yet started).
         if let Some(pos) = self.pending_queue.iter().position(|q| q.task_id == task_id) {
             self.pending_queue.remove(pos);
@@ -2477,6 +2936,8 @@ impl DownloadManager {
                     body: None,
                     // resume 路径下 do_resume_task 会从 DB 重新读 audio_url，此处 None 即可。
                     audio_url: None,
+                    resolver_plugin_id: String::new(),
+                    resolved: false,
                 });
                 // 入队后立即广播最新队列位置(与 create_task 一致),否则要等后续
                 // drain_queue 才广播,期间 UI 显示过时的排队位置。
@@ -2487,7 +2948,22 @@ impl DownloadManager {
 
     /// Internal: actually spawn the resume (no concurrency check).
     async fn do_resume_task(&mut self, task_id: &str) {
-        let task = match self.db.load_task_by_id(task_id).await {
+        // 插件惰性解析守卫（体首，协议判定前）：命中 resolver 且非再入 → off-actor
+        // resolve 后经 resume_applied 再入；对称占位防 resumeAll 并发双 resolve。
+        #[cfg(feature = "plugins")]
+        let plugin_applied: Option<crate::plugin::ResolveResult> = {
+            let resolver = self.db.get_task_resolver(task_id).await.unwrap_or_default();
+            if resolver.is_empty() {
+                None
+            } else if let Some(res) = self.resume_applied.remove(task_id) {
+                Some(res) // 再入
+            } else {
+                self.begin_resolve_resume(task_id, resolver).await;
+                return;
+            }
+        };
+        #[cfg_attr(not(feature = "plugins"), allow(unused_mut))]
+        let mut task = match self.db.load_task_by_id(task_id).await {
             Ok(Some(t)) => t,
             Ok(None) => {
                 log_info!("[manager] do_resume_task: task {} not found in DB", task_id);
@@ -2515,6 +2991,20 @@ impl DownloadManager {
                 return;
             }
         };
+
+        // 应用 resolve 改写（url/file_name）；空 url = 放行（用原 url）。后续协议判定
+        // 与下载均以 task.url 为准，因而自动重算 use_bt/hls/dash/ftp/ed2k。
+        #[cfg(feature = "plugins")]
+        if let Some(res) = plugin_applied {
+            if !res.url.is_empty() {
+                task.url = res.url;
+            }
+            if let Some(name) = res.file_name
+                && !name.is_empty()
+            {
+                task.file_name = name;
+            }
+        }
 
         // 恢复持久化的浏览器请求上下文：鉴权站点（cookie+token 双因子的 fnOS、
         // 带 Authorization 的私有服务）缺它们 resume 必然 4xx。
@@ -2902,6 +3392,7 @@ impl DownloadManager {
         // 清除自动重试计数，与 delete_task / resume_task 对齐。取消是用户的
         // 明确意图，必须从自动重试状态中移除，使后续 create/resume 干净起步。
         self.auto_retry_counts.remove(task_id);
+        self.clear_pending_resolve(task_id);
 
         // Remove from pending queue if queued.
         if let Some(pos) = self.pending_queue.iter().position(|q| q.task_id == task_id) {
@@ -2964,6 +3455,7 @@ impl DownloadManager {
     /// attempt to remove files.  A 5-second timeout prevents indefinite hangs.
     pub async fn delete_task(&mut self, task_id: &str, delete_files: bool) {
         self.auto_retry_counts.remove(task_id);
+        self.clear_pending_resolve(task_id);
 
         // Remove from pending queue if queued.
         if let Some(pos) = self.pending_queue.iter().position(|q| q.task_id == task_id) {
@@ -3596,6 +4088,8 @@ impl DownloadManager {
                 body: None,
                 // resume 路径 do_resume_task 从 DB 重读 audio_url，此处 None。
                 audio_url: None,
+                resolver_plugin_id: String::new(),
+                resolved: false,
             });
             // 入队后立即广播最新队列位置(覆盖单个 resume 与 batch_resume 批量入队;
             // broadcast_queue_positions 为只读信号,多次调用无副作用)。

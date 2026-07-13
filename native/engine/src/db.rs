@@ -327,6 +327,9 @@ impl Db {
         // 默认 1 = 旧任务/probe 任务行为完全不变。
         self.add_column_if_missing("tasks", "range_verified", "INTEGER NOT NULL DEFAULT 1")
             .await?;
+        // 插件惰性解析：仅存 resolver 插件 ID（不存解析结果，见 plugin 系统设计）。
+        self.add_column_if_missing("tasks", "resolver_plugin_id", "TEXT NOT NULL DEFAULT ''")
+            .await?;
         Ok(())
     }
 
@@ -1528,6 +1531,28 @@ impl Db {
         Ok(row
             .map(|r| r.try_get::<i32, _>("range_verified").unwrap_or(1) != 0)
             .unwrap_or(true))
+    }
+
+    /// 设置任务的 resolver 插件 ID（空串 = 清除，供「忽略插件重试」逃生舱）。
+    /// 仅存 ID、不存解析结果 —— 每次 start/resume 重新 resolve 是惰性防直链过期。
+    pub async fn set_task_resolver(&self, id: &str, resolver_plugin_id: &str) -> Result<(), DbError> {
+        sqlx::query("UPDATE tasks SET resolver_plugin_id = $1 WHERE id = $2")
+            .bind(resolver_plugin_id)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// 读取任务的 resolver 插件 ID（空串 = 无）。
+    pub async fn get_task_resolver(&self, id: &str) -> Result<String, DbError> {
+        let row = sqlx::query("SELECT resolver_plugin_id FROM tasks WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row
+            .map(|r| r.try_get::<String, _>("resolver_plugin_id").unwrap_or_default())
+            .unwrap_or_default())
     }
 
     /// Manually run a WAL checkpoint to merge the write-ahead log back into the

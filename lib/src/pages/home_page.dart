@@ -7,6 +7,7 @@ import 'package:shadcn_ui/shadcn_ui.dart';
 import '../i18n/locale_provider.dart';
 import '../models/download_controller.dart';
 import '../models/download_task.dart';
+import '../models/plugin_provider.dart';
 import '../models/settings_provider.dart';
 import '../services/external_download_service.dart';
 import '../services/log_service.dart';
@@ -49,6 +50,7 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   final _controller = DownloadController();
   final _settingsProvider = SettingsProvider();
+  final _pluginProvider = PluginProvider();
   final _headerBarKey = GlobalKey<HeaderBarState>();
 
   // 页面切换
@@ -82,6 +84,9 @@ class _HomePageState extends State<HomePage> {
     logInfo('HomePage', 'initState');
     // 请求 Rust 端加载下载配置
     _settingsProvider.requestConfig();
+    // 请求插件列表 + 订阅熔断器自动禁用通知（弹 toast）
+    _pluginProvider.requestPlugins();
+    _pluginProvider.addListener(_onPluginProviderChanged);
     // 监听下载完成事件 → 发送系统通知
     _controller.onTaskCompleted = _handleTaskCompleted;
     // 监听 controller 变化 — 选中任务被删除时自动关闭详情面板
@@ -102,6 +107,27 @@ class _HomePageState extends State<HomePage> {
     if (Platform.isWindows) {
       _settingsProvider.addListener(_onSettingsLoadedForAssocPrompt);
     }
+  }
+
+  /// 熔断器自动禁用插件时弹出提示。
+  int _lastAutoDisabledSeq = -1;
+  void _onPluginProviderChanged() {
+    if (!mounted) return;
+    final seq = _pluginProvider.autoDisabledSeq;
+    if (seq == _lastAutoDisabledSeq) return;
+    _lastAutoDisabledSeq = seq;
+    final notice = _pluginProvider.lastAutoDisabledNotice;
+    if (notice == null) return;
+    final matches = _pluginProvider.plugins.where(
+      (p) => p.identity == notice.identity,
+    );
+    final name = matches.isEmpty ? notice.identity : matches.first.name;
+    ShadSonner.of(context).show(
+      ShadToast.destructive(
+        title: Text(currentS.pluginAutoDisabledToast(name)),
+        duration: const Duration(seconds: 4),
+      ),
+    );
   }
 
   /// 浏览器扩展触发下载时，若当前在设置页则自动切回首页。
@@ -126,6 +152,8 @@ class _HomePageState extends State<HomePage> {
     HardwareKeyboard.instance.removeHandler(_onGlobalKey);
     _settingsProvider.removeListener(_checkSidebarVisibility);
     _settingsProvider.removeListener(_onSettingsLoadedForAssocPrompt);
+    _pluginProvider.removeListener(_onPluginProviderChanged);
+    _pluginProvider.dispose();
     _controller.removeListener(_onControllerChanged);
     _controller.onTaskCompleted = null;
     _controller.dispose();
@@ -539,6 +567,7 @@ class _HomePageState extends State<HomePage> {
                 _initialSettingsHighlight = null;
               }),
               settingsProvider: _settingsProvider,
+              pluginProvider: _pluginProvider,
               downloadController: _controller,
               initialCategory: _initialSettingsCategory,
               initialHighlight: _initialSettingsHighlight,

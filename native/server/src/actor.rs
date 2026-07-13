@@ -13,7 +13,7 @@ use fluxdown_api::types::CreateTaskRequest;
 use fluxdown_engine::Engine;
 use fluxdown_engine::bt_downloader::BtConfig;
 use fluxdown_engine::db::Db;
-use fluxdown_engine::download_manager::TaskDone;
+use fluxdown_engine::download_manager::{ResolveOutcome, TaskDone};
 use fluxdown_engine::log_info;
 use fluxdown_engine::proxy_config::ProxyConfig;
 use tokio::sync::{mpsc, oneshot};
@@ -106,6 +106,8 @@ pub async fn run_actor(
     mut cmd_rx: mpsc::Receiver<ActorCmd>,
     mut done_rx: mpsc::Receiver<TaskDone>,
     mut retry_rx: mpsc::Receiver<String>,
+    mut resolve_rx: mpsc::UnboundedReceiver<ResolveOutcome>,
+    mut plugin_retry_rx: mpsc::UnboundedReceiver<(String, u64)>,
 ) {
     // 启动预热：加载队列缓存（每队列限速/并发生效）+ 广播全量任务快照。
     engine.manager.load_queues().await;
@@ -133,6 +135,12 @@ pub async fn run_actor(
                     log_info!("[server-actor] auto-retry: resuming task {}", task_id);
                     engine.manager.resume_task_auto(&task_id).await;
                 }
+            }
+            Some(out) = resolve_rx.recv() => {
+                engine.manager.on_resolve_ready(out).await;
+            }
+            Some((task_id, delay_ms)) = plugin_retry_rx.recv() => {
+                engine.manager.plugin_request_retry(&task_id, delay_ms).await;
             }
             _ = rescan_timer.tick() => {
                 engine.manager.spawn_file_scan();

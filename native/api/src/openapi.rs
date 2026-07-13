@@ -39,6 +39,15 @@ use utoipa::{Modify, OpenApi};
         crate::server::api_pause_all,
         crate::server::api_continue_all,
         crate::server::api_list_queues,
+        crate::server::api_list_plugins,
+        crate::server::api_install_plugin,
+        crate::server::api_install_plugin_dev,
+        crate::server::api_set_plugin_enabled,
+        crate::server::api_update_plugin_settings,
+        crate::server::api_uninstall_plugin,
+        crate::server::api_ignore_plugin_retry,
+        crate::server::api_market_list,
+        crate::server::api_market_install,
     ),
     tags(
         (name = "system", description = "探活与基础信息"),
@@ -46,6 +55,7 @@ use utoipa::{Modify, OpenApi};
         (name = "aria2", description = "aria2 JSON-RPC 兼容"),
         (name = "mcp", description = "MCP（Model Context Protocol）—— AI 客户端工具调用"),
         (name = "management", description = "管理 API（强制 token）"),
+        (name = "plugins", description = "插件系统（安装/启停/设置/卸载；强制 token）"),
     ),
     modifiers(&SecurityAddon)
 )]
@@ -112,6 +122,15 @@ mod tests {
             routes::API_TASKS_PAUSE,
             routes::API_TASKS_CONTINUE,
             routes::API_QUEUES,
+            routes::API_PLUGINS,
+            routes::API_PLUGINS_INSTALL,
+            routes::API_PLUGINS_INSTALL_DEV,
+            routes::API_PLUGIN_ENABLED,
+            routes::API_PLUGIN_SETTINGS,
+            routes::API_PLUGIN,
+            routes::API_TASK_IGNORE_PLUGIN_RETRY,
+            routes::API_MARKET,
+            routes::API_MARKET_INSTALL,
         ];
         for path in expected {
             assert!(

@@ -345,6 +345,200 @@ pub struct ResultMessage {
     pub message: String,
 }
 
+// ---------------------------------------------------------------------------
+// 插件系统 DTO（camelCase；双向 serde + ToSchema）
+// ---------------------------------------------------------------------------
+
+/// select 控件选项。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SettingOptionDto {
+    pub value: String,
+    pub label: String,
+}
+
+/// 声明式设置项（镜像 `engine::plugin::SettingField`，api 本地定义）。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingFieldDto {
+    pub key: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    /// `string` / `number` / `boolean`。
+    #[serde(rename = "type")]
+    pub setting_type: String,
+    /// `text`/`password`/`textarea`/`select`/`toggle`/`number`/`folder`。
+    pub widget: String,
+    #[serde(default)]
+    pub options: Vec<SettingOptionDto>,
+    #[serde(default)]
+    pub default: Option<String>,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub min: Option<f64>,
+    #[serde(default)]
+    pub max: Option<f64>,
+    #[serde(default)]
+    pub pattern: Option<String>,
+}
+
+/// 已安装插件视图（列表/设置表单）。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginDto {
+    pub identity: String,
+    pub name: String,
+    pub version: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub homepage: String,
+    pub enabled: bool,
+    pub dev_mode: bool,
+    /// `None` / `Manual` / `CircuitBreaker`。
+    pub disabled_reason: String,
+    pub settings: Vec<SettingFieldDto>,
+    /// 当前设置值（key → value 字符串）。
+    pub settings_values: HashMap<String, String>,
+}
+
+/// 安装 dev 插件请求体。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallPluginDevRequest {
+    pub dir_path: String,
+}
+
+/// 设置插件启用状态请求体。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SetPluginEnabledRequest {
+    pub enabled: bool,
+}
+
+/// 安装成功返回体。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct InstalledPlugin {
+    pub identity: String,
+}
+
+#[cfg(feature = "plugins")]
+impl From<fluxdown_engine::plugin::SettingField> for SettingFieldDto {
+    fn from(f: fluxdown_engine::plugin::SettingField) -> Self {
+        use fluxdown_engine::plugin::{SettingType, SettingWidget};
+        let setting_type = match f.ty {
+            SettingType::String => "string",
+            SettingType::Number => "number",
+            SettingType::Boolean => "boolean",
+        }
+        .to_string();
+        let widget = match f.effective_widget() {
+            SettingWidget::Text => "text",
+            SettingWidget::Password => "password",
+            SettingWidget::Textarea => "textarea",
+            SettingWidget::Select => "select",
+            SettingWidget::Toggle => "toggle",
+            SettingWidget::Number => "number",
+            SettingWidget::Folder => "folder",
+        }
+        .to_string();
+        Self {
+            key: f.key,
+            title: f.title,
+            description: f.description,
+            setting_type,
+            widget,
+            options: f
+                .options
+                .into_iter()
+                .map(|o| SettingOptionDto {
+                    value: o.value,
+                    label: o.label,
+                })
+                .collect(),
+            default: f.default,
+            required: f.required,
+            min: f.min,
+            max: f.max,
+            pattern: f.pattern,
+        }
+    }
+}
+
+#[cfg(feature = "plugins")]
+impl From<fluxdown_engine::plugin::PluginInfo> for PluginDto {
+    fn from(p: fluxdown_engine::plugin::PluginInfo) -> Self {
+        Self {
+            identity: p.identity,
+            name: p.name,
+            version: p.version,
+            description: p.description,
+            homepage: p.homepage,
+            enabled: p.enabled,
+            dev_mode: p.dev_mode,
+            disabled_reason: p.disabled_reason,
+            settings: p.settings.into_iter().map(SettingFieldDto::from).collect(),
+            settings_values: p.settings_values.into_iter().collect(),
+        }
+    }
+}
+
+/// 市场索引条目视图（去中心化插件市场浏览/安装）。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketEntryDto {
+    pub plugin_id: String,
+    pub version: String,
+    pub sequence: u64,
+    pub content_hash: String,
+    #[serde(default)]
+    pub min_app_version: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub homepage: String,
+    #[serde(default)]
+    pub mirrors: Vec<String>,
+    #[serde(default)]
+    pub publish_time: String,
+    #[serde(default)]
+    pub yanked: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+/// 从市场安装请求体。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketInstallRequest {
+    pub plugin_id: String,
+}
+
+#[cfg(feature = "plugins")]
+impl From<fluxdown_engine::plugin::MarketEntry> for MarketEntryDto {
+    fn from(e: fluxdown_engine::plugin::MarketEntry) -> Self {
+        Self {
+            plugin_id: e.plugin_id,
+            version: e.version,
+            sequence: e.sequence,
+            content_hash: e.content_hash,
+            min_app_version: e.min_app_version,
+            name: e.name,
+            description: e.description,
+            author: e.author,
+            homepage: e.homepage,
+            mirrors: e.mirrors,
+            publish_time: e.publish_time,
+            yanked: e.yanked,
+            tags: e.tags,
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

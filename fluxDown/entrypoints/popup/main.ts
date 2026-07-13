@@ -1099,8 +1099,9 @@ async function init() {
   updateLangButton();
   applyTheme((localState?.theme as ThemeMode) || 'system');
 
-  // 从 manifest 动态读取版本号（CI 构建时由 git tag 写入）
-  versionLabel.textContent = `v${browser.runtime.getManifest().version}`;
+  // 从 manifest 动态读取版本号（CI 构建时由 git tag 写入；dev 构建 version_name="dev"）
+  const manifest = browser.runtime.getManifest();
+  versionLabel.textContent = manifest.version_name ?? `v${manifest.version}`;
 
   // 高频开关
   enableToggle.checked = settings.enabled;

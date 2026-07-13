@@ -7,6 +7,7 @@
 import { useSyncExternalStore } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
 import { getBase, getToken, isAuthenticated } from './auth'
+import { t } from './i18n'
 import type {
   BtFileEntry,
   HlsQualityOption,
@@ -210,6 +211,20 @@ function dispatch(msg: WsServerMsg) {
     case 'btSelectionRequest':
       btRequestStore.set({ taskId: msg.taskId, files: msg.files })
       break
+    case 'pluginsChanged':
+      void queryClientRef?.invalidateQueries({ queryKey: ['plugins'] })
+      break
+    case 'pluginAutoDisabled': {
+      const identity = msg.identity
+      // 动态 import 打破与 confirm.ts 的静态循环依赖（confirm.ts 反向依赖本模块的 Store）。
+      void import('./confirm').then(({ alertDialog }) =>
+        alertDialog({
+          title: t('plugins.autoDisabledTitle'),
+          message: t('plugins.autoDisabledMsg', { name: identity }),
+        }),
+      )
+      break
+    }
     case 'pong':
       connStore.set({ status: 'connected', rttMs: Math.round(performance.now() - pingSentAt) })
       break

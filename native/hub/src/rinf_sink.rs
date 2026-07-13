@@ -258,6 +258,9 @@ impl EventSink for RinfEventSink {
                     kind: TaskEventKind::BtComplete,
                 });
             }
+            EngineEvent::PluginAutoDisabled { identity, reason } => {
+                signals::PluginAutoDisabledNotice { identity, reason }.send_signal_to_dart();
+            }
             // `#[non_exhaustive]`：未来新增变体默认丢弃并记录日志，而非编译失败。
             _ => {
                 crate::logger::log_info!(

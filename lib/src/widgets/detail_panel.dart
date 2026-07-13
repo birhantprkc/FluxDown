@@ -3,12 +3,16 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
+import '../bindings/bindings.dart';
 import '../models/download_controller.dart';
 import '../models/download_task.dart';
 import '../i18n/locale_provider.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_metrics.dart';
 import '../theme/segment_palette.dart';
+
+/// 插件系统失败任务的错误消息前缀（引擎/hub/server 固定格式，逃生舱按钮据此判断）。
+const _pluginErrorPrefix = '[插件]';
 
 class DetailPanel extends StatefulWidget {
   final DownloadController controller;
@@ -691,6 +695,27 @@ class _DetailPanelState extends State<DetailPanel> {
                 ),
               ),
             ),
+          if (task.status == TaskStatus.error &&
+              task.errorMessage.startsWith(_pluginErrorPrefix)) ...[
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: ShadButton.outline(
+                onPressed: () => _confirmIgnorePluginRetry(task.id),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(LucideIcons.shieldOff, size: 14, color: c.textPrimary),
+                    const SizedBox(width: 6),
+                    Text(
+                      currentS.taskIgnorePluginRetry,
+                      style: TextStyle(fontSize: 13, color: c.textPrimary),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
           const SizedBox(height: 8),
           SizedBox(
             width: double.infinity,
@@ -702,6 +727,35 @@ class _DetailPanelState extends State<DetailPanel> {
                 style: const TextStyle(fontSize: 13, color: Colors.white),
               ),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 逃生舱：确认后忽略插件重新解析，直接用原始链接恢复下载。
+  void _confirmIgnorePluginRetry(String taskId) {
+    final c = AppColors.of(context);
+    final s = currentS;
+    showShadDialog(
+      context: context,
+      barrierColor: c.dialogBarrier,
+      animateIn: const [],
+      animateOut: const [],
+      builder: (ctx) => ShadDialog(
+        title: Text(s.taskIgnorePluginRetryTitle),
+        description: Text(s.taskIgnorePluginRetryMsg),
+        actions: [
+          ShadButton.outline(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text(s.cancel),
+          ),
+          ShadButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              IgnorePluginRetry(taskId: taskId).sendSignalToRust();
+            },
+            child: Text(s.taskIgnorePluginRetry),
           ),
         ],
       ),

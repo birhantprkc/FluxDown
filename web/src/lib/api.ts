@@ -9,7 +9,10 @@ import type {
   CreateTaskRequest,
   CreatedTask,
   FsListResponse,
+  InstalledPlugin,
+  MarketEntry,
   PingInfo,
+  PluginDto,
   ProxyTestRequest,
   ProxyTestResponse,
   QueueDto,
@@ -107,6 +110,40 @@ export const api = {
   regenerateToken: () =>
     apiFetch<TokenResponse>('/api/v1/token/regenerate', { method: 'POST' }),
   stats: () => apiFetch<StatsResponse>('/api/v1/stats'),
+
+  listPlugins: () => apiFetch<PluginDto[]>('/api/v1/plugins'),
+  installPlugin: (zip: File | Blob | ArrayBuffer) =>
+    apiFetch<InstalledPlugin>('/api/v1/plugins/install', {
+      method: 'POST',
+      body: zip,
+      headers: { 'Content-Type': 'application/octet-stream' },
+    }),
+  installPluginDev: (dirPath: string) =>
+    apiFetch<InstalledPlugin>('/api/v1/plugins/install-dev', {
+      method: 'POST',
+      body: JSON.stringify({ dirPath }),
+    }),
+  setPluginEnabled: (identity: string, enabled: boolean) =>
+    apiFetch<unknown>(`/api/v1/plugins/${identity}/enabled`, {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
+  updatePluginSettings: (identity: string, entries: Record<string, string>) =>
+    apiFetch<unknown>(`/api/v1/plugins/${identity}/settings`, {
+      method: 'PUT',
+      body: JSON.stringify(entries),
+    }),
+  uninstallPlugin: (identity: string) =>
+    apiFetch<unknown>(`/api/v1/plugins/${identity}`, { method: 'DELETE' }),
+  ignorePluginRetry: (taskId: string) =>
+    apiFetch<unknown>(`/api/v1/tasks/${taskId}/ignore-plugin-retry`, { method: 'POST' }),
+
+  listMarket: () => apiFetch<MarketEntry[]>('/api/v1/market'),
+  installFromMarket: (pluginId: string) =>
+    apiFetch<InstalledPlugin>('/api/v1/market/install', {
+      method: 'POST',
+      body: JSON.stringify({ pluginId }),
+    }),
 }
 
 /** 「保存到本地」下载地址（浏览器导航下载，token 走查询参数）。 */

@@ -1,7 +1,7 @@
 // #screen-settings —— 左侧分类导航 + 右侧设置正文。
 import { useNavigate } from '@tanstack/react-router'
 import type { LucideIcon } from 'lucide-react'
-import { ArrowLeft, Download, Globe, Info, Lock, Monitor, Palette, Shield } from 'lucide-react'
+import { ArrowLeft, Download, Globe, Info, Lock, Monitor, Palette, Puzzle, Shield } from 'lucide-react'
 import { useState } from 'react'
 import { cn } from '../lib/cn'
 import { useI18n } from '../lib/i18n'
@@ -12,11 +12,12 @@ import { AppearanceSettings } from '../components/settings/AppearanceSettings'
 import { BitTorrentSettings } from '../components/settings/BitTorrentSettings'
 import { DownloadSettings } from '../components/settings/DownloadSettings'
 import { GeneralSettings } from '../components/settings/GeneralSettings'
+import { PluginsSettings } from '../components/settings/PluginsSettings'
 import { ProxySettings } from '../components/settings/ProxySettings'
 import { SecuritySettings } from '../components/settings/SecuritySettings'
 import { useConfigMutation, useConfigQuery } from '../components/settings/useConfig'
 
-type Category = 'general' | 'appearance' | 'download' | 'bt' | 'proxy' | 'security' | 'about'
+type Category = 'general' | 'appearance' | 'download' | 'bt' | 'proxy' | 'security' | 'plugins' | 'about'
 
 const NAV: { key: Category; labelKey: I18nKey; icon: LucideIcon }[] = [
   { key: 'general', labelKey: 'set.general', icon: Monitor },
@@ -25,6 +26,7 @@ const NAV: { key: Category; labelKey: I18nKey; icon: LucideIcon }[] = [
   { key: 'bt', labelKey: 'set.bt', icon: Globe },
   { key: 'proxy', labelKey: 'set.proxy', icon: Shield },
   { key: 'security', labelKey: 'set.security', icon: Lock },
+  { key: 'plugins', labelKey: 'set.plugins', icon: Puzzle },
   { key: 'about', labelKey: 'set.about', icon: Info },
 ]
 
@@ -42,6 +44,7 @@ export function SettingsScreen() {
   function renderBody() {
     if (cat === 'appearance') return <AppearanceSettings />
     if (cat === 'about') return <AboutSettings />
+    if (cat === 'plugins') return <PluginsSettings />
     if (isLoading) return <p className="set-desc">{t('common.loading')}</p>
     if (isError || !config) return <p className="set-desc text-danger">{t('set.loadFailed')}</p>
     switch (cat) {

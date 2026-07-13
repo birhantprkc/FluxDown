@@ -165,6 +165,11 @@ pub enum WsServerMsg {
     },
     /// `ping` 应答（RTT 测量）。
     Pong {},
+    /// 插件因熔断（连续超时/过载）被自动禁用（`reason` 固定 `"CircuitBreaker"`）。
+    PluginAutoDisabled { identity: String, reason: String },
+    /// 插件表发生增删改（安装/卸载/启停/设置变更）；空载荷 ping，客户端收到后
+    /// 全量 invalidate 插件列表查询。
+    PluginsChanged {},
 }
 
 // ---------------------------------------------------------------------------

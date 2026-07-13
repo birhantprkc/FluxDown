@@ -170,13 +170,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .manager
         .take_retry_rx()
         .ok_or("take_retry_rx returned None (already taken)")?;
+    let resolve_rx = engine
+        .manager
+        .take_resolve_rx()
+        .ok_or("take_resolve_rx returned None (already taken)")?;
+    let plugin_retry_rx = engine
+        .manager
+        .take_plugin_retry_rx()
+        .ok_or("take_plugin_retry_rx returned None (already taken)")?;
 
     let db_handle = engine.db.clone();
     let selector_handle = engine.selector.clone();
+    let plugin_manager = engine.manager.plugin_manager();
 
     // actor 独占 engine；HTTP 层经 cmd_tx 写入。
     let (cmd_tx, cmd_rx) = mpsc::channel::<ActorCmd>(64);
-    tokio::spawn(run_actor(engine, cmd_rx, done_rx, retry_rx));
+    tokio::spawn(run_actor(
+        engine,
+        cmd_rx,
+        done_rx,
+        retry_rx,
+        resolve_rx,
+        plugin_retry_rx,
+    ));
 
     // 路由：核心（fluxdown_api 复用）+ 扩展（本 crate）+ SPA 静态托管。
     let api_cfg = ApiServerConfig::from_config_map(&all_cfg, SERVER_VERSION);
@@ -191,6 +207,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         hub.clone(),
         server_cfg.demo_url.clone(),
         server_cfg.language.clone(),
+        plugin_manager,
     ));
     if let Some(url) = &server_cfg.demo_url {
         log_info!("[server] demo mode enabled, allowed url: {}", url);

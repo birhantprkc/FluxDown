@@ -12,7 +12,9 @@ use tokio::sync::broadcast;
 
 use async_trait::async_trait;
 
-use crate::types::{CreateTaskRequest, DownloadRequest, QueueDto, TaskDto};
+use crate::types::{
+    CreateTaskRequest, DownloadRequest, MarketEntryDto, PluginDto, QueueDto, TaskDto,
+};
 
 /// 404 fallback 响应的 message —— 请求命中了未注册的路由（例如管理 API 分组
 /// 未启用时访问 `/api/v1/*`）。server 侧 fallback 与 CLI/客户端共用此常量，
@@ -128,6 +130,69 @@ pub trait ApiHost: Send + Sync {
     fn subscribe_task_events(&self) -> Option<broadcast::Receiver<TaskEvent>> {
         None
     }
+
+    // -- 插件系统（默认实现：未接线宿主降级；list 返回空表，写操作报不支持）--
+
+    /// 列出全部已安装插件（含设置定义与当前值）。默认空表。
+    async fn list_plugins(&self) -> Result<Vec<PluginDto>, ApiError> {
+        Ok(Vec::new())
+    }
+
+    /// 启用/禁用插件（手动开关）。
+    async fn set_plugin_enabled(&self, identity: &str, enabled: bool) -> Result<(), ApiError> {
+        let _ = (identity, enabled);
+        Err(plugins_unsupported())
+    }
+
+    /// 卸载插件。
+    async fn uninstall_plugin(&self, identity: &str) -> Result<(), ApiError> {
+        let _ = identity;
+        Err(plugins_unsupported())
+    }
+
+    /// 批量更新插件设置（all-or-nothing）。
+    async fn update_plugin_settings(
+        &self,
+        identity: &str,
+        entries: HashMap<String, String>,
+    ) -> Result<(), ApiError> {
+        let _ = (identity, entries);
+        Err(plugins_unsupported())
+    }
+
+    /// 从 zip 字节安装插件，返回 identity。
+    async fn install_plugin_zip(&self, bytes: Vec<u8>) -> Result<String, ApiError> {
+        let _ = bytes;
+        Err(plugins_unsupported())
+    }
+
+    /// dev 模式安装（引用目录，不拷贝），返回 identity。
+    async fn install_plugin_dev(&self, dir_path: String) -> Result<String, ApiError> {
+        let _ = dir_path;
+        Err(plugins_unsupported())
+    }
+
+    /// 任务级逃生舱：清除该任务的 resolver 绑定并按原始链接重跑。
+    async fn ignore_plugin_retry(&self, task_id: &str) -> Result<(), ApiError> {
+        let _ = task_id;
+        Err(plugins_unsupported())
+    }
+
+    /// 拉取去中心化插件市场索引（多源 failover + 防回滚校验）。默认空表。
+    async fn market_list(&self) -> Result<Vec<MarketEntryDto>, ApiError> {
+        Ok(Vec::new())
+    }
+
+    /// 从市场安装某插件的最新版（下载 → content_hash 校验 → 安装），返回 identity。
+    async fn market_install(&self, plugin_id: &str) -> Result<String, ApiError> {
+        let _ = plugin_id;
+        Err(plugins_unsupported())
+    }
+}
+
+/// 未支持插件的宿主（如纯 aria2 客户端场景）的统一错误。
+fn plugins_unsupported() -> ApiError {
+    ApiError::Internal("plugins not supported by this host".to_string())
 }
 
 /// 任务生命周期事件类别，一一对应 aria2 的 6 种 WS 通知。

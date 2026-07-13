@@ -19,6 +19,9 @@ pub mod logger;
 pub mod meta_prober;
 pub mod model;
 pub mod proxy_config;
+/// 插件系统（可选、可失败的下载中间层）。仅 `plugins` feature 下编译。
+#[cfg(feature = "plugins")]
+pub mod plugin;
 pub mod segment_advisor;
 pub mod segment_coordinator;
 pub mod selection;
@@ -87,6 +90,9 @@ pub enum EngineError {
     Download(#[from] DownloadError),
     #[error(transparent)]
     DataDir(#[from] data_dir::DataDirError),
+    /// 插件系统初始化失败（仅 `plugins` feature）。
+    #[error("插件系统初始化失败: {0}")]
+    Plugin(String),
 }
 
 /// FluxDown 下载引擎 facade —— 零 FFI 依赖,是本 crate 的唯一公开入口。
@@ -155,7 +161,16 @@ impl Engine {
         };
         // 读回持久化的域名连接上限观察（过期/旧版本数据在加载时丢弃）。
         segment_coordinator::load_domain_conn_caps(&db).await;
-        let manager = DownloadManager::new(
+        // 插件系统构造所需值需在 config 被 move 进 DownloadManagerConfig 前克隆。
+        #[cfg(feature = "plugins")]
+        let plugin_ctx = (
+            config.proxy_config.clone(),
+            sink.clone(),
+            config.max_concurrent,
+            data_dir.clone(),
+        );
+        #[cfg_attr(not(feature = "plugins"), allow(unused_mut))]
+        let mut manager = DownloadManager::new(
             db.clone(),
             DownloadManagerConfig {
                 max_concurrent: config.max_concurrent,
@@ -169,6 +184,39 @@ impl Engine {
             sink,
             selector.clone(),
         )?;
+        // 组装并注入插件管理器（feature 关时整块不编译，下载主链路零变化）。
+        #[cfg(feature = "plugins")]
+        {
+            use std::sync::Arc as StdArc;
+            let (proxy_cfg, plugin_sink, max_conc, data_dir_p) = plugin_ctx;
+            let retry_tx = manager.plugin_retry_sender();
+            let bridge: StdArc<dyn plugin::PluginBridge> = StdArc::new(
+                plugin::bridge::EngineBridge::new(db.clone(), &proxy_cfg, retry_tx)
+                    .map_err(|e| EngineError::Plugin(e.to_string()))?,
+            );
+            let runtime: StdArc<dyn plugin::ScriptRuntime> = StdArc::new(
+                plugin::quickjs::QuickJsScriptRuntime::new(max_conc)
+                    .map_err(|e| EngineError::Plugin(e.to_string()))?,
+            );
+            let app_version = db
+                .get_config("app_version")
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            let plugins_root = data_dir_p.join("plugins");
+            let _ = tokio::fs::create_dir_all(&plugins_root).await;
+            let pm = StdArc::new(plugin::PluginManager::new(
+                runtime,
+                bridge,
+                db.clone(),
+                plugins_root,
+                app_version,
+                plugin_sink,
+            ));
+            pm.load_all().await;
+            manager.install_plugin_manager(pm);
+        }
         Ok(Self {
             db,
             manager,

@@ -1004,4 +1004,84 @@ class S {
       _r('fgServiceActiveText', {'speed': speed});
   String get fgServiceIdleTitle => _r('fgServiceIdleTitle');
   String get fgServiceIdleText => _r('fgServiceIdleText');
+
+  // ─────────────────────────────────────────────
+  // 插件系统 — 已安装管理
+  // ─────────────────────────────────────────────
+  String get settingsCatPlugins => _r('settingsCatPlugins');
+  String get settingsCatPluginsDesc => _r('settingsCatPluginsDesc');
+
+  String get pluginsSectionTitle => _r('pluginsSectionTitle');
+  String get pluginsEmpty => _r('pluginsEmpty');
+  String get pluginCommonLoading => _r('pluginCommonLoading');
+  String get pluginInstallZipButton => _r('pluginInstallZipButton');
+  String pluginInstallZipFailed(String error) =>
+      _r('pluginInstallZipFailed', {'error': error});
+  String get pluginInstallDirLabel => _r('pluginInstallDirLabel');
+  String get pluginInstallDirPlaceholder => _r('pluginInstallDirPlaceholder');
+  String get pluginInstallDirButton => _r('pluginInstallDirButton');
+  String get pluginDevModeSwitch => _r('pluginDevModeSwitch');
+  String get pluginDevModeBadge => _r('pluginDevModeBadge');
+  String get pluginDisabledManual => _r('pluginDisabledManual');
+  String get pluginDisabledCircuitBreaker =>
+      _r('pluginDisabledCircuitBreaker');
+  String get pluginSettingsTooltip => _r('pluginSettingsTooltip');
+  String get pluginUninstallTooltip => _r('pluginUninstallTooltip');
+  String get pluginUninstallTitle => _r('pluginUninstallTitle');
+  String pluginUninstallMsg(String name) =>
+      _r('pluginUninstallMsg', {'name': name});
+  String get pluginOpInstallSuccess => _r('pluginOpInstallSuccess');
+  String pluginOpInstallFailed(String message) =>
+      _r('pluginOpInstallFailed', {'message': message});
+  String get pluginOpUninstallSuccess => _r('pluginOpUninstallSuccess');
+  String pluginOpUninstallFailed(String message) =>
+      _r('pluginOpUninstallFailed', {'message': message});
+  String pluginOpEnabledFailed(String message) =>
+      _r('pluginOpEnabledFailed', {'message': message});
+  String pluginOpGenericFailed(String message) =>
+      _r('pluginOpGenericFailed', {'message': message});
+
+  // ─────────────────────────────────────────────
+  // 插件系统 — 去中心化市场
+  // ─────────────────────────────────────────────
+  String get marketSectionTitle => _r('marketSectionTitle');
+  String get marketSectionDesc => _r('marketSectionDesc');
+  String get marketEmpty => _r('marketEmpty');
+  String marketLoadFailed(String message) =>
+      _r('marketLoadFailed', {'message': message});
+  String get marketInstallButton => _r('marketInstallButton');
+  String get marketInstalledButton => _r('marketInstalledButton');
+  String get marketInstallingButton => _r('marketInstallingButton');
+  String get marketYankedDeprecated => _r('marketYankedDeprecated');
+  String get marketYankedVulnerable => _r('marketYankedVulnerable');
+  String get marketYankedMalicious => _r('marketYankedMalicious');
+  String get marketRefreshTooltip => _r('marketRefreshTooltip');
+
+  // ─────────────────────────────────────────────
+  // 插件系统 — 设置表单
+  // ─────────────────────────────────────────────
+  String pluginSettingsDialogTitle(String name) =>
+      _r('pluginSettingsDialogTitle', {'name': name});
+  String get pluginSettingsSaveButton => _r('pluginSettingsSaveButton');
+  String get pluginSettingsSaving => _r('pluginSettingsSaving');
+  String pluginSettingsSaveFailed(String message) =>
+      _r('pluginSettingsSaveFailed', {'message': message});
+  String get pluginErrRequired => _r('pluginErrRequired');
+  String get pluginErrNumber => _r('pluginErrNumber');
+  String pluginErrMin(String min) => _r('pluginErrMin', {'min': min});
+  String pluginErrMax(String max) => _r('pluginErrMax', {'max': max});
+  String get pluginErrPattern => _r('pluginErrPattern');
+  String get pluginErrSelect => _r('pluginErrSelect');
+  String get pluginSelectPlaceholder => _r('pluginSelectPlaceholder');
+  String get pluginFolderPickPlaceholder =>
+      _r('pluginFolderPickPlaceholder');
+
+  // ─────────────────────────────────────────────
+  // 插件系统 — 任务逃生舱 & 自动禁用通知
+  // ─────────────────────────────────────────────
+  String get taskIgnorePluginRetry => _r('taskIgnorePluginRetry');
+  String get taskIgnorePluginRetryTitle => _r('taskIgnorePluginRetryTitle');
+  String get taskIgnorePluginRetryMsg => _r('taskIgnorePluginRetryMsg');
+  String pluginAutoDisabledToast(String name) =>
+      _r('pluginAutoDisabledToast', {'name': name});
 }

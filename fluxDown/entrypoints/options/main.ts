@@ -504,7 +504,8 @@ async function init() {
   // 语言选择器回显（未手动选择过 → auto）
   languageSelect.value = (await getSavedLocale()) || 'auto';
 
-  versionLabel.textContent = `v${browser.runtime.getManifest().version}`;
+  const manifest = browser.runtime.getManifest();
+  versionLabel.textContent = manifest.version_name ?? `v${manifest.version}`;
 
   const settings = await loadSettings();
   remoteUrlInput.value = settings.remoteUrl || '';

@@ -3,7 +3,7 @@
 
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Download, ListOrdered, Trash2, X, Zap } from 'lucide-react'
+import { Ban, Download, ListOrdered, Trash2, X, Zap } from 'lucide-react'
 import { api, taskFileUrl } from '../../lib/api'
 import { CopyButton } from '../CopyButton'
 import { cn } from '../../lib/cn'
@@ -15,6 +15,9 @@ import type { QueueDto, SegmentDetail, TaskStatus } from '../../lib/types'
 import { eventLogStore } from './eventLog'
 import { useTasksUi, type DetailTab } from './context'
 import { useViewTasks, type ViewTask } from './useViewTasks'
+
+/** 插件系统失败任务的错误消息前缀（引擎/hub/server 固定格式，逃生舱按钮据此判断）。 */
+const PLUGIN_ERROR_PREFIX = '[插件]'
 
 const DTABS: { id: DetailTab; labelKey: 'detail.tabGeneral' | 'detail.tabSegments' | 'detail.tabQueue' | 'detail.tabLog' | 'detail.tabAdvanced' }[] = [
   { id: 'general', labelKey: 'detail.tabGeneral' },
@@ -121,6 +124,7 @@ function GeneralTab({ t, queues }: { t: ViewTask; queues: QueueDto[] }) {
   const invalidate = () => qc.invalidateQueries({ queryKey: ['tasks'] })
   const boostMut = useMutation({ mutationFn: () => api.boostTask(t.taskId), onSuccess: invalidate })
   const deleteMut = useMutation({ mutationFn: (deleteFiles: boolean) => api.deleteTask(t.taskId, deleteFiles), onSuccess: invalidate })
+  const ignorePluginRetryMut = useMutation({ mutationFn: () => api.ignorePluginRetry(t.taskId), onSuccess: invalidate })
   const seg = useStore(segmentStore)[t.taskId]
   const pct = t.totalBytes > 0 ? Math.round((t.downloadedBytes / t.totalBytes) * 100) : 0
   const queueName = queues.find((q) => q.queueId === t.queueId)?.name ?? tr('detail.defaultQueue')
@@ -182,6 +186,12 @@ function GeneralTab({ t, queues }: { t: ViewTask; queues: QueueDto[] }) {
             {tr('task.boost')}
           </button>
         )}
+        {t.status === 4 && t.errorMessage.startsWith(PLUGIN_ERROR_PREFIX) ? (
+          <button type="button" className="btn ghost sm" onClick={() => ignorePluginRetryMut.mutate()}>
+            <Ban size={15} />
+            {tr('task.ignorePluginRetry')}
+          </button>
+        ) : null}
         <button
           type="button"
           className="btn danger sm"

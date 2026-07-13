@@ -20,6 +20,11 @@ tokio-util = "0.7.18"
 utoipa = "5.5.0"
 uuid = { version = "1.23.4", features = ["v4"] }
 
+[features]
+# 启用后 PluginDto 获得 From<engine::plugin::PluginInfo>（需 engine 的 plugins feature）。
+# desktop（hub）与 headless server 均开启；纯客户端（CLI）可不开。
+plugins = ["fluxdown_engine/plugins"]
+
 [dev-dependencies]
 futures-util = { version = "0.3.32", features = ["sink"] }
 tokio-tungstenite = "0.29.0"

@@ -233,7 +233,19 @@ fn register_core(state: AppState) -> Router<AppState> {
             .route(routes::API_TASK, get(api_get_task).delete(api_delete_task))
             .route(routes::API_TASK_PAUSE, put(api_pause_task))
             .route(routes::API_TASK_CONTINUE, put(api_continue_task))
-            .route(routes::API_QUEUES, get(api_list_queues));
+            .route(routes::API_QUEUES, get(api_list_queues))
+            .route(routes::API_PLUGINS, get(api_list_plugins))
+            .route(routes::API_PLUGINS_INSTALL, post(api_install_plugin))
+            .route(routes::API_PLUGINS_INSTALL_DEV, post(api_install_plugin_dev))
+            .route(routes::API_PLUGIN_ENABLED, put(api_set_plugin_enabled))
+            .route(routes::API_PLUGIN_SETTINGS, put(api_update_plugin_settings))
+            .route(routes::API_PLUGIN, axum::routing::delete(api_uninstall_plugin))
+            .route(
+                routes::API_TASK_IGNORE_PLUGIN_RETRY,
+                post(api_ignore_plugin_retry),
+            )
+            .route(routes::API_MARKET, get(api_market_list))
+            .route(routes::API_MARKET_INSTALL, post(api_market_install));
     }
 
     router
@@ -720,6 +732,223 @@ pub(crate) async fn api_list_queues(State(state): State<AppState>, headers: Head
     }
     match state.host.list_queues().await {
         Ok(queues) => Json(queues).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 插件系统管理端点（/api/v1/plugins*，全强制 token）
+// ---------------------------------------------------------------------------
+
+/// 插件 zip 上传上限（10MB）。
+const MAX_PLUGIN_ZIP: usize = 10 * 1024 * 1024;
+
+/// 列出全部已安装插件。
+#[utoipa::path(get, path = "/api/v1/plugins", tag = "plugins",
+    responses(
+        (status = 200, description = "插件列表", body = Vec<crate::types::PluginDto>),
+        (status = 401, description = "token 无效", body = crate::types::ResultMessage),
+    ),
+    security(("bearerAuth" = []), ("tokenHeader" = []))
+)]
+pub(crate) async fn api_list_plugins(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    match state.host.list_plugins().await {
+        Ok(plugins) => Json(plugins).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// 从 zip 安装插件（≤10MB）。
+#[utoipa::path(post, path = "/api/v1/plugins/install", tag = "plugins",
+    responses(
+        (status = 200, description = "安装成功", body = crate::types::InstalledPlugin),
+        (status = 400, description = "zip 非法或超限", body = crate::types::ResultMessage),
+        (status = 401, description = "token 无效", body = crate::types::ResultMessage),
+    ),
+    security(("bearerAuth" = []), ("tokenHeader" = []))
+)]
+pub(crate) async fn api_install_plugin(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    if body.len() > MAX_PLUGIN_ZIP {
+        return result_response(StatusCode::BAD_REQUEST, false, "plugin zip too large (>10MB)");
+    }
+    match state.host.install_plugin_zip(body.to_vec()).await {
+        Ok(identity) => Json(crate::types::InstalledPlugin { identity }).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// dev 安装插件（引用目录，不拷贝）。
+#[utoipa::path(post, path = "/api/v1/plugins/install-dev", tag = "plugins",
+    request_body = crate::types::InstallPluginDevRequest,
+    responses(
+        (status = 200, description = "安装成功", body = crate::types::InstalledPlugin),
+        (status = 400, description = "路径非法", body = crate::types::ResultMessage),
+        (status = 401, description = "token 无效", body = crate::types::ResultMessage),
+    ),
+    security(("bearerAuth" = []), ("tokenHeader" = []))
+)]
+pub(crate) async fn api_install_plugin_dev(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    let req: crate::types::InstallPluginDevRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return result_response(StatusCode::BAD_REQUEST, false, &format!("invalid payload: {e}")),
+    };
+    match state.host.install_plugin_dev(req.dir_path).await {
+        Ok(identity) => Json(crate::types::InstalledPlugin { identity }).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// 启用/禁用插件。
+#[utoipa::path(put, path = "/api/v1/plugins/{identity}/enabled", tag = "plugins",
+    params(("identity" = String, Path, description = "插件 identity")),
+    request_body = crate::types::SetPluginEnabledRequest,
+    responses(
+        (status = 200, description = "已更新", body = crate::types::ResultMessage),
+        (status = 401, description = "token 无效", body = crate::types::ResultMessage),
+    ),
+    security(("bearerAuth" = []), ("tokenHeader" = []))
+)]
+pub(crate) async fn api_set_plugin_enabled(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(identity): Path<String>,
+    body: Bytes,
+) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    let req: crate::types::SetPluginEnabledRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return result_response(StatusCode::BAD_REQUEST, false, &format!("invalid payload: {e}")),
+    };
+    ack(state.host.set_plugin_enabled(&identity, req.enabled).await)
+}
+
+/// 批量更新插件设置（all-or-nothing）。请求体为 `{key: value}` 字符串映射。
+#[utoipa::path(put, path = "/api/v1/plugins/{identity}/settings", tag = "plugins",
+    params(("identity" = String, Path, description = "插件 identity")),
+    responses(
+        (status = 200, description = "已保存", body = crate::types::ResultMessage),
+        (status = 400, description = "设置校验失败", body = crate::types::ResultMessage),
+        (status = 401, description = "token 无效", body = crate::types::ResultMessage),
+    ),
+    security(("bearerAuth" = []), ("tokenHeader" = []))
+)]
+pub(crate) async fn api_update_plugin_settings(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(identity): Path<String>,
+    body: Bytes,
+) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    let entries: std::collections::HashMap<String, String> = match serde_json::from_slice(&body) {
+        Ok(m) => m,
+        Err(e) => return result_response(StatusCode::BAD_REQUEST, false, &format!("invalid payload: {e}")),
+    };
+    ack(state.host.update_plugin_settings(&identity, entries).await)
+}
+
+/// 卸载插件。
+#[utoipa::path(delete, path = "/api/v1/plugins/{identity}", tag = "plugins",
+    params(("identity" = String, Path, description = "插件 identity")),
+    responses(
+        (status = 200, description = "已卸载", body = crate::types::ResultMessage),
+        (status = 401, description = "token 无效", body = crate::types::ResultMessage),
+    ),
+    security(("bearerAuth" = []), ("tokenHeader" = []))
+)]
+pub(crate) async fn api_uninstall_plugin(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(identity): Path<String>,
+) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    ack(state.host.uninstall_plugin(&identity).await)
+}
+
+/// 任务级逃生舱：忽略插件重试，按原始链接重跑。
+#[utoipa::path(post, path = "/api/v1/tasks/{id}/ignore-plugin-retry", tag = "plugins",
+    params(("id" = String, Path, description = "任务 ID")),
+    responses(
+        (status = 200, description = "已按原始链接重跑", body = crate::types::ResultMessage),
+        (status = 401, description = "token 无效", body = crate::types::ResultMessage),
+    ),
+    security(("bearerAuth" = []), ("tokenHeader" = []))
+)]
+pub(crate) async fn api_ignore_plugin_retry(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    ack(state.host.ignore_plugin_retry(&id).await)
+}
+
+/// 拉取去中心化插件市场索引。
+#[utoipa::path(get, path = "/api/v1/market", tag = "plugins",
+    responses(
+        (status = 200, description = "市场索引条目", body = Vec<crate::types::MarketEntryDto>),
+        (status = 401, description = "token 无效", body = crate::types::ResultMessage),
+    ),
+    security(("bearerAuth" = []), ("tokenHeader" = []))
+)]
+pub(crate) async fn api_market_list(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    match state.host.market_list().await {
+        Ok(entries) => Json(entries).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// 从市场安装某插件最新版。
+#[utoipa::path(post, path = "/api/v1/market/install", tag = "plugins",
+    request_body = crate::types::MarketInstallRequest,
+    responses(
+        (status = 200, description = "安装成功", body = crate::types::InstalledPlugin),
+        (status = 400, description = "下载/校验/安装失败", body = crate::types::ResultMessage),
+        (status = 401, description = "token 无效", body = crate::types::ResultMessage),
+    ),
+    security(("bearerAuth" = []), ("tokenHeader" = []))
+)]
+pub(crate) async fn api_market_install(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    let req: crate::types::MarketInstallRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return result_response(StatusCode::BAD_REQUEST, false, &format!("invalid payload: {e}")),
+    };
+    match state.host.market_install(&req.plugin_id).await {
+        Ok(identity) => Json(crate::types::InstalledPlugin { identity }).into_response(),
         Err(e) => e.into_response(),
     }
 }

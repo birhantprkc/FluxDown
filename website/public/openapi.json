@@ -65,6 +65,427 @@
         ]
       }
     },
+    "/api/v1/market": {
+      "get": {
+        "tags": [
+          "plugins"
+        ],
+        "summary": "拉取去中心化插件市场索引。",
+        "operationId": "api_market_list",
+        "responses": {
+          "200": {
+            "description": "市场索引条目",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MarketEntryDto"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
+    "/api/v1/market/install": {
+      "post": {
+        "tags": [
+          "plugins"
+        ],
+        "summary": "从市场安装某插件最新版。",
+        "operationId": "api_market_install",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarketInstallRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "安装成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstalledPlugin"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "下载/校验/安装失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
+    "/api/v1/plugins": {
+      "get": {
+        "tags": [
+          "plugins"
+        ],
+        "summary": "列出全部已安装插件。",
+        "operationId": "api_list_plugins",
+        "responses": {
+          "200": {
+            "description": "插件列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PluginDto"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
+    "/api/v1/plugins/install": {
+      "post": {
+        "tags": [
+          "plugins"
+        ],
+        "summary": "从 zip 安装插件（≤10MB）。",
+        "operationId": "api_install_plugin",
+        "responses": {
+          "200": {
+            "description": "安装成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstalledPlugin"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "zip 非法或超限",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
+    "/api/v1/plugins/install-dev": {
+      "post": {
+        "tags": [
+          "plugins"
+        ],
+        "summary": "dev 安装插件（引用目录，不拷贝）。",
+        "operationId": "api_install_plugin_dev",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InstallPluginDevRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "安装成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstalledPlugin"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "路径非法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
+    "/api/v1/plugins/{identity}": {
+      "delete": {
+        "tags": [
+          "plugins"
+        ],
+        "summary": "卸载插件。",
+        "operationId": "api_uninstall_plugin",
+        "parameters": [
+          {
+            "name": "identity",
+            "in": "path",
+            "description": "插件 identity",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "已卸载",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
+    "/api/v1/plugins/{identity}/enabled": {
+      "put": {
+        "tags": [
+          "plugins"
+        ],
+        "summary": "启用/禁用插件。",
+        "operationId": "api_set_plugin_enabled",
+        "parameters": [
+          {
+            "name": "identity",
+            "in": "path",
+            "description": "插件 identity",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetPluginEnabledRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "已更新",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
+    "/api/v1/plugins/{identity}/settings": {
+      "put": {
+        "tags": [
+          "plugins"
+        ],
+        "summary": "批量更新插件设置（all-or-nothing）。请求体为 `{key: value}` 字符串映射。",
+        "operationId": "api_update_plugin_settings",
+        "parameters": [
+          {
+            "name": "identity",
+            "in": "path",
+            "description": "插件 identity",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "已保存",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "设置校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
     "/api/v1/queues": {
       "get": {
         "tags": [
@@ -477,6 +898,56 @@
           },
           "404": {
             "description": "任务不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tasks/{id}/ignore-plugin-retry": {
+      "post": {
+        "tags": [
+          "plugins"
+        ],
+        "summary": "任务级逃生舱：忽略插件重试，按原始链接重跑。",
+        "operationId": "api_ignore_plugin_retry",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "任务 ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "已按原始链接重跑",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
             "content": {
               "application/json": {
                 "schema": {
@@ -936,6 +1407,158 @@
           }
         }
       },
+      "InstallPluginDevRequest": {
+        "type": "object",
+        "description": "安装 dev 插件请求体。",
+        "required": [
+          "dirPath"
+        ],
+        "properties": {
+          "dirPath": {
+            "type": "string"
+          }
+        }
+      },
+      "InstalledPlugin": {
+        "type": "object",
+        "description": "安装成功返回体。",
+        "required": [
+          "identity"
+        ],
+        "properties": {
+          "identity": {
+            "type": "string"
+          }
+        }
+      },
+      "MarketEntryDto": {
+        "type": "object",
+        "description": "市场索引条目视图（去中心化插件市场浏览/安装）。",
+        "required": [
+          "pluginId",
+          "version",
+          "sequence",
+          "contentHash"
+        ],
+        "properties": {
+          "author": {
+            "type": "string"
+          },
+          "contentHash": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "homepage": {
+            "type": "string"
+          },
+          "minAppVersion": {
+            "type": "string"
+          },
+          "mirrors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "name": {
+            "type": "string"
+          },
+          "pluginId": {
+            "type": "string"
+          },
+          "publishTime": {
+            "type": "string"
+          },
+          "sequence": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "version": {
+            "type": "string"
+          },
+          "yanked": {
+            "type": "string"
+          }
+        }
+      },
+      "MarketInstallRequest": {
+        "type": "object",
+        "description": "从市场安装请求体。",
+        "required": [
+          "pluginId"
+        ],
+        "properties": {
+          "pluginId": {
+            "type": "string"
+          }
+        }
+      },
+      "PluginDto": {
+        "type": "object",
+        "description": "已安装插件视图（列表/设置表单）。",
+        "required": [
+          "identity",
+          "name",
+          "version",
+          "enabled",
+          "devMode",
+          "disabledReason",
+          "settings",
+          "settingsValues"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "devMode": {
+            "type": "boolean"
+          },
+          "disabledReason": {
+            "type": "string",
+            "description": "`None` / `Manual` / `CircuitBreaker`。"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "homepage": {
+            "type": "string"
+          },
+          "identity": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "settings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SettingFieldDto"
+            }
+          },
+          "settingsValues": {
+            "type": "object",
+            "description": "当前设置值（key → value 字符串）。",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
       "QueueDto": {
         "type": "object",
         "description": "命名队列信息（`GET /api/v1/queues` 响应）。\n\n# Examples\n\n```\nuse fluxdown_api::types::QueueDto;\nuse fluxdown_engine::model::QueueInfo;\n\nlet q = QueueInfo {\n    queue_id: \"q1\".to_string(),\n    name: \"工作\".to_string(),\n    speed_limit_kbps: 0,\n    max_concurrent: 3,\n    default_save_dir: String::new(),\n    position: 0,\n    default_segments: 0,\n    default_user_agent: String::new(),\n};\nlet dto = QueueDto::from(q);\nassert_eq!(dto.queue_id, \"q1\");\n```",
@@ -1072,6 +1695,98 @@
           }
         }
       },
+      "SetPluginEnabledRequest": {
+        "type": "object",
+        "description": "设置插件启用状态请求体。",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SettingFieldDto": {
+        "type": "object",
+        "description": "声明式设置项（镜像 `engine::plugin::SettingField`，api 本地定义）。",
+        "required": [
+          "key",
+          "title",
+          "type",
+          "widget"
+        ],
+        "properties": {
+          "default": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "max": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "min": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SettingOptionDto"
+            }
+          },
+          "pattern": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "description": "`string` / `number` / `boolean`。"
+          },
+          "widget": {
+            "type": "string",
+            "description": "`text`/`password`/`textarea`/`select`/`toggle`/`number`/`folder`。"
+          }
+        }
+      },
+      "SettingOptionDto": {
+        "type": "object",
+        "description": "select 控件选项。",
+        "required": [
+          "value",
+          "label"
+        ],
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        }
+      },
       "TaskDto": {
         "type": "object",
         "description": "任务信息（`GET /api/v1/tasks`、`GET /api/v1/tasks/{id}` 响应）。\n\n# Examples\n\n```\nuse fluxdown_api::types::TaskDto;\nuse fluxdown_engine::model::TaskInfo;\n\nlet info = TaskInfo {\n    task_id: \"t1\".to_string(),\n    url: \"https://example.com/f.zip\".to_string(),\n    file_name: \"f.zip\".to_string(),\n    save_dir: \"/tmp\".to_string(),\n    status: 1,\n    downloaded_bytes: 10,\n    total_bytes: 100,\n    error_message: String::new(),\n    created_at: \"1700000000\".to_string(),\n    proxy_url: String::new(),\n    queue_id: String::new(),\n    checksum: String::new(),\n    file_missing: false,\n};\nlet dto = TaskDto::from(info);\nassert_eq!(dto.task_id, \"t1\");\nlet json = serde_json::to_string(&dto).unwrap();\nassert!(json.contains(\"\\\"taskId\\\":\\\"t1\\\"\"));\n```",
@@ -1173,6 +1888,10 @@
     {
       "name": "management",
       "description": "管理 API（强制 token）"
+    },
+    {
+      "name": "plugins",
+      "description": "插件系统（安装/启停/设置/卸载；强制 token）"
     }
   ]
 }

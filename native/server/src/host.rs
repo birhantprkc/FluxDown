@@ -12,15 +12,20 @@
 //! 读取 [`WsHub`] 内 `EngineEventSink` 维护的实时速率缓存。
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use fluxdown_api::service::{ApiError, ApiHost, LiveSpeed, TaskEvent};
-use fluxdown_api::types::{CreateTaskRequest, DownloadRequest, QueueDto, TaskDto};
+use fluxdown_api::types::{
+    CreateTaskRequest, DownloadRequest, MarketEntryDto, PluginDto, QueueDto, TaskDto,
+};
 use fluxdown_engine::db::Db;
+use fluxdown_engine::plugin::{MarketClient, PluginManager};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::actor::ActorCmd;
+use crate::wire::WsServerMsg;
 use crate::ws_hub::WsHub;
 
 /// headless 服务器的 API 宿主。
@@ -35,6 +40,9 @@ pub struct ServerApiHost {
     /// 部署级默认 Web UI 语言（`FLUXDOWN_LANG`）。仅作 [`ApiHost::web_language`]
     /// 的回退值，不写库——设置页保存过的 `web_language` 永远优先。
     default_language: Option<String>,
+    /// 插件管理器（Arc 共享）。`Engine::new` 在 `plugins` feature 下总会注入，
+    /// `None` 仅为防御性处理（理论上不会在本 crate 的构建配置下出现）。
+    plugin_manager: Option<Arc<PluginManager>>,
 }
 
 /// 演示模式守卫：`demo_url` 已设置且请求 URL 与之不符（trim 后精确比较）
@@ -56,6 +64,7 @@ impl ServerApiHost {
         hub: Arc<WsHub>,
         demo_url: Option<String>,
         default_language: Option<String>,
+        plugin_manager: Option<Arc<PluginManager>>,
     ) -> Self {
         Self {
             db,
@@ -63,6 +72,7 @@ impl ServerApiHost {
             hub,
             demo_url,
             default_language,
+            plugin_manager,
         }
     }
 
@@ -86,6 +96,24 @@ impl ServerApiHost {
             Ok(None) => Err(ApiError::NotFound),
             Err(e) => Err(ApiError::Internal(e.to_string())),
         }
+    }
+
+    /// 插件管理器访问：`None` 时返回内部错误（防御性——`plugins` feature 下
+    /// `Engine::new` 总会注入，实际请求不会走到这条分支）。
+    fn plugin_manager(&self) -> Result<&Arc<PluginManager>, ApiError> {
+        self.plugin_manager
+            .as_ref()
+            .ok_or_else(|| ApiError::Internal("plugin manager not available".to_string()))
+    }
+
+    /// 构造市场客户端。`ServerApiHost` 不持有 `Engine`，只持有 `Db` + 插件
+    /// 管理器 `Arc`——直接复刻 `DownloadManager::market_client()` 的逻辑
+    /// （读市场源配置 + 组装 [`MarketClient`]），语义一致。
+    async fn market_client(&self) -> Result<MarketClient, ApiError> {
+        let pm = self.plugin_manager()?.clone();
+        let all = self.db.get_all_config().await.unwrap_or_default();
+        let sources = MarketClient::source_config(&all);
+        Ok(MarketClient::new(pm, self.db.clone(), sources))
     }
 }
 
@@ -261,6 +289,99 @@ impl ApiHost for ServerApiHost {
     fn subscribe_task_events(&self) -> Option<broadcast::Receiver<TaskEvent>> {
         Some(self.hub.subscribe_task_events())
     }
+
+    /// 列出全部已安装插件（含设置定义与当前值）。
+    async fn list_plugins(&self) -> Result<Vec<PluginDto>, ApiError> {
+        let pm = self.plugin_manager()?;
+        Ok(pm.list().await.into_iter().map(PluginDto::from).collect())
+    }
+
+    /// 手动启用/禁用插件；成功后广播 `pluginsChanged` 通知客户端刷新列表。
+    async fn set_plugin_enabled(&self, identity: &str, enabled: bool) -> Result<(), ApiError> {
+        let pm = self.plugin_manager()?;
+        pm.set_enabled(identity, enabled)
+            .await
+            .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        self.hub.broadcast(&WsServerMsg::PluginsChanged {});
+        Ok(())
+    }
+
+    /// 卸载插件；成功后广播 `pluginsChanged`。
+    async fn uninstall_plugin(&self, identity: &str) -> Result<(), ApiError> {
+        let pm = self.plugin_manager()?;
+        pm.uninstall(identity)
+            .await
+            .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        self.hub.broadcast(&WsServerMsg::PluginsChanged {});
+        Ok(())
+    }
+
+    /// 批量更新插件设置（all-or-nothing）；成功后广播 `pluginsChanged`。
+    async fn update_plugin_settings(
+        &self,
+        identity: &str,
+        entries: HashMap<String, String>,
+    ) -> Result<(), ApiError> {
+        let pm = self.plugin_manager()?;
+        let entries: Vec<(String, String)> = entries.into_iter().collect();
+        pm.update_settings(identity, &entries)
+            .await
+            .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        self.hub.broadcast(&WsServerMsg::PluginsChanged {});
+        Ok(())
+    }
+
+    /// 从 zip 字节安装插件；成功后广播 `pluginsChanged`。
+    async fn install_plugin_zip(&self, bytes: Vec<u8>) -> Result<String, ApiError> {
+        let pm = self.plugin_manager()?;
+        let identity = pm
+            .install_from_zip(bytes)
+            .await
+            .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        self.hub.broadcast(&WsServerMsg::PluginsChanged {});
+        Ok(identity)
+    }
+
+    /// dev 模式安装（引用目录，不拷贝）；成功后广播 `pluginsChanged`。
+    async fn install_plugin_dev(&self, dir_path: String) -> Result<String, ApiError> {
+        let pm = self.plugin_manager()?;
+        let identity = pm
+            .install_dev(Path::new(&dir_path))
+            .await
+            .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        self.hub.broadcast(&WsServerMsg::PluginsChanged {});
+        Ok(identity)
+    }
+
+    /// 任务级逃生舱：清该任务 resolver 绑定后按原始链接重跑
+    /// （`clear_task_resolver` 本身不失败；existence/actor 状态检查交给
+    /// 复用的 `continue_task`）。
+    async fn ignore_plugin_retry(&self, task_id: &str) -> Result<(), ApiError> {
+        let pm = self.plugin_manager()?;
+        pm.clear_task_resolver(task_id).await;
+        self.continue_task(task_id).await
+    }
+
+    /// 拉取去中心化插件市场索引（多源 failover + 防回滚校验）。
+    async fn market_list(&self) -> Result<Vec<MarketEntryDto>, ApiError> {
+        let client = self.market_client().await?;
+        let idx = client
+            .fetch_index()
+            .await
+            .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        Ok(idx.entries.into_iter().map(MarketEntryDto::from).collect())
+    }
+
+    /// 从市场安装某插件最新版；成功后广播 `pluginsChanged`。
+    async fn market_install(&self, plugin_id: &str) -> Result<String, ApiError> {
+        let client = self.market_client().await?;
+        let identity = client
+            .install_latest(plugin_id)
+            .await
+            .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        self.hub.broadcast(&WsServerMsg::PluginsChanged {});
+        Ok(identity)
+    }
 }
 
 #[cfg(test)]
@@ -328,6 +449,7 @@ mod tests {
             Arc::clone(&hub),
             None,
             Some("zh".to_string()),
+            None,
         );
 
         // 设置页未保存过语言 → 回退 FLUXDOWN_LANG
@@ -353,7 +475,7 @@ mod tests {
             .expect("connect mem db");
         let (cmd_tx, _cmd_rx) = mpsc::channel(1);
         let hub = Arc::new(WsHub::new(4));
-        let host = ServerApiHost::new(db, cmd_tx, Arc::clone(&hub), None, None);
+        let host = ServerApiHost::new(db, cmd_tx, Arc::clone(&hub), None, None, None);
 
         let mut rx = host
             .subscribe_task_events()

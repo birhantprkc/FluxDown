@@ -730,3 +730,255 @@ pub struct Ed2kServerSubscriptionResult {
     /// Non-empty when all sources failed (error summary).
     pub error: String,
 }
+
+// ========== Plugin system signals ==========
+
+/// Request the current plugin list (Dart → Rust, sent on plugin settings page open).
+#[derive(Deserialize, DartSignal)]
+pub struct RequestPlugins {}
+
+/// Install a plugin — from a zip upload, a dev directory, or both fields
+/// distinguish the mode (Dart → Rust). See `download_actor` dispatch rule.
+#[derive(Deserialize, DartSignal)]
+pub struct InstallPlugin {
+    pub zip_bytes: Vec<u8>,
+    pub dir_path: String,
+    pub dev_mode: bool,
+}
+
+/// Uninstall a plugin by identity (Dart → Rust).
+#[derive(Deserialize, DartSignal)]
+pub struct UninstallPlugin {
+    pub identity: String,
+}
+
+/// Enable/disable a plugin (Dart → Rust). Manual toggle — clears any
+/// circuit-breaker auto-disable reason.
+#[derive(Deserialize, DartSignal)]
+pub struct SetPluginEnabled {
+    pub identity: String,
+    pub enabled: bool,
+}
+
+/// Save a plugin's settings values (Dart → Rust).
+#[derive(Deserialize, DartSignal)]
+pub struct SavePluginSettings {
+    pub identity: String,
+    pub entries: Vec<ConfigEntry>,
+}
+
+/// Escape hatch: clear a stuck task's resolver binding and resume it
+/// (Dart → Rust). Used when a plugin resolver hangs or a task is stuck
+/// waiting on plugin retry.
+#[derive(Deserialize, DartSignal)]
+pub struct IgnorePluginRetry {
+    pub task_id: String,
+}
+
+/// Current plugin list, sent after [RequestPlugins] and after any
+/// install/uninstall/enable/settings mutation (Rust → Dart).
+#[derive(Serialize, RustSignal)]
+pub struct PluginList {
+    pub plugins: Vec<PluginInfoSignal>,
+}
+
+/// Result of a plugin write operation — install/uninstall/enable/settings
+/// (Rust → Dart). `op` identifies the operation (e.g. "install", "uninstall",
+/// "set_enabled", "save_settings"); `failed_key` names the offending setting
+/// key on a settings validation failure (empty otherwise).
+#[derive(Serialize, RustSignal)]
+pub struct PluginOpResult {
+    pub op: String,
+    pub identity: String,
+    pub ok: bool,
+    pub message: String,
+    pub failed_key: String,
+}
+
+/// A plugin was auto-disabled by the circuit breaker (Rust → Dart).
+#[derive(Serialize, RustSignal)]
+pub struct PluginAutoDisabledNotice {
+    pub identity: String,
+    pub reason: String,
+}
+
+/// Nested plugin info piece — mirrors `fluxdown_engine::plugin::PluginInfo`.
+/// Hub-local: not shared with `fluxdown_api`'s `PluginDto` (hub→api is a
+/// one-way dependency).
+#[derive(Serialize, Deserialize, SignalPiece)]
+pub struct PluginInfoSignal {
+    pub identity: String,
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    pub homepage: String,
+    pub enabled: bool,
+    pub dev_mode: bool,
+    pub disabled_reason: String,
+    pub settings: Vec<SettingFieldSignal>,
+    pub settings_values: Vec<ConfigEntry>,
+}
+
+impl From<fluxdown_engine::plugin::PluginInfo> for PluginInfoSignal {
+    fn from(info: fluxdown_engine::plugin::PluginInfo) -> Self {
+        Self {
+            identity: info.identity,
+            name: info.name,
+            version: info.version,
+            description: info.description,
+            homepage: info.homepage,
+            enabled: info.enabled,
+            dev_mode: info.dev_mode,
+            disabled_reason: info.disabled_reason,
+            settings: info.settings.into_iter().map(Into::into).collect(),
+            settings_values: info
+                .settings_values
+                .into_iter()
+                .map(|(key, value)| ConfigEntry { key, value })
+                .collect(),
+        }
+    }
+}
+
+/// Nested plugin setting field piece — mirrors
+/// `fluxdown_engine::plugin::SettingField`. `min`/`max` use `f64` +
+/// `has_min`/`has_max` (rather than `f64::NAN`) to avoid NaN crossing the
+/// Dart FFI boundary undetected.
+#[derive(Serialize, Deserialize, SignalPiece)]
+pub struct SettingFieldSignal {
+    pub key: String,
+    pub title: String,
+    pub description: String,
+    pub setting_type: String,
+    pub widget: String,
+    pub options: Vec<SettingOptionSignal>,
+    pub default_value: String,
+    pub required: bool,
+    pub min: f64,
+    pub has_min: bool,
+    pub max: f64,
+    pub has_max: bool,
+    pub pattern: String,
+}
+
+impl From<fluxdown_engine::plugin::SettingField> for SettingFieldSignal {
+    fn from(field: fluxdown_engine::plugin::SettingField) -> Self {
+        use fluxdown_engine::plugin::{SettingType, SettingWidget};
+
+        let setting_type = match field.ty {
+            SettingType::String => "string",
+            SettingType::Number => "number",
+            SettingType::Boolean => "boolean",
+        }
+        .to_string();
+        let widget = match field.effective_widget() {
+            SettingWidget::Text => "text",
+            SettingWidget::Password => "password",
+            SettingWidget::Textarea => "textarea",
+            SettingWidget::Select => "select",
+            SettingWidget::Toggle => "toggle",
+            SettingWidget::Number => "number",
+            SettingWidget::Folder => "folder",
+        }
+        .to_string();
+        Self {
+            key: field.key,
+            title: field.title,
+            description: field.description,
+            setting_type,
+            widget,
+            options: field.options.into_iter().map(Into::into).collect(),
+            default_value: field.default.unwrap_or_default(),
+            required: field.required,
+            has_min: field.min.is_some(),
+            min: field.min.unwrap_or(0.0),
+            has_max: field.max.is_some(),
+            max: field.max.unwrap_or(0.0),
+            pattern: field.pattern.unwrap_or_default(),
+        }
+    }
+}
+
+/// `select` widget option piece — mirrors `fluxdown_engine::plugin::SettingOption`.
+#[derive(Serialize, Deserialize, SignalPiece)]
+pub struct SettingOptionSignal {
+    pub value: String,
+    pub label: String,
+}
+
+impl From<fluxdown_engine::plugin::manifest::SettingOption> for SettingOptionSignal {
+    fn from(opt: fluxdown_engine::plugin::manifest::SettingOption) -> Self {
+        Self {
+            value: opt.value,
+            label: opt.label,
+        }
+    }
+}
+
+// ========== Decentralized plugin market signals ==========
+
+/// Request the current market index (Dart → Rust, sent when the market page
+/// opens or the user hits refresh). Fetching is network I/O (≤20s across all
+/// mirrors) — `download_actor` MUST NOT `.await` it inside the `select!`
+/// branch; it hands off to an off-actor `tokio::spawn` task instead.
+#[derive(Deserialize, DartSignal)]
+pub struct RequestMarketIndex {}
+
+/// Install a plugin's latest non-yanked version from the market by its
+/// market `plugin_id` (Dart → Rust). Same off-actor dispatch rule as
+/// [`RequestMarketIndex`].
+#[derive(Deserialize, DartSignal)]
+pub struct InstallMarketPlugin {
+    pub plugin_id: String,
+}
+
+/// Market index fetch result (Rust → Dart), sent after [`RequestMarketIndex`].
+/// `entries` is empty and `message` carries the error text on failure
+/// (network error / index parse error / sequence-rollback rejection).
+#[derive(Serialize, RustSignal)]
+pub struct MarketIndexLoaded {
+    pub ok: bool,
+    pub message: String,
+    pub entries: Vec<MarketEntrySignal>,
+}
+
+/// Nested market entry piece — mirrors `fluxdown_engine::plugin::MarketEntry`.
+/// `sequence` uses `i64` (not `u64`) to avoid rinf's u64 FFI limitation.
+#[derive(Serialize, Deserialize, SignalPiece)]
+pub struct MarketEntrySignal {
+    pub plugin_id: String,
+    pub version: String,
+    pub sequence: i64,
+    pub content_hash: String,
+    pub min_app_version: String,
+    pub name: String,
+    pub description: String,
+    pub author: String,
+    pub homepage: String,
+    pub mirrors: Vec<String>,
+    pub publish_time: String,
+    pub yanked: String,
+    pub tags: Vec<String>,
+}
+
+impl From<fluxdown_engine::plugin::MarketEntry> for MarketEntrySignal {
+    fn from(e: fluxdown_engine::plugin::MarketEntry) -> Self {
+        Self {
+            plugin_id: e.plugin_id,
+            version: e.version,
+            // 索引 sequence 是全局单调计数器,现实规模下远不会触及 i64::MAX;
+            // 万一溢出也只影响这一条目的排序展示,钳到上限而非 panic。
+            sequence: i64::try_from(e.sequence).unwrap_or(i64::MAX),
+            content_hash: e.content_hash,
+            min_app_version: e.min_app_version,
+            name: e.name,
+            description: e.description,
+            author: e.author,
+            homepage: e.homepage,
+            mirrors: e.mirrors,
+            publish_time: e.publish_time,
+            yanked: e.yanked,
+            tags: e.tags,
+        }
+    }
+}

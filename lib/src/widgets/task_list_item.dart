@@ -2,12 +2,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 import 'package:super_drag_and_drop/super_drag_and_drop.dart';
+import '../bindings/bindings.dart';
 import '../i18n/locale_provider.dart';
 import '../models/download_task.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_metrics.dart';
 import 'context_menu.dart';
 import '../services/open_folder.dart';
+
+/// 插件系统失败任务的错误消息前缀（引擎/hub/server 固定格式，逃生舱按钮据此判断）。
+const _pluginErrorPrefix = '[插件]';
 
 class TaskListItem extends StatefulWidget {
   final DownloadTask task;
@@ -465,6 +469,19 @@ void showTaskContextMenu(
       break;
   }
 
+  // --- 忽略插件重试（逃生舱：插件解析失败任务专属）---
+  if (task.status == TaskStatus.error &&
+      task.errorMessage.startsWith(_pluginErrorPrefix)) {
+    items.add(
+      ContextMenuItem(
+        icon: LucideIcons.shieldOff,
+        label: s.taskIgnorePluginRetry,
+        color: c.textPrimary,
+        action: () => showIgnorePluginRetryDialog(context, taskId: task.id),
+      ),
+    );
+  }
+
   // --- 优先下载 / 取消优先（仅对非完成任务显示）---
   if (task.status != TaskStatus.completed && onBoost != null) {
     items.add(
@@ -558,6 +575,40 @@ void showTaskContextMenu(
     globalPosition,
     items: items,
     dividerAfterIndices: dividers,
+  );
+}
+
+// =============================================================================
+// 忽略插件重试确认对话框（逃生舱）
+// =============================================================================
+
+/// 逃生舱：确认后忽略插件重新解析，直接用原始链接恢复下载。
+void showIgnorePluginRetryDialog(BuildContext context, {required String taskId}) {
+  if (!context.mounted) return;
+  final c = AppColors.of(context);
+  final s = LocaleScope.of(context);
+  showShadDialog(
+    context: context,
+    barrierColor: c.dialogBarrier,
+    animateIn: const [],
+    animateOut: const [],
+    builder: (ctx) => ShadDialog(
+      title: Text(s.taskIgnorePluginRetryTitle),
+      description: Text(s.taskIgnorePluginRetryMsg),
+      actions: [
+        ShadButton.outline(
+          onPressed: () => Navigator.of(ctx).pop(),
+          child: Text(s.cancel),
+        ),
+        ShadButton(
+          onPressed: () {
+            Navigator.of(ctx).pop();
+            IgnorePluginRetry(taskId: taskId).sendSignalToRust();
+          },
+          child: Text(s.taskIgnorePluginRetry),
+        ),
+      ],
+    ),
   );
 }
 

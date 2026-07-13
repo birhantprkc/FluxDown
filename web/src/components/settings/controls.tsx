@@ -13,7 +13,7 @@ export function SetRow({
   children,
   align = 'center',
 }: {
-  title: string
+  title: ReactNode
   desc?: string
   children: ReactNode
   align?: 'center' | 'start'
@@ -136,11 +136,13 @@ export function NumberInput({
   value,
   onCommit,
   min,
+  max,
   className,
 }: {
   value: number
   onCommit: (v: number) => void
   min?: number
+  max?: number
   className?: string
 }) {
   const [text, setText] = useState(String(value))
@@ -150,6 +152,7 @@ export function NumberInput({
       className={cn('text-input', className)}
       type="number"
       min={min}
+      max={max}
       value={text}
       onChange={(e) => setText(e.target.value)}
       onBlur={() => {
@@ -166,13 +169,13 @@ export function TextAreaInput({
   onCommit,
   rows = 4,
   placeholder,
-  width = 320,
+  width = '100%',
 }: {
   value: string
   onCommit: (v: string) => void
   rows?: number
   placeholder?: string
-  width?: number
+  width?: number | string
 }) {
   const [text, setText] = useState(value)
   useEffect(() => setText(value), [value])
@@ -200,7 +203,7 @@ export function TextFieldRow({
   placeholder,
   password,
 }: {
-  title: string
+  title: ReactNode
   desc?: string
   value: string
   onCommit: (v: string) => void
@@ -220,18 +223,20 @@ export function NumberFieldRow({
   value,
   onCommit,
   min,
+  max,
   short = true,
 }: {
-  title: string
+  title: ReactNode
   desc?: string
   value: number
   onCommit: (v: number) => void
   min?: number
+  max?: number
   short?: boolean
 }) {
   return (
     <SetRow title={title} desc={desc}>
-      <NumberInput value={value} onCommit={onCommit} min={min} className={short ? 'short' : undefined} />
+      <NumberInput value={value} onCommit={onCommit} min={min} max={max} className={short ? 'short' : undefined} />
     </SetRow>
   )
 }
@@ -243,15 +248,19 @@ export function TextAreaFieldRow({
   onCommit,
   placeholder,
 }: {
-  title: string
+  title: ReactNode
   desc?: string
   value: string
   onCommit: (v: string) => void
   placeholder?: string
 }) {
   return (
-    <SetRow title={title} desc={desc} align="start">
+    <div className="set-row stack">
+      <div className="set-info">
+        <b>{title}</b>
+        {desc ? <span>{desc}</span> : null}
+      </div>
       <TextAreaInput value={value} onCommit={onCommit} placeholder={placeholder} />
-    </SetRow>
+    </div>
   )
 }

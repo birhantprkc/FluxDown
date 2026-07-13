@@ -97,6 +97,8 @@ export type WsServerMsg =
   | { type: 'priorityTaskChanged'; priorityTaskId: string; autoPausedCount: number }
   | { type: 'hlsSelectionRequest'; taskId: string; options: HlsQualityOption[] }
   | { type: 'btSelectionRequest'; taskId: string; files: BtFileEntry[] }
+  | { type: 'pluginsChanged' }
+  | { type: 'pluginAutoDisabled'; identity: string; reason: string }
   | { type: 'pong' }
 
 export interface TaskProgressMsg {
@@ -187,3 +189,62 @@ export interface TokenResponse {
 }
 
 export type ConfigMap = Record<string, string>
+
+// ---- 插件系统 ----
+
+export type SettingValueType = 'string' | 'number' | 'boolean'
+export type SettingWidget = 'text' | 'password' | 'textarea' | 'select' | 'toggle' | 'number' | 'folder'
+export type PluginDisabledReason = 'None' | 'Manual' | 'CircuitBreaker'
+
+export interface SettingOptionDto {
+  value: string
+  label: string
+}
+
+export interface SettingFieldDto {
+  key: string
+  title: string
+  description: string
+  type: SettingValueType
+  widget: SettingWidget
+  options: SettingOptionDto[]
+  default: string | null
+  required: boolean
+  min: number | null
+  max: number | null
+  pattern: string | null
+}
+
+export interface PluginDto {
+  identity: string
+  name: string
+  version: string
+  description: string
+  homepage: string
+  enabled: boolean
+  devMode: boolean
+  disabledReason: PluginDisabledReason
+  settings: SettingFieldDto[]
+  settingsValues: Record<string, string>
+}
+
+export interface InstalledPlugin {
+  identity: string
+}
+
+/** 去中心化插件市场索引条目（浏览/安装用）。yanked 值域：none/deprecated/vulnerable/malicious。 */
+export interface MarketEntry {
+  pluginId: string
+  version: string
+  sequence: number
+  contentHash: string
+  minAppVersion: string
+  name: string
+  description: string
+  author: string
+  homepage: string
+  mirrors: string[]
+  publishTime: string
+  yanked: string
+  tags: string[]
+}

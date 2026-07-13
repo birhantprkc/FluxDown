@@ -45,6 +45,26 @@ pub const API_QUEUES: &str = "/api/v1/queues";
 /// OpenAPI 3.1 规范文档（GET，无鉴权）。
 pub const API_OPENAPI: &str = "/api/v1/openapi.json";
 
+/// 插件集合（GET 列表）。
+pub const API_PLUGINS: &str = "/api/v1/plugins";
+/// 安装插件（POST zip bytes，≤10MB）。
+pub const API_PLUGINS_INSTALL: &str = "/api/v1/plugins/install";
+/// 安装 dev 插件（POST {dirPath}）。
+pub const API_PLUGINS_INSTALL_DEV: &str = "/api/v1/plugins/install-dev";
+/// 单插件启用开关（PUT {enabled}）。
+pub const API_PLUGIN_ENABLED: &str = "/api/v1/plugins/{identity}/enabled";
+/// 单插件设置（PUT {key:value}）。
+pub const API_PLUGIN_SETTINGS: &str = "/api/v1/plugins/{identity}/settings";
+/// 卸载单插件（DELETE）。
+pub const API_PLUGIN: &str = "/api/v1/plugins/{identity}";
+/// 任务级逃生舱：忽略插件重试，按原始链接重跑（POST）。
+pub const API_TASK_IGNORE_PLUGIN_RETRY: &str = "/api/v1/tasks/{id}/ignore-plugin-retry";
+
+/// 去中心化插件市场：拉取索引（GET）。
+pub const API_MARKET: &str = "/api/v1/market";
+/// 从市场安装（POST {pluginId}）。
+pub const API_MARKET_INSTALL: &str = "/api/v1/market/install";
+
 /// 生成单任务路径（客户端用）。
 #[must_use]
 pub fn task_path(task_id: &str) -> String {

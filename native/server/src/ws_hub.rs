@@ -300,6 +300,10 @@ impl EventSink for EngineEventSink {
                     .broadcast_task_event(task_id, TaskEventKind::BtComplete);
                 return;
             }
+            // 插件因熔断被自动禁用（reason 固定 "CircuitBreaker"）。
+            EngineEvent::PluginAutoDisabled { identity, reason } => {
+                WsServerMsg::PluginAutoDisabled { identity, reason }
+            }
             // `#[non_exhaustive]`：未来新增变体默认丢弃并记录日志。
             other => {
                 log_info!("[ws-hub] unhandled engine event: {:?}", other);

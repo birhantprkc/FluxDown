@@ -26,6 +26,12 @@ export default defineConfig({
     name: "__MSG_extensionName__",
     description: "__MSG_extensionDescription__",
     default_locale: "en",
+    // 版本号策略：真实版本号仅由 CI（GitHub Actions，release.yml 用 tag 重写
+    // package.json 的 version）产出；任何本地构建（dev 或 build）一律固定为
+    // 0.0.0，并以 version_name="dev" 在 UI 上显示，防止本地产物冒充正式版本。
+    ...(process.env.GITHUB_ACTIONS === "true"
+      ? {}
+      : { version: "0.0.0", version_name: "dev" }),
     // Stable key to pin Chrome extension ID across all builds (Chrome only).
     // Firefox 通过 browser_specific_settings.gecko.id 固定 ID。
     // Edge 不支持 key 字段（加载时会报错），且 Edge 侧载扩展 ID

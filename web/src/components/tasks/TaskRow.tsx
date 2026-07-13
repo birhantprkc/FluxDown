@@ -1,7 +1,7 @@
 // 单条任务行。对齐 design/web/app.js taskRow()/statusMeta()/actionBtn()/iconClass()。
 
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Archive, Check, FileText, Image as ImageIcon, Package2, Pause, Play, RotateCcw, Film, Music, File as FileIcon, Zap } from 'lucide-react'
+import { Ban, Archive, Check, FileText, Image as ImageIcon, Package2, Pause, Play, RotateCcw, Film, Music, File as FileIcon, Zap } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { api } from '../../lib/api'
 import { cn } from '../../lib/cn'
@@ -22,6 +22,9 @@ const TYPE_ICONS: Record<FT, LucideIcon> = {
   archive: Archive,
   other: FileIcon,
 }
+
+/** 插件系统失败任务的错误消息前缀（引擎/hub/server 固定格式，逃生舱按钮据此判断）。 */
+const PLUGIN_ERROR_PREFIX = '[插件]'
 
 function statusIconClass(status: ViewTask['status']): string {
   if (status === 3) return 'done'
@@ -73,7 +76,17 @@ function TaskMeta({ t }: { t: ViewTask }) {
   return <span>{tr('status.pending')}</span>
 }
 
-function TaskActionButton({ t, onPause, onContinue }: { t: ViewTask; onPause: () => void; onContinue: () => void }) {
+function TaskActionButton({
+  t,
+  onPause,
+  onContinue,
+  onIgnorePluginRetry,
+}: {
+  t: ViewTask
+  onPause: () => void
+  onContinue: () => void
+  onIgnorePluginRetry: () => void
+}) {
   const { t: tr } = useI18n()
   if (t.status === 1 || t.status === 5)
     return (
@@ -105,17 +118,32 @@ function TaskActionButton({ t, onPause, onContinue }: { t: ViewTask; onPause: ()
     )
   if (t.status === 4)
     return (
-      <button
-        type="button"
-        className="task-act retry"
-        title={tr('task.retry')}
-        onClick={(e) => {
-          e.stopPropagation()
-          onContinue()
-        }}
-      >
-        <RotateCcw size={15} />
-      </button>
+      <>
+        <button
+          type="button"
+          className="task-act retry"
+          title={tr('task.retry')}
+          onClick={(e) => {
+            e.stopPropagation()
+            onContinue()
+          }}
+        >
+          <RotateCcw size={15} />
+        </button>
+        {t.errorMessage.startsWith(PLUGIN_ERROR_PREFIX) && (
+          <button
+            type="button"
+            className="task-act"
+            title={tr('task.ignorePluginRetry')}
+            onClick={(e) => {
+              e.stopPropagation()
+              onIgnorePluginRetry()
+            }}
+          >
+            <Ban size={15} />
+          </button>
+        )}
+      </>
     )
   return (
     <span className="task-act done">
@@ -135,6 +163,7 @@ export function TaskRow({ task: t, queues }: { task: ViewTask; queues: QueueDto[
   const boostMut = useMutation({ mutationFn: () => api.boostTask(t.taskId), onSuccess: invalidate })
   const deleteMut = useMutation({ mutationFn: (deleteFiles: boolean) => api.deleteTask(t.taskId, deleteFiles), onSuccess: invalidate })
   const moveMut = useMutation({ mutationFn: (queueId: string) => api.moveTaskToQueue(t.taskId, queueId), onSuccess: invalidate })
+  const ignorePluginRetryMut = useMutation({ mutationFn: () => api.ignorePluginRetry(t.taskId), onSuccess: invalidate })
 
   const Icon = TYPE_ICONS[fileType(t.fileName, t.url)]
   const pct = t.totalBytes > 0 ? Math.round((t.downloadedBytes / t.totalBytes) * 100) : 0
@@ -189,7 +218,12 @@ export function TaskRow({ task: t, queues }: { task: ViewTask; queues: QueueDto[
         </div>
         <div className="trow-side">
           <span className="trow-pct">{pct}%</span>
-          <TaskActionButton t={t} onPause={() => pauseMut.mutate()} onContinue={() => continueMut.mutate()} />
+          <TaskActionButton
+            t={t}
+            onPause={() => pauseMut.mutate()}
+            onContinue={() => continueMut.mutate()}
+            onIgnorePluginRetry={() => ignorePluginRetryMut.mutate()}
+          />
         </div>
       </div>
     </TaskContextMenu>

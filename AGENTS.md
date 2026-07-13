@@ -456,6 +456,74 @@ CLI 独立二进制可能解析到不同目录、不共享），下载任务对 
 **并发告警**：勿在 App/server 活跃或另一 `--local` 运行时对**同一输出文件**并发下载（DB 层 WAL 安全，
 仅同一目标文件并写才可能损坏）。web 侧独立可用不依赖本 CLI —— 运行 `fluxdown_server` 托管即可。
 
+## 插件系统（native/engine/src/plugin，`plugins` feature 门控）
+
+插件是**可选、可失败的下载任务中间层**，JS 编写（rquickjs 运行时），
+带声明式设置项（双端 UI 自动生成表单）。能力拆两个正交平面：
+
+- **Resolver 平面**：`globalThis.resolve(ctx) → {url,...}|null`。每次发起下载**协议判定之前**惰性执行、
+  且 **off-actor**（防冻结单线程 actor）；命中后失败 fail-closed（进 status=4，绝不把网页 HTML 当视频存）。
+  惰性 = 每次 start/resume 都重跑，天然防直链过期。
+- **通知平面**：onStart/onDone/onError/onMetaProbed 全部 **fire-and-forget**（失败仅记日志、超时、
+  `try_acquire` 不阻塞，绝不影响任务状态）。仅 onError 内可 `flux.task.requestRetry({delayMs})` 命令式重试。
+
+### 模块（`native/engine/src/plugin/`，全部仅 `plugins` feature 编译）
+
+|文件|职责|
+|---|---|
+|`manifest.rs`|`PluginManifest`/`SettingField` + 手写校验器（identity 正则 / resolvers≤1 / widget×type 矩阵 / 路径安全）+ `url_glob_match`（`*` 唯一通配符）|
+|`semver.rs`|engine-local 三段 semver（`satisfies_min`，复刻 hub updater）|
+|`runtime.rs`|抽象层 `ScriptRuntime`/`PluginBridge` trait + 跨 JS 边界结构（禁 rquickjs 类型，未来可换 deno_core）|
+|`quickjs.rs`|v1 唯一实现 `QuickJsScriptRuntime`：专用 multi_thread runtime（`min(4,cpu)` 线程）；每调用新建 `AsyncRuntime`+`AsyncContext`；memory_limit + interrupt + 外层 timeout 三重兜底；Drop 用 `shutdown_background` 避异步上下文 drop panic；连续 3 次 Timeout/MemoryLimit → 熔断|
+|`bridge.rs`|`EngineBridge`（网络出口守卫防 SSRF：单一 `is_globally_routable_unicast` 判定 × 字面量 IP 前置校验 + 自定义 dns::Resolve + redirect Policy::custom 三腿复用）+ `flux.storage`/`flux.log`/`flux.task.requestRetry`|
+|`manager.rs`|`PluginManager`（Arc 共享）：`RwLock<Arc<Vec<LoadedPlugin>>>` 整表原子替换；load_all/match_resolver/resolve/notify/install/uninstall/set_enabled/update_settings|
+|`install.rs`|zip 安装（zip-slip + 压缩炸弹防护 + 单层剥壳），复用 install 管线|
+|`market.rs`|去中心化市场客户端 `MarketClient`（见下）|
+
+### off-actor 惰性 resolve（download_manager.rs 插桩，核心行为变更）
+
+`create_task` 命中 `match_resolver` → 落 `tasks.resolver_plugin_id` 列（**仅存 ID，不存解析结果**）+
+跳过 meta_prober。`do_start_task`/`do_resume_task` **体首守卫**：resolver 非空且未解析 → 占位 active_tasks +
+存 pending_resolve + `runtime_handle().spawn`（禁裸 `tokio::spawn`）panic 隔离 worker → return（不分派）。
+worker 完成经 `resolve_tx`（unbounded mpsc）回流，actor `select!` 的 `resolve_rx` 分支 → `on_resolve_ready`：
+先 `load_task_by_id` 复查生命周期（已删/paused/cancel → 放弃复活），否则用**解析后 url 重算 use_bt/hls/dash/
+ftp/ed2k** 五路分派（D2-b1 协议路由修复落点）。onError 重试经 `plugin_retry_tx` → `plugin_request_retry`
+（复用 `max_auto_retries` 账本）。**宿主 actor（hub/server）必须接线 `resolve_rx`/`plugin_retry_rx` 两分支**。
+
+### config 键命名空间 & DB
+
+- `tasks.resolver_plugin_id`（新增列，惰性设计）。
+- `plugin.<identity>.enabled` / `.disabled_reason`（`None`/`Manual`/`CircuitBreaker`）/ `.setting.<key>` / `.kv.<key>`（storage，值≤64KB、≤100 键）。
+- `plugin.dev.<identity>`（devMode 绝对路径，不拷贝）。
+- `market.<index_id>.sequence`（防回滚高水位）；`market_index_sources`（逗号分隔自定义索引源）。
+
+### manifest widget×type 合法矩阵
+
+text/password/textarea/folder/select → string；toggle → boolean；number → number。select 须 options 非空且
+default ∈ options。跨端设置值一律**字符串**序列化（boolean→`"true"`/`"false"`，number→十进制）。
+identity 格式 `^[a-z0-9_-]+@[a-z0-9_-]+$`（禁 `.`，防 config 键分隔碰撞）。`pattern` 用 **JS RegExp** 语法
+（依赖约束禁 regex crate，改用运行时 RegExp；记录在案的偏离）。
+
+### 去中心化插件市场（`market.rs` + 索引仓库 `zerx-lab/fluxdown-plugin-index`）
+
+市场 = 一份可验证数据格式：Git 版本化索引（联邦式，任何人可 fork），插件包 `.fxplug`（= 插件目录 zip）
+**内容寻址**（`contentHash = sha256(整个 zip)`），多源分发（raw.githubusercontent / jsdelivr / GitHub Release）。
+`MarketClient`：多源 failover 拉 `index.json` → per-index_id sequence 防回滚 → 多镜像择优下载（https-only）→
+content_hash 钉住校验 → 复用 install 管线。**v1 无作者密码学签名**（依赖约束仅 rquickjs 获批；schema 预留
+`sigScheme`/`sigstoreBundleRef`，晚加不破坏兼容），完整性基座 = 内容寻址 + TLS + Git Merkle DAG 防篡改。
+api 侧 `GET /api/v1/market`、`POST /api/v1/market/install`；hub 侧 `RequestMarketIndex`/`InstallMarketPlugin` 信号。
+
+### 关键约束（务必遵守）
+
+- `native/engine/Cargo.toml` 的 `rquickjs` 依赖**禁止**叠加 `rust-alloc`/`allocator` feature（会让
+  `set_memory_limit` 静默失效）；`parallel` feature 必带（`AsyncRuntime`/`AsyncContext` 的 Send/Sync 依赖它）。
+- `plugins` feature 关时（mobile）：`native/engine/src/plugin` 整个不编译，`DownloadManager` 无 plugin 字段，
+  下载主链路**零行为变化**（`cargo check -p fluxdown_engine`（不带 feature）须通过）。
+- desktop（hub）/ server 的 `fluxdown_engine`+`fluxdown_api` 依赖开 `plugins` feature；CLI 不开。
+- 插件运行时永不阻塞宿主 current_thread actor：resolve 走 off-actor spawn + 通道回流。
+- 测试命令：`cargo test -p fluxdown_engine --features plugins --lib plugin`、
+  `... --test plugin_lazy_resolve --test plugin_market`、`... --test fxplug_install`（需 `FLUXDOWN_TEST_FXPLUG` 环境变量）。
+
 ## 浏览器扩展（fluxDown/）
 
 ### 通信架构
