@@ -61,11 +61,22 @@ volumes:
 const SCOOP_SELFHOSTED_CMD = `scoop bucket add fluxdown https://github.com/zerx-lab/FluxDown
 scoop install fluxdown/fluxdown`;
 
-/* Windows logo — not available in Simple Icons (trademark), use inline SVG */
-function WindowsLogo({ className }: { className?: string }) {
+/* Windows logo — not available in Simple Icons (trademark), use inline SVG.
+   color="currentColor"（侧栏）渲染单色；不传 color（详情头部）渲染官方四色磁贴。 */
+function WindowsLogo({ className, color }: { className?: string; color?: string }) {
+  if (color === "currentColor") {
+    return (
+      <svg className={className} viewBox="0 0 24 24" fill="currentColor">
+        <path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-13.051-1.849" />
+      </svg>
+    );
+  }
   return (
-    <svg className={className} viewBox="0 0 24 24" fill="currentColor">
-      <path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-13.051-1.849" />
+    <svg className={className} viewBox="0 0 24 24">
+      <path fill="#F25022" d="M0 3.449L9.75 2.1v9.451H0z" />
+      <path fill="#7FBA00" d="M10.949 1.849L24 0v11.4H10.949z" />
+      <path fill="#00A4EF" d="M0 12.6h9.75v9.451L0 20.699z" />
+      <path fill="#FFB900" d="M10.949 12.6H24V24l-13.051-1.849z" />
     </svg>
   );
 }
@@ -318,6 +329,11 @@ export default function DownloadSection() {
     badge: string;
     /** 独立图标背景样式（覆盖 primary/非 primary 默认背景），如 Docker/Web 版品牌色 */
     iconBg?: string;
+    /** 图标本体颜色（品牌本色 logo 用），缺省白色 */
+    iconColor?: string;
+    /** 全彩品牌 logo 图片（覆盖 icon 渲染）；imgFull 时铺满整个磁贴（自带圆角底） */
+    iconImg?: string;
+    iconImgFull?: boolean;
     /** 平台独立版本号（如 FluxDown Server），缺省时用桌面客户端版本 */
     version?: string;
     setup: ReleaseAsset | null;
@@ -338,6 +354,7 @@ export default function DownloadSection() {
       name: t("dl.windows"),
       icon: WindowsLogo,
       arch: hasArm64Assets ? "x64 / ARM64" : "x64",
+      iconBg: "bg-white ring-1 ring-black/10",
       available: true,
       primary: true,
       badge: t("dl.availableNow"),
@@ -363,6 +380,8 @@ export default function DownloadSection() {
       name: t("dl.macos"),
       icon: SiApple,
       arch: "Apple Silicon / Intel",
+      iconBg: "bg-white ring-1 ring-black/10",
+      iconColor: "text-[#1d1d1f]",
       available: !!(
         release?.assets.macos_dmg_arm64 ||
         release?.assets.macos_dmg_x64 ||
@@ -407,6 +426,8 @@ export default function DownloadSection() {
       name: t("dl.linux"),
       icon: SiLinux,
       arch: "x64",
+      iconBg: "bg-white ring-1 ring-black/10",
+      iconImg: "/brand/tux.svg",
       available: hasLinuxAssets,
       primary: hasLinuxAssets,
       badge: hasLinuxAssets ? t("dl.availableNow") : t("dl.comingSoon"),
@@ -435,7 +456,8 @@ export default function DownloadSection() {
       arch: t("dl.dockerArch"),
       available: true,
       primary: false,
-      iconBg: "bg-gradient-to-br from-[#2496ED] to-[#0db7ed]",
+      iconBg: "bg-white ring-1 ring-black/10",
+      iconColor: "text-[#2496ED]",
       badge: t("dl.availableNow"),
       setup: null,
       portable: null,
@@ -448,7 +470,8 @@ export default function DownloadSection() {
       available: hasServerAssets,
       primary: false,
       badge: hasServerAssets ? t("dl.availableNow") : t("dl.comingSoon"),
-      iconBg: "bg-gradient-to-br from-brand-sky to-brand-cyan",
+      iconImg: "/logo.svg",
+      iconImgFull: true,
       version: release?.server?.version,
       setup: serverAssets?.windows_x64 ?? null,
       setupLabel: "Windows x64",
@@ -571,7 +594,8 @@ export default function DownloadSection() {
       available: hasMobileAssets,
       primary: false,
       badge: hasMobileAssets ? t("dl.availableNow") : t("dl.comingSoon"),
-      iconBg: "bg-gradient-to-br from-[#3DDC84] to-[#2bb673]",
+      iconBg: "bg-white ring-1 ring-black/10",
+      iconColor: "text-[#3DDC84]",
       version: release?.mobile?.version,
       setup: mobileAssets?.android_arm64 ?? null,
       setupLabel: "arm64-v8a (APK)",
@@ -599,7 +623,9 @@ export default function DownloadSection() {
       available: hasCliAssets,
       primary: false,
       badge: hasCliAssets ? t("dl.availableNow") : t("dl.comingSoon"),
-      iconBg: "bg-gradient-to-br from-brand-cyan to-brand-sky",
+      iconBg:
+        "bg-gradient-to-br from-[#3a4150] to-[#16181d] ring-1 ring-white/10",
+      iconColor: "text-[#4ade80]",
       version: release?.cli?.version,
       setup: cliAssets?.windows_x64 ?? null,
       setupLabel: "Windows x64",
@@ -758,14 +784,28 @@ export default function DownloadSection() {
                         <div className="flex items-start gap-4">
                           <div
                             className={`w-12 h-12 rounded-xl flex items-center justify-center shrink-0 ${
-                              p.iconBg ??
-                              "bg-gradient-to-br from-brand-sky to-brand-cyan"
+                              p.iconImgFull
+                                ? ""
+                                : (p.iconBg ??
+                                  "bg-gradient-to-br from-brand-sky to-brand-cyan")
                             }`}
                           >
-                            <Icon
-                              className="w-6 h-6 text-white"
-                              color="currentColor"
-                            />
+                            {p.iconImg ? (
+                              <img
+                                src={p.iconImg}
+                                alt=""
+                                className={
+                                  p.iconImgFull ? "w-12 h-12" : "w-7 h-7"
+                                }
+                              />
+                            ) : (
+                              <Icon
+                                className={`w-6 h-6 ${p.iconColor ?? "text-white"}`}
+                                color={
+                                  p.key === "windows" ? undefined : "currentColor"
+                                }
+                              />
+                            )}
                           </div>
                           <div className="min-w-0">
                             <div className="flex items-center gap-2 flex-wrap">
