@@ -69,6 +69,10 @@ The extension's toolbar icon shows a numeric badge with the resource count for t
 
 <!-- TODO(screenshot): floating ball docked to the page edge next to an open resource panel with tabs and a batch selection -->
 
+### Install the FFmpeg component for merged output
+
+Many of the resources you'll sniff — streaming manifests especially — don't arrive as one finished file. DASH streams (`.mpd`) routinely split audio and video into separate tracks, so downloading one produces two files (for example `video.mp4` and `video.audio.m4a`) unless FluxDown can merge them. That merge is done with **FFmpeg** (a fast stream copy, no re-encoding), which isn't bundled with the app — it's an optional component you install on demand from **Settings → Components** inside the desktop app. With it installed, DASH audio/video tracks are merged into a single playable file automatically; without it, the tracks are kept separate for you to merge yourself. Installing FFmpeg also unlocks plugins that declare the `ffmpeg` capability (see the [plugin API reference](/docs/en/plugins/api-reference/)), and installs `ffprobe` alongside it. HLS (`.m3u8`) downloads don't need FFmpeg — FluxDown reassembles and remuxes those to MP4 on its own.
+
 ## Track today's stats
 
 The popup's **Today's Stats** section shows two running counters for the current day: **Intercepted** (downloads successfully handed off to FluxDown) and **Failed** (hand-offs that didn't go through, typically because the desktop app was unreachable at the time). Both reset automatically at the start of a new day, or immediately if you click **Reset Stats** in the popup's footer.
