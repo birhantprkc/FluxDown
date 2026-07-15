@@ -695,7 +695,9 @@ class _HomePageState extends State<HomePage> {
               ),
             if (_isDetailOpen && _detailOnRight)
               Positioned(
-                top: 0,
+                // 详情面板从 header 下方开始（上方 40px 是横跨的 HeaderBar），
+                // 高亮线不侵入 header 区
+                top: 40,
                 bottom: 28,
                 right: _detailWidth - (_ResizeHandle.hitSize - 1) / 2,
                 width: _ResizeHandle.hitSize,
