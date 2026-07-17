@@ -39,7 +39,10 @@ class _PluginListViewState extends State<PluginListView> {
   int _lastOpSeq = -1;
   bool _installingZip = false;
   bool _installingDir = false;
-  bool _devMode = true;
+  /// 开发模式开关跨页面导航保持（切走设置分类会销毁 State，
+  /// 用 static 记住本次会话的选择，避免每次回来都重置为默认开）。
+  static bool _devModeSticky = true;
+  bool get _devMode => _devModeSticky;
   String _devDirPath = '';
   String _marketQuery = '';
   int _marketLimit = _marketPageSize;
@@ -250,7 +253,7 @@ class _PluginListViewState extends State<PluginListView> {
             const SizedBox(width: 6),
             ShadSwitch(
               value: _devMode,
-              onChanged: (v) => setState(() => _devMode = v),
+              onChanged: (v) => setState(() => _devModeSticky = v),
             ),
           ],
         ),
