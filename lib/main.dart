@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:launch_at_startup/launch_at_startup.dart';
 import 'package:rinf/rinf.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
+import 'src/widgets/flux_sonner.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:window_manager/window_manager.dart';
 import 'src/bindings/bindings.dart';
@@ -23,6 +24,7 @@ import 'src/services/floating_ball/wayland_degradation_service.dart';
 import 'src/services/hls_quality_service.dart';
 import 'src/services/resolve_variant_service.dart';
 import 'src/services/bt_file_selection_service.dart';
+import 'src/services/analytics_service.dart';
 import 'src/services/app_icon_service.dart';
 import 'src/services/log_service.dart';
 import 'src/services/kv_store.dart';
@@ -399,6 +401,9 @@ class _FluxDownAppState extends State<FluxDownApp>
     BtFileSelectionService.init(navigatorKey: _navigatorKey);
     // 请求加载配置，确保 settingsProvider 有默认保存目录等数据
     _settingsForExternal.requestConfig();
+
+    // 匿名统计 — 配置加载完成后上报首装/每日活跃事件（不含任何下载任务信息）
+    AnalyticsService.instance.init(_settingsForExternal);
 
     // 悬浮球服务 — 配置加载完成后初始化（S0.5 初始化钩子）
     _initFloatingBallAfterConfigLoad();
@@ -988,7 +993,7 @@ class _FluxDownAppState extends State<FluxDownApp>
                 color: theme.colorScheme.foreground,
               ),
               child: ShadToaster(
-                child: ShadSonner(
+                child: FluxSonner(
                   child: ExcludeSemantics(
                     child: WidgetsApp(
                       navigatorKey: _navigatorKey,
@@ -1006,9 +1011,21 @@ class _FluxDownAppState extends State<FluxDownApp>
                       },
                       pageRouteBuilder:
                           <T>(RouteSettings settings, WidgetBuilder builder) {
-                            return MaterialPageRoute<T>(
+                            // 快速淡入替代 Material 默认 300ms 转场，降低动效感知
+                            return PageRouteBuilder<T>(
                               settings: settings,
-                              builder: builder,
+                              transitionDuration:
+                                  const Duration(milliseconds: 120),
+                              reverseTransitionDuration:
+                                  const Duration(milliseconds: 100),
+                              pageBuilder: (context, _, _) => builder(context),
+                              transitionsBuilder:
+                                  (context, animation, _, child) {
+                                    return FadeTransition(
+                                      opacity: animation,
+                                      child: child,
+                                    );
+                                  },
                             );
                           },
                     ),

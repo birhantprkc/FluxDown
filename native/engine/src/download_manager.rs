@@ -4869,6 +4869,12 @@ impl DownloadManager {
             }
         }
         log_info!("[manager] moved task {} to queue '{}'", task_id, queue_id);
+        // 定向广播归属变化：AllQueues 只带队列元数据，不带任务归属，
+        // 客户端任务表若不更新会导致「移动到队列」看似无效。
+        self.sink.emit(EngineEvent::TaskQueueChanged {
+            task_id,
+            queue_id,
+        });
         self.send_all_queues().await;
     }
 

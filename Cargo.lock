@@ -1327,6 +1327,7 @@ dependencies = [
  "fluxdown_api",
  "fluxdown_engine",
  "fs2",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

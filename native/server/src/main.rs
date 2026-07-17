@@ -7,6 +7,7 @@
 //! 运行：`cargo run -p fluxdown_server`（环境变量见 [`config`] 模块文档）。
 
 mod actor;
+mod analytics;
 mod config;
 mod demo;
 mod host;
@@ -195,6 +196,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         resolve_rx,
         plugin_retry_rx,
     ));
+
+    // 匿名统计（首次部署/每日活跃；不含任何下载任务信息）。
+    // FLUXDOWN_ANALYTICS=off 或未配置 App-Key 时内部自行退出。
+    tokio::spawn(analytics::run(db_handle.clone(), SERVER_VERSION));
 
     // Tracker 订阅启动自动刷新：启用且缓存超过刷新周期未更新时，后台拉取一次
     // （镜像桌面 download_actor 的启动自刷新；不阻塞 serve）。

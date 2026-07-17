@@ -1,7 +1,7 @@
 // #screen-settings —— 左侧分类导航 + 右侧设置正文。
 import { useNavigate } from '@tanstack/react-router'
 import type { LucideIcon } from 'lucide-react'
-import { ArrowLeft, Download, Globe, Info, Lock, Monitor, Palette, Puzzle, Shield } from 'lucide-react'
+import { ArrowLeft, Cloud, Download, Globe, Info, Lock, Monitor, Palette, Puzzle, Shield } from 'lucide-react'
 import { useState } from 'react'
 import { cn } from '../lib/cn'
 import { useI18n } from '../lib/i18n'
@@ -10,6 +10,7 @@ import type { ConfigMap } from '../lib/types'
 import { AboutSettings } from '../components/settings/AboutSettings'
 import { AppearanceSettings } from '../components/settings/AppearanceSettings'
 import { BitTorrentSettings } from '../components/settings/BitTorrentSettings'
+import { CloudAccountSettings } from '../components/settings/CloudAccountSettings'
 import { DownloadSettings } from '../components/settings/DownloadSettings'
 import { ExtensionsSettings } from '../components/settings/ExtensionsSettings'
 import { GeneralSettings } from '../components/settings/GeneralSettings'
@@ -17,10 +18,11 @@ import { ProxySettings } from '../components/settings/ProxySettings'
 import { SecuritySettings } from '../components/settings/SecuritySettings'
 import { useConfigMutation, useConfigQuery } from '../components/settings/useConfig'
 
-type Category = 'general' | 'appearance' | 'download' | 'bt' | 'proxy' | 'security' | 'extensions' | 'about'
+type Category = 'general' | 'account' | 'appearance' | 'download' | 'bt' | 'proxy' | 'security' | 'extensions' | 'about'
 
 const NAV: { key: Category; labelKey: I18nKey; icon: LucideIcon }[] = [
   { key: 'general', labelKey: 'set.general', icon: Monitor },
+  { key: 'account', labelKey: 'set.account', icon: Cloud },
   { key: 'appearance', labelKey: 'set.appearance', icon: Palette },
   { key: 'download', labelKey: 'set.download', icon: Download },
   { key: 'bt', labelKey: 'set.bt', icon: Globe },
@@ -59,6 +61,7 @@ export function SettingsScreen() {
 
   function renderBody() {
     if (cat === 'appearance') return <AppearanceSettings />
+    if (cat === 'account') return <CloudAccountSettings />
     if (cat === 'about') return <AboutSettings config={config} mutate={mutate} />
     if (cat === 'extensions') return <ExtensionsSettings />
     if (isLoading) return <p className="set-desc">{t('common.loading')}</p>

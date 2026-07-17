@@ -225,7 +225,7 @@ jobs:
 
       - name: Build Flutter Windows app
         # Windows 使用 native-tls（Schannel），无需 aws-lc-sys，无需任何额外 TLS 环境变量
-        run: flutter build windows --release --build-name=${{ steps.version.outputs.CLEAN_VERSION }} --build-number=1 --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }} --dart-define=STATS_FIRST_COMMIT_DATE=${{ steps.stats.outputs.FIRST_COMMIT_DATE }} --dart-define=STATS_RELEASE_COUNT=${{ steps.stats.outputs.RELEASE_COUNT }} --dart-define=STATS_COMMIT_COUNT=${{ steps.stats.outputs.COMMIT_COUNT }}
+        run: flutter build windows --release --build-name=${{ steps.version.outputs.CLEAN_VERSION }} --build-number=1 --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }} --dart-define=ANALYTICS_APP_KEY=${{ secrets.ANALYTICS_APP_KEY }} --dart-define=FLUXCLOUD_BASE_URL=${{ secrets.FLUXCLOUD_BASE_URL }} --dart-define=STATS_FIRST_COMMIT_DATE=${{ steps.stats.outputs.FIRST_COMMIT_DATE }} --dart-define=STATS_RELEASE_COUNT=${{ steps.stats.outputs.RELEASE_COUNT }} --dart-define=STATS_COMMIT_COUNT=${{ steps.stats.outputs.COMMIT_COUNT }}
 
       # ── ARM64: Flutter 在 ARM64 runner 上以 x64 仿真运行，输出到 build\windows\x64
       #    但后续步骤（Inno Setup / portable zip）需要 build\windows\arm64 ──
@@ -640,7 +640,7 @@ jobs:
 
       # ── Build ──
       - name: Build Flutter Linux app
-        run: flutter build linux --release --build-name=${{ steps.version.outputs.CLEAN_VERSION }} --build-number=1 --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }} --dart-define=STATS_FIRST_COMMIT_DATE=${{ steps.stats.outputs.FIRST_COMMIT_DATE }} --dart-define=STATS_RELEASE_COUNT=${{ steps.stats.outputs.RELEASE_COUNT }} --dart-define=STATS_COMMIT_COUNT=${{ steps.stats.outputs.COMMIT_COUNT }}
+        run: flutter build linux --release --build-name=${{ steps.version.outputs.CLEAN_VERSION }} --build-number=1 --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }} --dart-define=ANALYTICS_APP_KEY=${{ secrets.ANALYTICS_APP_KEY }} --dart-define=FLUXCLOUD_BASE_URL=${{ secrets.FLUXCLOUD_BASE_URL }} --dart-define=STATS_FIRST_COMMIT_DATE=${{ steps.stats.outputs.FIRST_COMMIT_DATE }} --dart-define=STATS_RELEASE_COUNT=${{ steps.stats.outputs.RELEASE_COUNT }} --dart-define=STATS_COMMIT_COUNT=${{ steps.stats.outputs.COMMIT_COUNT }}
 
       # NOTE: fluxdown_nmh and fluxdown_updater are built automatically
       # by CMake custom targets defined in linux/CMakeLists.txt during flutter build.
@@ -950,6 +950,8 @@ jobs:
             --build-name=${{ steps.version.outputs.CLEAN_VERSION }} \
             --build-number=1 \
             --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }} \
+            --dart-define=ANALYTICS_APP_KEY=${{ secrets.ANALYTICS_APP_KEY }} \
+            --dart-define=FLUXCLOUD_BASE_URL=${{ secrets.FLUXCLOUD_BASE_URL }} \
             --dart-define=STATS_FIRST_COMMIT_DATE=${{ steps.stats.outputs.FIRST_COMMIT_DATE }} \
             --dart-define=STATS_RELEASE_COUNT=${{ steps.stats.outputs.RELEASE_COUNT }} \
             --dart-define=STATS_COMMIT_COUNT=${{ steps.stats.outputs.COMMIT_COUNT }}
@@ -1136,14 +1138,16 @@ jobs:
           flutter build apk --release --split-per-abi \
             --build-name=${{ steps.version.outputs.CLEAN_VERSION }} \
             --build-number=${{ steps.vercode.outputs.CODE }} \
-            --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }}
+            --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }} \
+            --dart-define=FLUXCLOUD_BASE_URL=${{ secrets.FLUXCLOUD_BASE_URL }}
 
       - name: Build universal APK
         run: |
           flutter build apk --release \
             --build-name=${{ steps.version.outputs.CLEAN_VERSION }} \
             --build-number=${{ steps.vercode.outputs.CODE }} \
-            --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }}
+            --dart-define=APP_VERSION=${{ steps.version.outputs.VERSION }} \
+            --dart-define=FLUXCLOUD_BASE_URL=${{ secrets.FLUXCLOUD_BASE_URL }}
 
       # ── 收集并统一命名（Flutter 输出到 build/app/outputs/flutter-apk/）──
       - name: Collect and rename APKs
@@ -1185,6 +1189,8 @@ jobs:
       - name: Build web SPA
         working-directory: web
         run: bun run build
+        env:
+          VITE_FLUXCLOUD_BASE_URL: ${{ secrets.FLUXCLOUD_BASE_URL }}
 
       - name: Upload webroot artifact
         uses: actions/upload-artifact@v4
@@ -1262,6 +1268,7 @@ jobs:
       - name: Build server binary
         env:
           FLUXDOWN_SERVER_VERSION: ${{ steps.version.outputs.VERSION }}
+          FLUXDOWN_ANALYTICS_APP_KEY: ${{ secrets.ANALYTICS_APP_KEY }}
         run: cargo build --release --locked -p fluxdown_server --target ${{ matrix.target }}
 
       - name: Download webroot artifact
@@ -1533,6 +1540,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             FLUXDOWN_SERVER_VERSION=${{ steps.version.outputs.VERSION }}
+            FLUXDOWN_ANALYTICS_APP_KEY=${{ secrets.ANALYTICS_APP_KEY }}
           cache-from: type=gha,scope=server
           cache-to: type=gha,scope=server,mode=max
 
@@ -2202,19 +2210,30 @@ jobs:
     if: ${{ always() && !cancelled() }}
 
     steps:
-      - name: Cleanup GitHub Actions artifacts (keep current tag only)
+      - name: Cleanup GitHub Actions artifacts (keep current tag + in-flight runs)
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           CURRENT_TAG="${GITHUB_REF#refs/tags/}"
-          echo "🧹 Artifact cleanup: keeping only artifacts from tag ${CURRENT_TAG}"
+          echo "🧹 Artifact cleanup: keeping artifacts from tag ${CURRENT_TAG} and any still-running workflow runs"
 
-          # 列出所有 artifact，过滤掉当前 tag 的，删除其余所有
+          # 收集所有未完成（queued/in_progress）run 的 id：并行的其他 tag 发布
+          # 仍在使用自己的 artifact，绝不能删（曾导致 v0.2.4-rc.1 的 Windows
+          # installer 被并行的 v0.2.3 cleanup 提前删除，Release 缺 x64 安装包）
+          ACTIVE_RUN_IDS=$(gh api --paginate \
+            "repos/${{ github.repository }}/actions/runs?status=in_progress" \
+            -q '.workflow_runs[].id'; gh api --paginate \
+            "repos/${{ github.repository }}/actions/runs?status=queued" \
+            -q '.workflow_runs[].id')
+          ACTIVE_JSON=$(printf '%s\n' $ACTIVE_RUN_IDS | jq -cs 'map(tonumber)')
+          echo "Active run ids: ${ACTIVE_JSON}"
+
+          # 列出所有 artifact：跳过当前 tag 的、跳过属于未完成 run 的，删除其余
           # workflow_run.head_branch 在 tag 推送时等于 tag 名（v0.1.43 这样）
           DELETE_IDS=$(gh api --paginate \
             repos/${{ github.repository }}/actions/artifacts \
-            -q ".artifacts[] | select(.workflow_run.head_branch != \"${CURRENT_TAG}\") | .id")
+            -q ".artifacts[] | select(.workflow_run.head_branch != \"${CURRENT_TAG}\") | select(.workflow_run.id as \$rid | (${ACTIVE_JSON} | index(\$rid)) == null) | .id")
 
           if [ -z "$DELETE_IDS" ]; then
             echo "✅ No old artifacts to delete"

@@ -4,12 +4,15 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
+import '../widgets/flux_sonner.dart';
+import '../../main.dart';
 import '../i18n/locale_provider.dart';
 import '../models/download_controller.dart';
 import '../models/download_task.dart';
 import '../models/plugin_provider.dart';
 import '../models/settings_provider.dart';
 import '../services/external_download_service.dart';
+import '../services/cloud/config_sync_service.dart';
 import '../services/log_service.dart';
 import '../services/kv_store.dart';
 import '../services/notification_service.dart';
@@ -105,6 +108,16 @@ class _HomePageState extends State<HomePage> {
     PowerService.instance.bind(_controller, _settingsProvider);
     // 「任务完成后关机」服务（纯内存状态，重启不保留）
     ShutdownService.instance.bind(_controller);
+    // FluxCloud 配置同步：providers 就绪后接线；远端应用/失败均弹 toast。
+    ConfigSyncService.instance.onRemoteApplied = _onSyncRemoteApplied;
+    ConfigSyncService.instance.addListener(_onConfigSyncChanged);
+    unawaited(
+      ConfigSyncService.instance.attach(
+        settings: _settingsProvider,
+        theme: FluxDownApp.of(context),
+        locale: localeNotifier,
+      ),
+    );
     // 首次启动 .torrent 文件关联提示（仅 Windows）
     if (Platform.isWindows) {
       _settingsProvider.addListener(_onSettingsLoadedForAssocPrompt);
@@ -124,9 +137,41 @@ class _HomePageState extends State<HomePage> {
       (p) => p.identity == notice.identity,
     );
     final name = matches.isEmpty ? notice.identity : matches.first.name;
-    ShadSonner.of(context).show(
+    FluxSonner.of(context).show(
       ShadToast.destructive(
         title: Text(currentS.pluginAutoDisabledToast(name)),
+        duration: const Duration(seconds: 4),
+      ),
+    );
+  }
+
+  /// 远端设备同步条目被实际应用后弹 toast（[ConfigSyncService.onRemoteApplied]）。
+  void _onSyncRemoteApplied(int count, String? deviceName) {
+    if (!mounted) return;
+    FluxSonner.of(context).show(
+      ShadToast(
+        title: Text(
+          currentS.cloudSyncAppliedToast(count, deviceName ?? currentS.cloudSyncOtherDevice),
+        ),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  /// 同步失败态弹 toast；同一条错误文案去重，避免退避重试期间反复弹出。
+  String? _lastSyncErrorNotified;
+  void _onConfigSyncChanged() {
+    if (!mounted) return;
+    final sync = ConfigSyncService.instance;
+    if (sync.status != CloudSyncStatus.error || sync.lastError == null) {
+      _lastSyncErrorNotified = null;
+      return;
+    }
+    if (sync.lastError == _lastSyncErrorNotified) return;
+    _lastSyncErrorNotified = sync.lastError;
+    FluxSonner.of(context).show(
+      ShadToast.destructive(
+        title: Text(currentS.cloudSyncFailedToast(sync.lastError!)),
         duration: const Duration(seconds: 4),
       ),
     );
@@ -154,6 +199,8 @@ class _HomePageState extends State<HomePage> {
     HardwareKeyboard.instance.removeHandler(_onGlobalKey);
     _settingsProvider.removeListener(_checkSidebarVisibility);
     _settingsProvider.removeListener(_onSettingsLoadedForAssocPrompt);
+    ConfigSyncService.instance.removeListener(_onConfigSyncChanged);
+    ConfigSyncService.instance.onRemoteApplied = null;
     _pluginProvider.removeListener(_onPluginProviderChanged);
     _pluginProvider.dispose();
     _controller.removeListener(_onControllerChanged);
@@ -286,14 +333,14 @@ class _HomePageState extends State<HomePage> {
   void _handleSegmentsUpdateResult(String taskId, int segments, bool ok) {
     if (!mounted) return;
     if (ok) {
-      ShadSonner.of(context).show(
+      FluxSonner.of(context).show(
         ShadToast(
           title: Text(currentS.threadsChanged),
           duration: const Duration(seconds: 2),
         ),
       );
     } else {
-      ShadSonner.of(context).show(
+      FluxSonner.of(context).show(
         ShadToast.destructive(
           title: Text(currentS.threadsChangeRejected),
           duration: const Duration(seconds: 3),
@@ -680,7 +727,7 @@ class _HomePageState extends State<HomePage> {
                 left: _sidebarWidth - (_ResizeHandle.hitSize - 1) / 2,
                 width: _ResizeHandle.hitSize,
                 child: _ResizeHandle(
-                  color: Colors.transparent,
+                  color: m.selectedBorder(c.accent).withValues(alpha: 0),
                   hoverColor: m.selectedBorder(c.accent),
                   dragColor: m.focusRing(c.accent),
                   onDrag: (dx) {
@@ -702,7 +749,7 @@ class _HomePageState extends State<HomePage> {
                 right: _detailWidth - (_ResizeHandle.hitSize - 1) / 2,
                 width: _ResizeHandle.hitSize,
                 child: _ResizeHandle(
-                  color: Colors.transparent,
+                  color: m.selectedBorder(c.accent).withValues(alpha: 0),
                   hoverColor: m.selectedBorder(c.accent),
                   dragColor: m.focusRing(c.accent),
                   onDrag: (dx) {

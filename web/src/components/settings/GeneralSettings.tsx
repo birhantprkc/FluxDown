@@ -1,7 +1,7 @@
 // 通用：并发/分段/重试参数（服务器 config 表）。
 import { useI18n } from '../../lib/i18n'
 import type { ConfigMap } from '../../lib/types'
-import { NumberFieldRow, SetRow } from './controls'
+import { NumberFieldRow, SetRow, SetSwitch } from './controls'
 
 /** 解析引擎持久化的域名连接上限数据（首行 v1 版本标记），返回未过期条数。 */
 function parseConnPolicyCount(raw: string): number {
@@ -35,6 +35,7 @@ export function GeneralSettings({
   const connPolicyCount = parseConnPolicyCount(config.domain_conn_caps ?? '')
   const maxRetries = Number(config.max_auto_retries ?? '3')
   const retryDelay = Number(config.auto_retry_delay_secs ?? '5')
+  const analyticsEnabled = (config.analytics_enabled ?? 'true') === 'true'
 
   return (
     <>
@@ -95,6 +96,12 @@ export function GeneralSettings({
           min={0}
           onCommit={(n) => mutate({ auto_retry_delay_secs: String(n) })}
         />
+        <SetRow title={t('set.general.analytics')} desc={t('set.general.analyticsDesc')}>
+          <SetSwitch
+            checked={analyticsEnabled}
+            onCheckedChange={(v) => mutate({ analytics_enabled: String(v) })}
+          />
+        </SetRow>
       </div>
     </>
   )

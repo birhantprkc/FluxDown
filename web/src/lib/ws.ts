@@ -245,6 +245,11 @@ function dispatch(msg: WsServerMsg) {
     case 'queuesChanged':
       queryClientRef?.setQueryData<QueueDto[]>(['queues'], msg.queues)
       break
+    case 'taskQueueChanged':
+      queryClientRef?.setQueryData<TaskDto[]>(['tasks'], (old) =>
+        old?.map((t) => (t.taskId === msg.taskId ? { ...t, queueId: msg.queueId } : t)),
+      )
+      break
     case 'queuePositionsChanged':
       // 位置信息暂不驱动 UI（列表按时间分组），忽略。
       break

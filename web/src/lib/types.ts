@@ -117,6 +117,7 @@ export type WsServerMsg =
   | ({ type: 'segmentSplit' } & SegmentSplitMsg)
   | { type: 'taskMetaProbed'; taskId: string; fileName: string; totalBytes: number }
   | { type: 'queuesChanged'; queues: QueueDto[] }
+  | { type: 'taskQueueChanged'; taskId: string; queueId: string }
   | { type: 'queuePositionsChanged'; positions: { taskId: string; position: number }[] }
   | { type: 'priorityTaskChanged'; priorityTaskId: string; autoPausedCount: number }
   | { type: 'hlsSelectionRequest'; taskId: string; options: HlsQualityOption[] }

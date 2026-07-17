@@ -11,6 +11,7 @@ import '../bindings/bindings.dart';
 import '../models/settings_provider.dart';
 import '../widgets/quick_download_dialog.dart';
 import '../widgets/quick_download_form.dart';
+import 'analytics_service.dart';
 import 'log_service.dart';
 import 'popup_window_service.dart';
 import 'tray_service.dart';
@@ -100,6 +101,8 @@ class ExternalDownloadService {
   }
 
   void _onRequest(RustSignalPack<ExternalDownloadRequest> pack) {
+    // 匿名统计：标记「外部集成（扩展/接管/RPC）使用过」，仅 bool 维度。
+    AnalyticsService.markExtensionConnected();
     _handleRequest(pack.message);
   }
 

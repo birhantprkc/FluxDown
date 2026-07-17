@@ -40,9 +40,9 @@ class SplitActionButton extends StatelessWidget {
   // 自控几何（与下方 Row 布局一一对应），保证覆盖层宽度精确。
   static const double _leftPad = 16;
   static const double _dividerWidth = 1;
-  static const double _chevronGap = 10;
+  static const double _chevronGap = 6;
   static const double _chevronSize = 13;
-  static const double _rightPad = 14;
+  static const double _rightPad = 10;
 
   /// 覆盖命中区宽度：分隔线 + 间距 + 箭头 + 右内边距。
   static const double _pickZoneWidth =

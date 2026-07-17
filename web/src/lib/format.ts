@@ -34,6 +34,30 @@ export function fmtTime(unixSecs: string | number): string {
   return new Date(n * 1000).toLocaleString(getLocale() === 'zh' ? 'zh-CN' : 'en-US', { hour12: false })
 }
 
+/** ISO 时间字符串 → 相对时间（"3 分钟前"）；30 天以上回退本地日期，非法输入返回 '—'。
+ *  用于 FluxCloud 设备列表的 lastSeenAt 等 ISO8601 时间戳（不同于 fmtTime 的 unix 秒）。 */
+export function fmtRelativeTime(iso: string): string {
+  const ms = Date.parse(iso)
+  if (!Number.isFinite(ms)) return '—'
+  const diffSecs = Math.floor((Date.now() - ms) / 1000)
+  if (diffSecs < 60) return t('time.justNow')
+  const diffMins = Math.floor(diffSecs / 60)
+  if (diffMins < 60) return t('time.minutesAgo', { n: diffMins })
+  const diffHours = Math.floor(diffMins / 60)
+  if (diffHours < 24) return t('time.hoursAgo', { n: diffHours })
+  const diffDays = Math.floor(diffHours / 24)
+  if (diffDays < 30) return t('time.daysAgo', { n: diffDays })
+  return new Date(ms).toLocaleDateString(getLocale() === 'zh' ? 'zh-CN' : 'en-US')
+}
+
+/** ISO 时间字符串 → 本地绝对时间（"2026/7/17 14:03:20"），用于设备详情的
+ *  首次信任时间/最近活跃精确值（相对时间见 fmtRelativeTime）。非法输入返回 '—'。 */
+export function fmtIsoTime(iso: string): string {
+  const ms = Date.parse(iso)
+  if (!Number.isFinite(ms)) return '—'
+  return new Date(ms).toLocaleString(getLocale() === 'zh' ? 'zh-CN' : 'en-US', { hour12: false })
+}
+
 /** 任务耗时（开始→完成）：`23s` / `3m05s` / `1h02m03s`。无效输入返回 '—'。 */
 export function fmtDuration(startSecs: string | number, endSecs: string | number): string {
   const a = typeof startSecs === 'string' ? parseInt(startSecs, 10) : startSecs

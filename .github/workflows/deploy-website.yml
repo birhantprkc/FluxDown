@@ -4,7 +4,7 @@ name: Deploy Website
 # 通过 SSH 登录服务器执行 deploy.sh 重建并重启容器。
 on:
   push:
-    branches: [main]
+    branches: [develop]
     paths:
       - "website/**"
   workflow_dispatch: {} # 允许在 Actions 页面手动触发

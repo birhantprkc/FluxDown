@@ -463,7 +463,7 @@ class CategoryIconPicker extends StatelessWidget {
               width: 30,
               height: 30,
               decoration: BoxDecoration(
-                color: isSelected ? c.accentBg : Colors.transparent,
+                color: isSelected ? c.accentBg : c.accentBg.withValues(alpha: 0),
                 borderRadius: m.brMd,
                 border: Border.all(
                   color: isSelected ? c.accent : c.border,
@@ -523,7 +523,7 @@ class _MatchModeChipState extends State<MatchModeChip> {
                 ? c.accentBg
                 : _hover
                     ? c.hoverBg
-                    : Colors.transparent,
+                    : c.hoverBg.withValues(alpha: 0),
             borderRadius: m.brMd,
             border: Border.all(
               color: widget.isSelected ? c.accent : c.border,

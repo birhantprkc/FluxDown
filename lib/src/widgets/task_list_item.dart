@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
+import 'flux_sonner.dart';
 import 'package:super_drag_and_drop/super_drag_and_drop.dart';
 import '../bindings/bindings.dart';
 import '../i18n/locale_provider.dart';
@@ -594,7 +595,7 @@ void showTaskContextMenu(
       color: c.textPrimary,
       action: () {
         Clipboard.setData(ClipboardData(text: task.url));
-        ShadSonner.of(context).show(
+        FluxSonner.of(context).show(
           ShadToast(
             title: Text(s.urlCopied),
             duration: const Duration(seconds: 2),

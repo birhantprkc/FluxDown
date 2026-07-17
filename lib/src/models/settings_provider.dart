@@ -33,6 +33,7 @@ class SettingsProvider extends ChangeNotifier {
   bool _silentDownloadEnabled = false; // 免打扰下载：外部请求不弹确认框直接下载
   bool _useServerTime = false; // 完成文件的修改时间采用服务器 Last-Modified
   bool _keepAwakeWhileDownloading = false; // 默认不阻止睡眠/息屏
+  bool _analyticsEnabled = true; // 匿名使用统计（每日活跃）；首装事件不受此开关控制
   int _logMaxSizeMb = 10; // 日志总大小上限（MB），超出自动清理
 
   // 悬浮球设置
@@ -200,6 +201,7 @@ class SettingsProvider extends ChangeNotifier {
   bool get silentDownloadEnabled => _silentDownloadEnabled;
   bool get useServerTime => _useServerTime;
   bool get keepAwakeWhileDownloading => _keepAwakeWhileDownloading;
+  bool get analyticsEnabled => _analyticsEnabled;
   int get logMaxSizeMb => _logMaxSizeMb;
 
   // 悬浮球 Getters
@@ -469,6 +471,13 @@ class SettingsProvider extends ChangeNotifier {
     _closeToTray = value;
     notifyListeners();
     _saveToRust('close_to_tray', value.toString());
+  }
+
+  void setAnalyticsEnabled(bool value) {
+    if (_analyticsEnabled == value) return;
+    _analyticsEnabled = value;
+    notifyListeners();
+    _saveToRust('analytics_enabled', value.toString());
   }
 
   void setStartMinimizedToTray(bool value) {
@@ -1199,6 +1208,8 @@ class SettingsProvider extends ChangeNotifier {
           _autoStartup = entry.value == 'true';
         case 'auto_check_update':
           _autoCheckUpdate = entry.value == 'true';
+        case 'analytics_enabled':
+          _analyticsEnabled = entry.value == 'true';
         case 'update_channel':
           _updateChannel = entry.value.isEmpty ? 'stable' : entry.value;
         case 'bt_enable_dht':

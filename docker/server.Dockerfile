@@ -44,6 +44,9 @@ COPY native/ native/
 # 编译期版本注入（空值 = 未注入，二进制退回 crate 版本）
 ARG FLUXDOWN_SERVER_VERSION
 ENV FLUXDOWN_SERVER_VERSION=$FLUXDOWN_SERVER_VERSION
+# 编译期匿名统计 App-Key 注入（空值 = 未注入，统计整体禁用）
+ARG FLUXDOWN_ANALYTICS_APP_KEY
+ENV FLUXDOWN_ANALYTICS_APP_KEY=$FLUXDOWN_ANALYTICS_APP_KEY
 # cache mount：本地重复构建增量编译；registry 缓存避免重复下载
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \

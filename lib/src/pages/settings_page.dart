@@ -6,11 +6,13 @@ import 'package:file_selector/file_selector.dart';
 import '../services/file_picker_service.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/build_stats.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:rinf/rinf.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
+import '../widgets/flux_sonner.dart';
 import '../../main.dart';
 import '../bindings/bindings.dart';
 import '../i18n/locale_provider.dart';
@@ -22,6 +24,11 @@ import '../models/plugin_provider.dart';
 import '../models/settings_provider.dart';
 import '../models/ua_presets.dart';
 import '../services/app_icon_service.dart';
+import '../services/cloud/cloud_auth_service.dart';
+import '../services/cloud/cloud_client.dart';
+import '../services/cloud/config_sync_service.dart';
+import '../services/cloud/cloud_models.dart';
+import '../services/cloud/nickname_pool.dart';
 import '../services/floating_ball/floating_ball_service.dart';
 import '../services/log_service.dart';
 import '../services/update_service.dart';
@@ -42,6 +49,7 @@ import '../widgets/title_drag_area.dart';
 
 enum SettingsCategory {
   general(icon: LucideIcons.settings2),
+  account(icon: LucideIcons.cloud),
   appearance(icon: LucideIcons.palette),
   download(icon: LucideIcons.download),
   bt(icon: LucideIcons.magnet),
@@ -61,6 +69,7 @@ extension SettingsCategoryI18n on SettingsCategory {
     final s = currentS;
     return switch (this) {
       SettingsCategory.general => s.settingsCatGeneral,
+      SettingsCategory.account => s.settingsCatAccount,
       SettingsCategory.appearance => s.settingsCatAppearance,
       SettingsCategory.download => s.settingsCatDownload,
       SettingsCategory.bt => s.settingsCatBt,
@@ -76,6 +85,7 @@ extension SettingsCategoryI18n on SettingsCategory {
     final s = currentS;
     return switch (this) {
       SettingsCategory.general => s.settingsCatGeneralDesc,
+      SettingsCategory.account => s.settingsCatAccountDesc,
       SettingsCategory.appearance => s.settingsCatAppearanceDesc,
       SettingsCategory.download => s.settingsCatDownloadDesc,
       SettingsCategory.bt => s.settingsCatBtDesc,
@@ -690,7 +700,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 left: _sidebarWidth - (_SidebarResizeHandle.hitSize - 1) / 2,
                 width: _SidebarResizeHandle.hitSize,
                 child: _SidebarResizeHandle(
-                  color: Colors.transparent,
+                  color: m.selectedBorder(c.accent).withValues(alpha: 0),
                   hoverColor: m.selectedBorder(c.accent),
                   dragColor: m.focusRing(c.accent),
                   onDrag: (dx) {
@@ -1207,7 +1217,7 @@ class _SettingsContentState extends State<_SettingsContent> {
                 padding: const EdgeInsets.fromLTRB(40, 20, 36, 24),
                 child: aligned(
                   AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 200),
+                    duration: const Duration(milliseconds: 120),
                     layoutBuilder: (currentChild, previousChildren) {
                       return Stack(
                         alignment: Alignment.topLeft,
@@ -1235,6 +1245,7 @@ class _SettingsContentState extends State<_SettingsContent> {
       SettingsCategory.general => _GeneralContent(
         settingsProvider: settingsProvider,
       ),
+      SettingsCategory.account => const _AccountContent(),
       SettingsCategory.appearance => const _AppearanceContent(),
       SettingsCategory.download => _DownloadContent(
         settingsProvider: settingsProvider,
@@ -1373,7 +1384,7 @@ class _SettingsTabState extends State<_SettingsTab> {
           decoration: BoxDecoration(
             border: Border(
               bottom: BorderSide(
-                color: selected ? c.accent : Colors.transparent,
+                color: selected ? c.accent : c.accent.withValues(alpha: 0),
                 width: 2,
               ),
             ),
@@ -1509,7 +1520,7 @@ class _HighlightRegionState extends State<_HighlightRegion>
       duration: const Duration(milliseconds: 250),
       curve: Curves.easeOut,
       decoration: BoxDecoration(
-        color: flashing ? m.subtle(c.accent) : Colors.transparent,
+        color: flashing ? m.subtle(c.accent) : m.subtle(c.accent).withValues(alpha: 0),
         borderRadius: m.brDialog,
       ),
       child: widget.child,
@@ -1704,7 +1715,7 @@ class _SettingRowState extends State<_SettingRow> with _HighlightConsumer {
         horizontal: 16,
         vertical: widget.vertical ? 12 : 10,
       ),
-      color: flashing ? m.subtle(c.accent) : Colors.transparent,
+      color: flashing ? m.subtle(c.accent) : m.subtle(c.accent).withValues(alpha: 0),
       child: widget.vertical
           ? Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1975,6 +1986,14 @@ class _GeneralContent extends StatelessWidget {
                     value: settingsProvider.keepAwakeWhileDownloading,
                     onChanged: (v) =>
                         settingsProvider.setKeepAwakeWhileDownloading(v),
+                  ),
+                ),
+                _SettingRow(
+                  label: s.analyticsEnabled,
+                  description: s.analyticsEnabledDesc,
+                  child: ShadSwitch(
+                    value: settingsProvider.analyticsEnabled,
+                    onChanged: (v) => settingsProvider.setAnalyticsEnabled(v),
                   ),
                 ),
               ],
@@ -2500,7 +2519,7 @@ class _TileActionState extends State<_TileAction> {
           width: 22,
           height: 22,
           decoration: BoxDecoration(
-            color: _hover ? m.soft(widget.color) : Colors.transparent,
+            color: _hover ? m.soft(widget.color) : m.soft(widget.color).withValues(alpha: 0),
             borderRadius: m.brSm,
           ),
           child: Icon(widget.icon, size: 12, color: widget.color),
@@ -2713,7 +2732,7 @@ class _AppIconSelectorState extends State<_AppIconSelector> {
     } catch (e, stack) {
       logError('AppIconSelector', 'failed to apply custom icon', e, stack);
       if (mounted) {
-        ShadSonner.of(context).show(
+        FluxSonner.of(context).show(
           ShadToast.destructive(
             title: Text(LocaleScope.of(context).appIconApplyFailed),
             description: Text(e.toString()),
@@ -3345,7 +3364,7 @@ class _SaveDirPickerState extends State<_SaveDirPicker> {
       FilePickerFailReason.nativeDialogFailed => s.filePickerErrorNative,
       FilePickerFailReason.unknown => s.filePickerErrorGeneric,
     };
-    ShadSonner.of(context).show(ShadToast.destructive(title: Text(message)));
+    FluxSonner.of(context).show(ShadToast.destructive(title: Text(message)));
   }
 
   @override
@@ -3433,7 +3452,7 @@ class _ConnPolicyClearButtonState extends State<_ConnPolicyClearButton> {
           enabled: count > 0,
           onPressed: () {
             widget.settingsProvider.clearDomainConnCaps();
-            ShadSonner.of(
+            FluxSonner.of(
               context,
             ).show(ShadToast(title: Text(s.connPolicyCacheCleared)));
           },
@@ -4511,7 +4530,7 @@ class _ApiServiceContentState extends State<_ApiServiceContent> {
     final value = int.tryParse(_portController.text.trim());
     if (value == null || value < 1024 || value > 65535) {
       setState(() => _portController.text = sp.localServerPort.toString());
-      ShadSonner.of(context).show(
+      FluxSonner.of(context).show(
         ShadToast.destructive(
           title: Text(LocaleScope.of(context).apiServicePortInvalid),
         ),
@@ -4547,7 +4566,7 @@ class _ApiServiceContentState extends State<_ApiServiceContent> {
       ClipboardData(text: widget.settingsProvider.localServerToken),
     );
     if (!mounted) return;
-    ShadSonner.of(context).show(
+    FluxSonner.of(context).show(
       ShadToast(
         title: Text(LocaleScope.of(context).apiServiceCopied),
         duration: const Duration(seconds: 2),
@@ -4558,7 +4577,7 @@ class _ApiServiceContentState extends State<_ApiServiceContent> {
   void _clearToken() {
     widget.settingsProvider.clearLocalServerToken();
     if (!mounted) return;
-    ShadSonner.of(context).show(
+    FluxSonner.of(context).show(
       ShadToast(
         title: Text(LocaleScope.of(context).apiServiceTokenCleared),
         duration: const Duration(seconds: 2),
@@ -4880,7 +4899,7 @@ class _ApiSubFeatureCard extends StatelessWidget {
   Future<void> _copyAddress(BuildContext context) async {
     await Clipboard.setData(ClipboardData(text: address));
     if (!context.mounted) return;
-    ShadSonner.of(context).show(
+    FluxSonner.of(context).show(
       ShadToast(
         title: Text(LocaleScope.of(context).apiServiceCopied),
         duration: const Duration(seconds: 2),
@@ -4987,7 +5006,7 @@ class _CopyUserscriptButton extends StatelessWidget {
       final script = await rootBundle.loadString('userscript/fluxdown.user.js');
       await Clipboard.setData(ClipboardData(text: script));
       if (!context.mounted) return;
-      ShadSonner.of(context).show(
+      FluxSonner.of(context).show(
         ShadToast(
           title: Text(s.apiServiceScriptCopied),
           duration: const Duration(seconds: 3),
@@ -4995,7 +5014,7 @@ class _CopyUserscriptButton extends StatelessWidget {
       );
     } catch (e) {
       if (!context.mounted) return;
-      ShadSonner.of(
+      FluxSonner.of(
         context,
       ).show(ShadToast.destructive(title: Text('Error: $e')));
     }
@@ -5114,7 +5133,7 @@ class _ComponentsContentState extends State<_ComponentsContent> {
     final isUninstall = _pendingOp == 'uninstall';
     final name = _title(s);
     if (ok) {
-      ShadSonner.of(context).show(
+      FluxSonner.of(context).show(
         ShadToast(
           title: Text(
             isUninstall
@@ -5126,7 +5145,7 @@ class _ComponentsContentState extends State<_ComponentsContent> {
       );
       return;
     }
-    ShadSonner.of(context).show(
+    FluxSonner.of(context).show(
       ShadToast.destructive(
         title: Text(
           isUninstall
@@ -7188,7 +7207,7 @@ class _ThemeActions extends StatelessWidget {
         FilePickerFailReason.nativeDialogFailed => s.filePickerErrorNative,
         FilePickerFailReason.unknown => s.filePickerErrorGeneric,
       };
-      ShadSonner.of(context).show(ShadToast.destructive(title: Text(msg)));
+      FluxSonner.of(context).show(ShadToast.destructive(title: Text(msg)));
       return;
     }
     if (result == null || result.isEmpty) return;
@@ -7213,7 +7232,7 @@ class _ThemeActions extends StatelessWidget {
     if (!context.mounted) return;
 
     if (successCount > 0) {
-      ShadSonner.of(context).show(
+      FluxSonner.of(context).show(
         ShadToast(
           title: Text('${s.themeImportSuccess} ($successCount)'),
           duration: const Duration(seconds: 2),
@@ -7221,7 +7240,7 @@ class _ThemeActions extends StatelessWidget {
       );
     }
     if (errors.isNotEmpty) {
-      ShadSonner.of(context).show(
+      FluxSonner.of(context).show(
         ShadToast.destructive(
           title: Text(s.themeImportError),
           description: Text(errors.join('\n')),
@@ -7257,7 +7276,7 @@ class _ThemeActions extends StatelessWidget {
         FilePickerFailReason.nativeDialogFailed => s.filePickerErrorNative,
         FilePickerFailReason.unknown => s.filePickerErrorGeneric,
       };
-      ShadSonner.of(context).show(ShadToast.destructive(title: Text(msg)));
+      FluxSonner.of(context).show(ShadToast.destructive(title: Text(msg)));
       return;
     }
     if (result == null) return;
@@ -7265,7 +7284,7 @@ class _ThemeActions extends StatelessWidget {
     try {
       await File(result).writeAsString(json);
       if (!context.mounted) return;
-      ShadSonner.of(context).show(
+      FluxSonner.of(context).show(
         ShadToast(
           title: Text(s.themeExportSuccess),
           duration: const Duration(seconds: 2),
@@ -7273,7 +7292,7 @@ class _ThemeActions extends StatelessWidget {
       );
     } catch (e) {
       if (!context.mounted) return;
-      ShadSonner.of(context).show(
+      FluxSonner.of(context).show(
         ShadToast.destructive(
           title: Text(s.themeImportError),
           description: Text(e.toString()),
@@ -7888,33 +7907,43 @@ class _ThemeModeSelector extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final provider = FluxDownApp.of(context);
-    final current = provider.themeMode;
-    final c = AppColors.of(context);
-    final s = LocaleScope.of(context);
+    // FluxDownApp.of 走 findAncestorStateOfType，不建立响应式依赖；
+    // 本组件又以 const 挂载，父级重建会被 const 同一性跳过。当主题模式在
+    // 视觉等价的档位间切换（如系统为亮色时 跟随系统 ↔ 亮色）时，AppColors/
+    // ShadTheme 均无变化，没有任何 inherited 依赖会触发重建，高亮就停留在
+    // 上一次的值。必须显式监听 ThemeProvider。
+    return ListenableBuilder(
+      listenable: provider,
+      builder: (context, _) {
+        final current = provider.themeMode;
+        final c = AppColors.of(context);
+        final s = LocaleScope.of(context);
 
-    final modes = [
-      (
-        mode: ThemeMode.system,
-        label: s.themeModeSystem,
-        icon: LucideIcons.monitor,
-      ),
-      (mode: ThemeMode.light, label: s.themeModeLight, icon: LucideIcons.sun),
-      (mode: ThemeMode.dark, label: s.themeModeDark, icon: LucideIcons.moon),
-    ];
-
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: [
-        for (final item in modes)
-          _ThemeModeCard(
-            icon: item.icon,
-            label: item.label,
-            selected: current == item.mode,
-            colors: c,
-            onTap: () => provider.setThemeMode(item.mode),
+        final modes = [
+          (
+            mode: ThemeMode.system,
+            label: s.themeModeSystem,
+            icon: LucideIcons.monitor,
           ),
-      ],
+          (mode: ThemeMode.light, label: s.themeModeLight, icon: LucideIcons.sun),
+          (mode: ThemeMode.dark, label: s.themeModeDark, icon: LucideIcons.moon),
+        ];
+
+        return Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final item in modes)
+              _ThemeModeCard(
+                icon: item.icon,
+                label: item.label,
+                selected: current == item.mode,
+                colors: c,
+                onTap: () => provider.setThemeMode(item.mode),
+              ),
+          ],
+        );
+      },
     );
   }
 }
@@ -8487,7 +8516,7 @@ class _AboutContent extends StatelessWidget {
       builder: (context, _) {
         final svc = UpdateService.instance;
         return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             // App info card
             _SettingCard(
@@ -8742,7 +8771,7 @@ class _AboutContent extends StatelessWidget {
                 size: ShadButtonSize.sm,
                 onPressed: () {
                   if (svc.downloadUpdateViaTask()) {
-                    ShadSonner.of(context).show(
+                    FluxSonner.of(context).show(
                       ShadToast(
                         title: Text(s.updateFallbackTaskCreated),
                         duration: const Duration(seconds: 3),
@@ -9040,14 +9069,14 @@ class _LogExportCardState extends State<_LogExportCard> {
       final count = await LogService.instance.exportLogs(savePath);
       if (!mounted) return;
       if (count > 0) {
-        ShadSonner.of(context).show(
+        FluxSonner.of(context).show(
           ShadToast(
             title: Text(s.logExportSuccess(count)),
             duration: const Duration(seconds: 3),
           ),
         );
       } else {
-        ShadSonner.of(context).show(
+        FluxSonner.of(context).show(
           ShadToast(
             title: Text(s.logExportEmpty),
             duration: const Duration(seconds: 2),
@@ -9056,7 +9085,7 @@ class _LogExportCardState extends State<_LogExportCard> {
       }
     } catch (e) {
       if (mounted) {
-        ShadSonner.of(context).show(
+        FluxSonner.of(context).show(
           ShadToast.destructive(
             title: Text(LocaleScope.of(context).logExportFailed),
             description: Text(e.toString()),
@@ -9187,6 +9216,2475 @@ class _LogExportCardState extends State<_LogExportCard> {
                 ),
               ),
             ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+// 账户页面 —— FluxCloud 登录/注册/设备管理
+// ─────────────────────────────────────────────
+
+/// 账户分类内容：登录即使用云功能，未登录保持纯本地（无独立开关）。
+/// 登录状态与用户/设备数据均来自 [CloudAuthService]；本组件只负责展示与交互。
+class _AccountContent extends StatefulWidget {
+  const _AccountContent();
+
+  @override
+  State<_AccountContent> createState() => _AccountContentState();
+}
+
+/// 本次 App 会话内是否已触发过账户 section 的 /me 静默刷新——避免每次切换到
+/// 「账户」分类（State 会随分类切换重建）都重复请求，只需登录后首次进入刷新一次。
+bool _cloudProfileRefreshedThisSession = false;
+
+class _AccountContentState extends State<_AccountContent> {
+  @override
+  void initState() {
+    super.initState();
+    // 修正登录会话恢复时的旧快照（如 originId 在 kv 缓存里仍是注册前的 null）；
+    // 静默刷新，失败只记日志不打扰 UI。
+    if (!_cloudProfileRefreshedThisSession && CloudAuthService.instance.isLoggedIn) {
+      _cloudProfileRefreshedThisSession = true;
+      unawaited(_silentRefreshProfile());
+    }
+  }
+
+  Future<void> _silentRefreshProfile() async {
+    try {
+      await CloudAuthService.instance.refreshProfile();
+    } catch (e, stack) {
+      logError('CloudAuth', 'silent /me refresh on account page failed', e, stack);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // 居中窄栏排版：账户是低频页面，内容少，铺满整宽会显得空旷。
+    return Align(
+      alignment: Alignment.topCenter,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 760),
+        child: ListenableBuilder(
+          listenable: CloudAuthService.instance,
+          builder: (context, _) {
+            final s = LocaleScope.of(context);
+            final c = AppColors.of(context);
+            final auth = CloudAuthService.instance;
+            final loggedIn = auth.isLoggedIn;
+            final user = auth.user;
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _AccountCard(
+                  child: loggedIn && user != null
+                      ? _profileBody(context, s, c, user)
+                      : _heroBody(context, s, c),
+                ),
+                if (loggedIn && user != null) ...[
+                  const SizedBox(height: 20),
+                  Padding(
+                    padding: const EdgeInsets.only(left: 4, bottom: 6),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          s.accountSecurityGroup,
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w600,
+                            color: c.textSecondary,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          s.accountSecurityGroupDesc,
+                          style: TextStyle(fontSize: 11, color: c.textMuted),
+                        ),
+                      ],
+                    ),
+                  ),
+                  _AccountCard(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                    child: Row(
+                      children: [
+                        Text(
+                          s.accountEmailPlaceholder,
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w500,
+                            color: c.textPrimary,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        // 邮箱值右对齐：Expanded 占满剩余宽度，内部 Align 居右，超长省略号截断。
+                        Expanded(
+                          child: Align(
+                            alignment: Alignment.centerRight,
+                            child: Text(
+                              user.email,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(fontSize: 12.5, color: c.textMuted),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  const _DeviceListSection(),
+                ],
+                // 服务器地址仅调试构建显示：正式包由 --dart-define 注入官方地址,不暴露该设置项。
+                if (kDebugMode) ...[
+                  const SizedBox(height: 20),
+                  const _ServerAddressCard(),
+                ],
+                const SizedBox(height: 20),
+                Padding(
+                  padding: const EdgeInsets.only(left: 4, bottom: 6),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        s.accountGroupCloudFeatures,
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
+                          color: c.textSecondary,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        s.accountCloudFeaturesDesc,
+                        style: TextStyle(fontSize: 11, color: c.textMuted),
+                      ),
+                    ],
+                  ),
+                ),
+                _AccountCard(
+                  padding: EdgeInsets.zero,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _configSyncRow(context),
+                      _accountDivider(context),
+                      _featureRow(
+                        context,
+                        LucideIcons.monitorSmartphone,
+                        s.accountFeatureMultiDevice,
+                        s.accountFeatureMultiDeviceDesc,
+                        badge: s.accountComingSoon,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  /// 未登录：居中英雄区 —— 云图标 + 标题 + 一句话说明 + 登录/注册按钮。
+  Widget _heroBody(BuildContext context, S s, AppColors c) {
+    return Column(
+      children: [
+        Container(
+          width: 64,
+          height: 64,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: c.accent.withValues(alpha: 0.12),
+          ),
+          child: Icon(LucideIcons.cloud, size: 30, color: c.accent),
+        ),
+        const SizedBox(height: 16),
+        Text(
+          s.accountLoginDialogTitle,
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w600,
+            color: c.textPrimary,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          s.accountHeroSubtitle,
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 12, height: 1.5, color: c.textMuted),
+        ),
+        const SizedBox(height: 18),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            ShadButton(
+              onPressed: () => _showLoginDialog(context),
+              child: Text(s.accountLogin),
+            ),
+            const SizedBox(width: 10),
+            ShadButton.outline(
+              onPressed: () => _showRegisterDialog(context),
+              child: Text(s.accountRegister),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  /// 已登录：单行纯身份 —— 左侧集群（昵称 + 套餐 chip + Origin ID 胶囊徽章，可点复制）
+  /// 与右侧退出登录按钮同基线；左侧集群整体用 Expanded 独占剩余宽度撑开，
+  /// 按钮贴右对齐（避免 Flexible+Spacer 同行均分弹性空间的坑）。
+  /// 邮箱不在此展示——移至下方「账号与安全」分组（见 _AccountContentState.build）。
+  Widget _profileBody(BuildContext context, S s, AppColors c, CloudUser user) {
+    final displayName =
+        user.nickname.isNotEmpty ? user.nickname : user.email.split('@').first;
+    final hasOriginId = user.originId != null;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        // 左侧集群必须用 Expanded 独占剩余宽度：若 Flexible(昵称) 与 Spacer 并存，
+        // 两者会均分弹性空间，昵称用不完的配额不归还，在按钮右侧留下大块空白。
+        Expanded(
+          child: Row(
+            children: [
+              Flexible(
+                child: Text(
+                  displayName,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 14.5,
+                    fontWeight: FontWeight.w600,
+                    color: c.textPrimary,
+                  ),
+                ),
+              ),
+              if (user.plan.isNotEmpty) ...[
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: c.accent.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    user.plan,
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                      color: c.accent,
+                    ),
+                  ),
+                ),
+              ],
+              const SizedBox(width: 8),
+              // Origin ID 胶囊徽章：类 QQ 号的唯一数字身份，理论上登录态不会为 null
+              // （防御兜底灰色 "#—"，不可点）；中英文显示名统一 "Origin ID"，见契约。
+              ShadTooltip(
+                builder: (_) => const Text('Origin ID'),
+                child: MouseRegion(
+                  cursor: hasOriginId ? SystemMouseCursors.click : MouseCursor.defer,
+                  child: GestureDetector(
+                    onTap: hasOriginId
+                        ? () => unawaited(_copyOriginId(context, user.originId!))
+                        : null,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: (hasOriginId ? c.accent : c.textMuted).withValues(
+                          alpha: 0.12,
+                        ),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            hasOriginId ? '#${user.originId}' : '#—',
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w600,
+                              fontFeatures: const [FontFeature.tabularFigures()],
+                              color: hasOriginId ? c.accent : c.textMuted,
+                            ),
+                          ),
+                          if (hasOriginId) ...[
+                            const SizedBox(width: 3),
+                            Icon(LucideIcons.copy, size: 10, color: c.accent),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 12),
+        ShadButton.outline(
+          size: ShadButtonSize.sm,
+          onPressed: () => unawaited(CloudAuthService.instance.logout()),
+          child: Text(s.accountLogout),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _copyOriginId(BuildContext context, int originId) async {
+    await Clipboard.setData(ClipboardData(text: originId.toString()));
+    if (!context.mounted) return;
+    FluxSonner.of(context).show(
+      ShadToast(
+        title: Text(LocaleScope.of(context).accountOriginIdCopied),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+}
+
+/// 账户页统一卡片容器（同原「账户」页视觉规范：圆角描边容器）。
+class _AccountCard extends StatelessWidget {
+  final Widget child;
+  final EdgeInsetsGeometry? padding;
+
+  const _AccountCard({required this.child, this.padding});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
+    return Container(
+      clipBehavior: Clip.antiAlias,
+      padding: padding ?? const EdgeInsets.all(28),
+      decoration: BoxDecoration(
+        color: c.surface1,
+        borderRadius: m.brDialog,
+        border: Border.all(color: m.borderMedium(c.border), width: 1),
+      ),
+      child: child,
+    );
+  }
+}
+
+Widget _accountDivider(BuildContext context) {
+  final c = AppColors.of(context);
+  final m = AppMetrics.of(context);
+  return Container(
+    height: 1,
+    margin: const EdgeInsets.only(left: 52),
+    color: m.borderFade(c.border),
+  );
+}
+
+/// 云功能行：图标 + 名称/说明 + 「即将推出」标签（无开关，登录后逐项开启）。
+Widget _featureRow(
+  BuildContext context,
+  IconData icon,
+  String label,
+  String desc, {
+  required String badge,
+}) {
+  final c = AppColors.of(context);
+  return Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+    child: Row(
+      children: [
+        Container(
+          width: 30,
+          height: 30,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: c.surface2,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Icon(icon, size: 15, color: c.textSecondary),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                  color: c.textPrimary,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                desc,
+                style: TextStyle(fontSize: 11.5, color: c.textMuted),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 12),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+          decoration: BoxDecoration(
+            color: c.surface2,
+            borderRadius: BorderRadius.circular(999),
+          ),
+          child: Text(
+            badge,
+            style: TextStyle(fontSize: 10.5, color: c.textMuted),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+/// 配置同步行：图标 + 名称/说明 + 开关（顶部），下方状态文案 + 「立即同步」
+/// 按钮（底部）。替代原「即将推出」占位（[_featureRow] + accountFeatureConfigSync），
+/// 经 [ConfigSyncService] 单例展示实时状态。
+Widget _configSyncRow(BuildContext context) {
+  return ListenableBuilder(
+    listenable: ConfigSyncService.instance,
+    builder: (context, _) {
+      final s = LocaleScope.of(context);
+      final c = AppColors.of(context);
+      final sync = ConfigSyncService.instance;
+      final busy =
+          sync.status == CloudSyncStatus.connecting ||
+          sync.status == CloudSyncStatus.syncing;
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 30,
+                  height: 30,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: c.surface2,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(LucideIcons.refreshCw, size: 15, color: c.textSecondary),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        s.cloudSyncTitle,
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                          color: c.textPrimary,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        s.cloudSyncDesc,
+                        style: TextStyle(fontSize: 11.5, color: c.textMuted),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                ShadSwitch(
+                  value: sync.enabled,
+                  onChanged: (v) => unawaited(sync.setEnabled(v)),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                _cloudSyncStatusIcon(c, sync.status, busy),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    _cloudSyncStatusText(s, sync),
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 11.5, color: c.textMuted),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ShadButton.outline(
+                  size: ShadButtonSize.sm,
+                  enabled: sync.enabled && !busy,
+                  onPressed: () => unawaited(sync.syncNow()),
+                  child: Text(s.cloudSyncNow),
+                ),
+              ],
+            ),
+          ],
+        ),
+      );
+    },
+  );
+}
+
+/// 状态图标：连接中/同步中用小圆环转圈（同 Tracker/ED2K 订阅刷新中的既有惯例），
+/// 其余状态用静态图标 + 语义色。
+Widget _cloudSyncStatusIcon(AppColors c, CloudSyncStatus status, bool busy) {
+  if (busy) {
+    return SizedBox(
+      width: 12,
+      height: 12,
+      child: CircularProgressIndicator(strokeWidth: 2, color: c.textSecondary),
+    );
+  }
+  final (icon, color) = switch (status) {
+    CloudSyncStatus.synced => (LucideIcons.cloudCheck, c.statusSuccess),
+    CloudSyncStatus.error => (LucideIcons.cloudAlert, c.statusError),
+    _ => (LucideIcons.cloudOff, c.textMuted),
+  };
+  return Icon(icon, size: 13, color: color);
+}
+
+/// 状态文案：已同步态附带相对时间（复用 [_relativeDeviceTime]，同设备"最近活跃"格式）。
+String _cloudSyncStatusText(S s, ConfigSyncService sync) {
+  final base = switch (sync.status) {
+    CloudSyncStatus.disabled => s.cloudSyncStatusDisabled,
+    CloudSyncStatus.connecting => s.cloudSyncStatusConnecting,
+    CloudSyncStatus.syncing => s.cloudSyncStatusSyncing,
+    CloudSyncStatus.synced => s.cloudSyncStatusSynced,
+    CloudSyncStatus.error => s.cloudSyncStatusError(sync.lastError ?? ''),
+  };
+  final lastSyncAt = sync.lastSyncAt;
+  if (sync.status == CloudSyncStatus.synced && lastSyncAt != null) {
+    return '$base · ${_relativeDeviceTime(lastSyncAt.toIso8601String())}';
+  }
+  return base;
+}
+
+/// 已知服务端错误 code → 本地化文案；未识别的 code 回退服务端原文 message。
+String _cloudErrorText(S s, CloudApiException e) => switch (e.code) {
+  'invalid_credentials' => s.accountErrorInvalidCredentials,
+  'invalid_code' => s.accountErrorInvalidCode,
+  'rate_limited' => s.accountErrorRateLimited,
+  'email_taken' => s.accountErrorEmailTaken,
+  'account_disabled' => s.accountErrorAccountDisabled,
+  'registration_closed' => s.accountErrorRegistrationClosed,
+  'registration_incomplete' => s.accountErrorRegistrationIncomplete,
+  'validation_error' =>
+    e.message.isNotEmpty ? e.message : s.accountErrorValidation,
+  'network_error' => s.accountErrorNetwork,
+  _ => e.message.isNotEmpty ? e.message : s.accountErrorUnknown,
+};
+
+/// 相对时间格式化（设备"最近活跃"），中英文各自表达，非法日期原样返回。
+String _relativeDeviceTime(String isoDate) {
+  try {
+    final dt = DateTime.parse(isoDate).toLocal();
+    final diff = DateTime.now().difference(dt);
+    final isZh = currentLocale.startsWith('zh');
+    if (diff.inMinutes < 1) return isZh ? '刚刚' : 'just now';
+    if (diff.inMinutes < 60) {
+      return isZh ? '${diff.inMinutes} 分钟前' : '${diff.inMinutes} min ago';
+    }
+    if (diff.inHours < 24) {
+      return isZh ? '${diff.inHours} 小时前' : '${diff.inHours} h ago';
+    }
+    if (diff.inDays < 30) {
+      return isZh ? '${diff.inDays} 天前' : '${diff.inDays} d ago';
+    }
+    final months = diff.inDays ~/ 30;
+    if (months < 12) return isZh ? '$months 个月前' : '$months mo ago';
+    final years = diff.inDays ~/ 365;
+    return isZh ? '$years 年前' : '$years y ago';
+  } catch (_) {
+    return isoDate;
+  }
+}
+
+void _showLoginDialog(BuildContext context) {
+  showShadDialog(context: context, builder: (_) => const _LoginDialogContent());
+}
+
+void _showRegisterDialog(
+  BuildContext context, {
+  String? initialEmail,
+  String? initialPassword,
+}) {
+  showShadDialog(
+    context: context,
+    builder: (_) => _RegisterDialogContent(
+      initialEmail: initialEmail,
+      initialPassword: initialPassword,
+    ),
+  );
+}
+
+// ─────────────────────────────────────────────
+// 服务器地址设置
+// ─────────────────────────────────────────────
+
+class _ServerAddressCard extends StatefulWidget {
+  const _ServerAddressCard();
+
+  @override
+  State<_ServerAddressCard> createState() => _ServerAddressCardState();
+}
+
+class _ServerAddressCardState extends State<_ServerAddressCard> {
+  late final TextEditingController _controller =
+      TextEditingController(text: CloudApiConfig.baseUrl);
+  late final FocusNode _focusNode = FocusNode()..addListener(_onFocusChange);
+
+  @override
+  void dispose() {
+    _focusNode.removeListener(_onFocusChange);
+    _focusNode.dispose();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _onFocusChange() {
+    if (!_focusNode.hasFocus) _commit();
+  }
+
+  Future<void> _commit() async {
+    final s = LocaleScope.of(context);
+    final value = _controller.text.trim();
+    if (value.isEmpty || value == CloudApiConfig.baseUrl) {
+      setState(() => _controller.text = CloudApiConfig.baseUrl);
+      return;
+    }
+    final uri = Uri.tryParse(value);
+    final valid = uri != null &&
+        (uri.scheme == 'http' || uri.scheme == 'https') &&
+        uri.host.isNotEmpty;
+    if (!valid) {
+      setState(() => _controller.text = CloudApiConfig.baseUrl);
+      if (!mounted) return;
+      FluxSonner.of(context).show(
+        ShadToast.destructive(title: Text(s.accountServerAddressInvalid)),
+      );
+      return;
+    }
+    await CloudApiConfig.setBaseUrl(value);
+    if (!mounted) return;
+    setState(() {});
+    FluxSonner.of(context).show(
+      ShadToast(
+        title: Text(s.accountServerAddressSaved),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  Future<void> _reset() async {
+    await CloudApiConfig.resetToDefault();
+    if (!mounted) return;
+    setState(() => _controller.text = CloudApiConfig.baseUrl);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = LocaleScope.of(context);
+    final c = AppColors.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(left: 4, bottom: 6),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                s.accountServerAddress,
+                style: TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                  color: c.textSecondary,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                s.accountServerAddressDesc,
+                style: TextStyle(fontSize: 11, color: c.textMuted),
+              ),
+            ],
+          ),
+        ),
+        _AccountCard(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          child: Row(
+            children: [
+              Expanded(
+                child: ShadInput(
+                  controller: _controller,
+                  focusNode: _focusNode,
+                  onSubmitted: (_) => _commit(),
+                ),
+              ),
+              const SizedBox(width: 8),
+              ShadButton.outline(
+                size: ShadButtonSize.sm,
+                enabled: CloudApiConfig.isCustom,
+                onPressed: _reset,
+                child: Text(s.accountServerAddressReset),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+// 设备管理
+// ─────────────────────────────────────────────
+
+/// 内联展示的设备数量上限；超出时收纳进「管理全部」弹窗，避免几十台设备撑爆页面。
+const _kDeviceInlineLimit = 4;
+
+/// 设备列表的共享数据源：内联展示区与「管理全部」弹窗共用同一个 model 实例，
+/// 增删改后调用 [load] 即可让两处视图同步刷新，避免各自维护一份状态。
+class _DeviceListModel extends ChangeNotifier {
+  List<CloudDevice> devices = const [];
+  String? error;
+  bool loading = true;
+
+  Future<void> load() async {
+    loading = true;
+    notifyListeners();
+    try {
+      final list = await CloudAuthService.instance.fetchDevices();
+      devices = _sorted(list);
+      error = null;
+    } on CloudApiException catch (e) {
+      error = e.message;
+    } catch (e) {
+      error = e.toString();
+    }
+    loading = false;
+    notifyListeners();
+  }
+
+  /// 当前设备置顶，其余按最近活跃降序（服务端已按此排序，这里补上"当前置顶"）。
+  List<CloudDevice> _sorted(List<CloudDevice> list) {
+    final currentId = CloudAuthService.instance.currentDeviceId;
+    final sorted = [...list];
+    sorted.sort((a, b) {
+      final aCurrent = a.deviceId == currentId;
+      final bCurrent = b.deviceId == currentId;
+      if (aCurrent != bCurrent) return aCurrent ? -1 : 1;
+      return _parseTime(b.lastSeenAt).compareTo(_parseTime(a.lastSeenAt));
+    });
+    return sorted;
+  }
+
+  static DateTime _parseTime(String isoDate) =>
+      DateTime.tryParse(isoDate) ?? DateTime.fromMillisecondsSinceEpoch(0);
+}
+
+class _DeviceListSection extends StatefulWidget {
+  const _DeviceListSection();
+
+  @override
+  State<_DeviceListSection> createState() => _DeviceListSectionState();
+}
+
+class _DeviceListSectionState extends State<_DeviceListSection> {
+  final _model = _DeviceListModel();
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_model.load());
+  }
+
+  @override
+  void dispose() {
+    _model.dispose();
+    super.dispose();
+  }
+
+  void _openManageAll(BuildContext context) {
+    showShadDialog(
+      context: context,
+      builder: (_) => _DeviceManageAllDialog(model: _model),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = LocaleScope.of(context);
+    final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
+
+    return ListenableBuilder(
+      listenable: _model,
+      builder: (context, _) {
+        final currentId = CloudAuthService.instance.currentDeviceId;
+        final devices = _model.devices;
+
+        Widget body;
+        if (_model.loading && devices.isEmpty) {
+          body = Padding(
+            padding: const EdgeInsets.symmetric(vertical: 24),
+            child: Center(
+              child: SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: c.textMuted,
+                ),
+              ),
+            ),
+          );
+        } else if (_model.error != null && devices.isEmpty) {
+          body = Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+            child: Column(
+              children: [
+                Text(
+                  s.accountDevicesLoadFailed,
+                  style: TextStyle(fontSize: 12, color: c.statusError),
+                ),
+                const SizedBox(height: 8),
+                ShadButton.outline(
+                  size: ShadButtonSize.sm,
+                  onPressed: _model.load,
+                  child: Text(s.accountDevicesRetry),
+                ),
+              ],
+            ),
+          );
+        } else if (devices.isEmpty) {
+          body = Padding(
+            padding: const EdgeInsets.symmetric(vertical: 24),
+            child: Center(
+              child: Text(
+                s.accountDevicesEmpty,
+                style: TextStyle(fontSize: 12, color: c.textMuted),
+              ),
+            ),
+          );
+        } else {
+          final visible = devices.take(_kDeviceInlineLimit).toList();
+          final overflow = devices.length - visible.length;
+          body = Column(
+            children: [
+              for (var i = 0; i < visible.length; i++) ...[
+                if (i > 0)
+                  Container(
+                    height: 1,
+                    margin: const EdgeInsets.only(left: 52),
+                    color: m.borderFade(c.border),
+                  ),
+                _DeviceRow(
+                  device: visible[i],
+                  isCurrent: visible[i].deviceId == currentId,
+                  onChanged: _model.load,
+                ),
+              ],
+              if (overflow > 0) ...[
+                Container(
+                  height: 1,
+                  margin: const EdgeInsets.only(left: 52),
+                  color: m.borderFade(c.border),
+                ),
+                _ManageAllDevicesRow(
+                  totalCount: devices.length,
+                  onTap: () => _openManageAll(context),
+                ),
+              ],
+            ],
+          );
+        }
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(left: 4, bottom: 6),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    s.accountDevicesTitle,
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w600,
+                      color: c.textSecondary,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    s.accountDevicesDesc,
+                    style: TextStyle(fontSize: 11, color: c.textMuted),
+                  ),
+                ],
+              ),
+            ),
+            _AccountCard(padding: EdgeInsets.zero, child: body),
+          ],
+        );
+      },
+    );
+  }
+}
+
+/// 「管理全部 N 台设备」收纳入口行：内联列表超过展示上限时出现。
+class _ManageAllDevicesRow extends StatelessWidget {
+  final int totalCount;
+  final VoidCallback onTap;
+
+  const _ManageAllDevicesRow({required this.totalCount, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final s = LocaleScope.of(context);
+    final c = AppColors.of(context);
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          child: Row(
+            children: [
+              Container(
+                width: 30,
+                height: 30,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: c.surface2,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(
+                  LucideIcons.layers,
+                  size: 15,
+                  color: c.textSecondary,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  s.accountDevicesManageAll(totalCount),
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w500,
+                    color: c.accent,
+                  ),
+                ),
+              ),
+              Icon(LucideIcons.chevronRight, size: 14, color: c.textMuted),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 「管理全部设备」弹窗：搜索过滤 + 固定高度可滚动列表（ListView.builder），
+/// 承载几十至上百台设备不卡顿；与内联列表共用同一个 [_DeviceListModel]。
+class _DeviceManageAllDialog extends StatefulWidget {
+  final _DeviceListModel model;
+
+  const _DeviceManageAllDialog({required this.model});
+
+  @override
+  State<_DeviceManageAllDialog> createState() => _DeviceManageAllDialogState();
+}
+
+class _DeviceManageAllDialogState extends State<_DeviceManageAllDialog> {
+  final _searchController = TextEditingController();
+  String _query = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _searchController.addListener(() {
+      setState(() => _query = _searchController.text.trim().toLowerCase());
+    });
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  List<CloudDevice> _filtered(S s, List<CloudDevice> devices) {
+    if (_query.isEmpty) return devices;
+    return devices.where((d) {
+      final name = d.name.toLowerCase();
+      final platform = _devicePlatformLabel(s, d.platform).toLowerCase();
+      return name.contains(_query) || platform.contains(_query);
+    }).toList();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = LocaleScope.of(context);
+    final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
+    final currentId = CloudAuthService.instance.currentDeviceId;
+
+    return ShadDialog(
+      title: Text(s.accountDevicesManageAllTitle),
+      constraints: const BoxConstraints(maxWidth: 460, maxHeight: 560),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: 4),
+          ShadInput(
+            controller: _searchController,
+            placeholder: Text(s.accountDevicesSearchHint),
+            leading: Icon(LucideIcons.search, size: 14, color: c.textMuted),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            height: 360,
+            clipBehavior: Clip.antiAlias,
+            decoration: BoxDecoration(
+              borderRadius: m.brInput,
+              border: Border.all(color: m.borderFade(c.border), width: 1),
+            ),
+            child: ListenableBuilder(
+              listenable: widget.model,
+              builder: (context, _) {
+                final filtered = _filtered(s, widget.model.devices);
+                if (filtered.isEmpty) {
+                  return Center(
+                    child: Text(
+                      s.accountDevicesSearchNoResults,
+                      style: TextStyle(fontSize: 12, color: c.textMuted),
+                    ),
+                  );
+                }
+                return ListView.builder(
+                  padding: EdgeInsets.zero,
+                  itemCount: filtered.length,
+                  itemBuilder: (context, i) {
+                    final device = filtered[i];
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        if (i > 0)
+                          Container(
+                            height: 1,
+                            margin: const EdgeInsets.only(left: 52),
+                            color: m.borderFade(c.border),
+                          ),
+                        _DeviceRow(
+                          device: device,
+                          isCurrent: device.deviceId == currentId,
+                          onChanged: widget.model.load,
+                        ),
+                      ],
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 设备行图标：按平台归类为 桌面 / 移动 / 未知（web 等）。
+IconData _devicePlatformIcon(String? platform) => switch (platform) {
+  'windows' || 'macos' || 'linux' => LucideIcons.monitor,
+  'android' || 'ios' => LucideIcons.smartphone,
+  _ => LucideIcons.globe,
+};
+
+/// 平台标识 → 本地化展示名；未知/空值统一显示 "—"（同其余可空字段兜底规则）。
+String _devicePlatformLabel(S s, String? platform) => switch (platform) {
+  'windows' => s.accountDevicePlatformWindows,
+  'macos' => s.accountDevicePlatformMacos,
+  'linux' => s.accountDevicePlatformLinux,
+  'android' => s.accountDevicePlatformAndroid,
+  'ios' => s.accountDevicePlatformIos,
+  'web' => s.accountDevicePlatformWeb,
+  _ => '—',
+};
+
+/// 行内副标题：平台 · 相对时间；平台未知时只显示相对时间。
+String _deviceRowSubtitle(S s, CloudDevice device) {
+  final platform = _devicePlatformLabel(s, device.platform);
+  final time = _relativeDeviceTime(device.lastSeenAt);
+  return platform == '—' ? time : '$platform · $time';
+}
+
+/// 绝对时间（`YYYY-MM-DD HH:mm`，本地时区），空值/非法日期兜底 "—"/原样返回。
+String _absoluteDeviceTime(String isoDate) {
+  if (isoDate.isEmpty) return '—';
+  final dt = DateTime.tryParse(isoDate)?.toLocal();
+  if (dt == null) return isoDate;
+  final y = dt.year.toString().padLeft(4, '0');
+  final mo = dt.month.toString().padLeft(2, '0');
+  final d = dt.day.toString().padLeft(2, '0');
+  final h = dt.hour.toString().padLeft(2, '0');
+  final mi = dt.minute.toString().padLeft(2, '0');
+  return '$y-$mo-$d $h:$mi';
+}
+
+/// 绝对时间 + 相对时间组合展示（设备详情用）。
+String _absoluteWithRelative(String isoDate) {
+  if (isoDate.isEmpty) return '—';
+  return '${_absoluteDeviceTime(isoDate)} (${_relativeDeviceTime(isoDate)})';
+}
+
+class _DeviceRow extends StatelessWidget {
+  final CloudDevice device;
+  final bool isCurrent;
+  final VoidCallback onChanged;
+
+  const _DeviceRow({
+    required this.device,
+    required this.isCurrent,
+    required this.onChanged,
+  });
+
+  Future<void> _openDetail(BuildContext context) async {
+    await showShadDialog<bool>(
+      context: context,
+      builder: (_) => _DeviceDetailDialog(
+        device: device,
+        isCurrent: isCurrent,
+        onChanged: onChanged,
+      ),
+    );
+  }
+
+  Future<void> _rename(BuildContext context) async {
+    final renamed = await showShadDialog<CloudDevice>(
+      context: context,
+      builder: (_) => _RenameDeviceDialog(device: device),
+    );
+    if (renamed != null) onChanged();
+  }
+
+  Future<void> _delete(BuildContext context) async {
+    final deleted = await showShadDialog<bool>(
+      context: context,
+      builder: (_) => _DeleteDeviceDialog(device: device, isCurrent: isCurrent),
+    );
+    if (deleted == true) onChanged();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = LocaleScope.of(context);
+    final c = AppColors.of(context);
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => _openDetail(context),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          child: Row(
+            children: [
+              Container(
+                width: 30,
+                height: 30,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: c.surface2,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(
+                  _devicePlatformIcon(device.platform),
+                  size: 15,
+                  color: c.textSecondary,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            device.name.isEmpty ? '—' : device.name,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                              color: c.textPrimary,
+                            ),
+                          ),
+                        ),
+                        if (isCurrent) ...[
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: c.accent.withValues(alpha: 0.12),
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                            child: Text(
+                              s.accountDeviceCurrent,
+                              style: TextStyle(
+                                fontSize: 9.5,
+                                fontWeight: FontWeight.w600,
+                                color: c.accent,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      _deviceRowSubtitle(s, device),
+                      style: TextStyle(fontSize: 11, color: c.textMuted),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 4),
+              ShadTooltip(
+                builder: (_) => Text(s.accountDeviceRenameTitle),
+                child: ShadIconButton.ghost(
+                  icon: Icon(
+                    LucideIcons.pencil,
+                    size: 14,
+                    color: c.textSecondary,
+                  ),
+                  onPressed: () => _rename(context),
+                ),
+              ),
+              ShadTooltip(
+                builder: (_) => Text(s.accountDeviceDeleteConfirmTitle),
+                child: ShadIconButton.ghost(
+                  icon: Icon(LucideIcons.trash2, size: 14, color: c.statusError),
+                  onPressed: () => _delete(context),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 设备详情弹窗：名称（内置改名入口）/ 平台 / App 版本 / 最近登录 IP /
+/// 首次信任时间 / 最近活跃 / 设备 ID（弱化展示），底部删除按钮。
+/// 新字段（lastIp/appVersion）为契约 v1.1 可空增补，空值统一显示 "—"。
+class _DeviceDetailDialog extends StatefulWidget {
+  final CloudDevice device;
+  final bool isCurrent;
+  final VoidCallback onChanged;
+
+  const _DeviceDetailDialog({
+    required this.device,
+    required this.isCurrent,
+    required this.onChanged,
+  });
+
+  @override
+  State<_DeviceDetailDialog> createState() => _DeviceDetailDialogState();
+}
+
+class _DeviceDetailDialogState extends State<_DeviceDetailDialog> {
+  late CloudDevice _device = widget.device;
+
+  Future<void> _rename() async {
+    final renamed = await showShadDialog<CloudDevice>(
+      context: context,
+      builder: (_) => _RenameDeviceDialog(device: _device),
+    );
+    if (renamed == null) return;
+    setState(() => _device = renamed);
+    widget.onChanged();
+  }
+
+  Future<void> _delete() async {
+    final deleted = await showShadDialog<bool>(
+      context: context,
+      builder: (_) =>
+          _DeleteDeviceDialog(device: _device, isCurrent: widget.isCurrent),
+    );
+    if (deleted != true) return;
+    widget.onChanged();
+    if (mounted) Navigator.of(context).pop(true);
+  }
+
+  Future<void> _copyDeviceId() async {
+    final s = LocaleScope.of(context);
+    await Clipboard.setData(ClipboardData(text: _device.deviceId));
+    if (!mounted) return;
+    FluxSonner.of(context).show(
+      ShadToast(
+        title: Text(s.apiServiceCopied),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = LocaleScope.of(context);
+    final c = AppColors.of(context);
+    final device = _device;
+    return ShadDialog(
+      title: Text(s.accountDeviceDetailTitle),
+      constraints: const BoxConstraints(maxWidth: 400),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              Container(
+                width: 34,
+                height: 34,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: c.surface2,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(
+                  _devicePlatformIcon(device.platform),
+                  size: 16,
+                  color: c.textSecondary,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  device.name.isEmpty ? '—' : device.name,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: c.textPrimary,
+                  ),
+                ),
+              ),
+              if (widget.isCurrent) ...[
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: c.accent.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    s.accountDeviceCurrent,
+                    style: TextStyle(
+                      fontSize: 9.5,
+                      fontWeight: FontWeight.w600,
+                      color: c.accent,
+                    ),
+                  ),
+                ),
+              ],
+              ShadTooltip(
+                builder: (_) => Text(s.accountDeviceRenameTitle),
+                child: ShadIconButton.ghost(
+                  icon: Icon(
+                    LucideIcons.pencil,
+                    size: 14,
+                    color: c.textSecondary,
+                  ),
+                  onPressed: _rename,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          _deviceDetailRow(
+            c,
+            s.accountDeviceFieldPlatform,
+            _devicePlatformLabel(s, device.platform),
+          ),
+          _deviceDetailRow(
+            c,
+            s.accountDeviceFieldAppVersion,
+            (device.appVersion ?? '').isEmpty ? '—' : device.appVersion!,
+          ),
+          _deviceDetailRow(
+            c,
+            s.accountDeviceFieldLastIp,
+            (device.lastIp ?? '').isEmpty ? '—' : device.lastIp!,
+          ),
+          _deviceDetailRow(
+            c,
+            s.accountDeviceFieldCreatedAt,
+            _absoluteWithRelative(device.createdAt),
+          ),
+          _deviceDetailRow(
+            c,
+            s.accountDeviceFieldLastSeenAt,
+            _absoluteWithRelative(device.lastSeenAt),
+          ),
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              SizedBox(
+                width: 72,
+                child: Text(
+                  s.accountDeviceFieldId,
+                  style: TextStyle(fontSize: 11, color: c.textMuted),
+                ),
+              ),
+              Expanded(
+                child: Text(
+                  device.deviceId,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 11, color: c.textMuted),
+                ),
+              ),
+              ShadIconButton.ghost(
+                icon: Icon(LucideIcons.copy, size: 12, color: c.textMuted),
+                onPressed: _copyDeviceId,
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          if (widget.isCurrent) ...[
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: c.statusError.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    LucideIcons.triangleAlert,
+                    size: 14,
+                    color: c.statusError,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      s.accountDeviceDeleteCurrentWarning,
+                      style: TextStyle(fontSize: 11.5, color: c.statusError),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
+          SizedBox(
+            width: double.infinity,
+            child: ShadButton.destructive(
+              onPressed: _delete,
+              child: Text(s.accountDeviceDeleteAction),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+Widget _deviceDetailRow(AppColors c, String label, String value) {
+  return Padding(
+    padding: const EdgeInsets.only(bottom: 8),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 96,
+          child: Text(
+            label,
+            style: TextStyle(fontSize: 12, color: c.textMuted),
+          ),
+        ),
+        Expanded(
+          child: Text(
+            value,
+            style: TextStyle(
+              fontSize: 12,
+              color: c.textPrimary,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _RenameDeviceDialog extends StatefulWidget {
+  final CloudDevice device;
+
+  const _RenameDeviceDialog({required this.device});
+
+  @override
+  State<_RenameDeviceDialog> createState() => _RenameDeviceDialogState();
+}
+
+class _RenameDeviceDialogState extends State<_RenameDeviceDialog> {
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.device.name,
+  );
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final s = LocaleScope.of(context);
+    final name = _controller.text.trim();
+    if (name.isEmpty || name.length > 64) {
+      setState(() => _error = s.accountDeviceRenameInvalid);
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final updated = await CloudAuthService.instance.renameDevice(
+        widget.device.id,
+        name,
+      );
+      if (!mounted) return;
+      Navigator.of(context).pop(updated);
+    } on CloudApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = _cloudErrorText(s, e);
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = e.toString();
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = LocaleScope.of(context);
+    final c = AppColors.of(context);
+    return ShadDialog(
+      title: Text(s.accountDeviceRenameTitle),
+      constraints: const BoxConstraints(maxWidth: 360),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: 8),
+          ShadInput(
+            controller: _controller,
+            enabled: !_busy,
+            autofocus: true,
+            onSubmitted: (_) => _submit(),
+          ),
+          if (_error != null) ...[
+            const SizedBox(height: 6),
+            Text(
+              _error!,
+              style: TextStyle(fontSize: 11.5, color: c.statusError),
+            ),
+          ],
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              Expanded(
+                child: ShadButton.outline(
+                  enabled: !_busy,
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: Text(s.cancel),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: ShadButton(
+                  enabled: !_busy,
+                  onPressed: _submit,
+                  child: Text(s.confirm),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DeleteDeviceDialog extends StatefulWidget {
+  final CloudDevice device;
+  final bool isCurrent;
+
+  const _DeleteDeviceDialog({required this.device, required this.isCurrent});
+
+  @override
+  State<_DeleteDeviceDialog> createState() => _DeleteDeviceDialogState();
+}
+
+class _DeleteDeviceDialogState extends State<_DeleteDeviceDialog> {
+  bool _busy = false;
+  String? _error;
+
+  Future<void> _confirm() async {
+    final s = LocaleScope.of(context);
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await CloudAuthService.instance.deleteDevice(widget.device);
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } on CloudApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = _cloudErrorText(s, e);
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = e.toString();
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = LocaleScope.of(context);
+    final c = AppColors.of(context);
+    final desc = widget.isCurrent
+        ? '${s.accountDeviceDeleteConfirmDesc} ${s.accountDeviceDeleteCurrentWarning}'
+        : s.accountDeviceDeleteConfirmDesc;
+    return ShadDialog(
+      title: Text(s.accountDeviceDeleteConfirmTitle),
+      description: Text(desc),
+      constraints: const BoxConstraints(maxWidth: 380),
+      actions: [
+        ShadButton.outline(
+          enabled: !_busy,
+          onPressed: () => Navigator.of(context).pop(false),
+          child: Text(s.cancel),
+        ),
+        ShadButton.destructive(
+          enabled: !_busy,
+          onPressed: _confirm,
+          child: Text(s.confirm),
+        ),
+      ],
+      child: _error != null
+          ? Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                _error!,
+                style: TextStyle(fontSize: 11.5, color: c.statusError),
+              ),
+            )
+          : null,
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+// 验证码输入面板（登录新设备验证 / 注册验证码 共用）
+// ─────────────────────────────────────────────
+
+class _CodeVerifyForm extends StatelessWidget {
+  final String subtitle;
+  final TextEditingController codeController;
+  final int ttlRemaining;
+  final int resendRemaining;
+  final bool busy;
+  final String? error;
+  final VoidCallback onResend;
+  final VoidCallback onSubmit;
+  final VoidCallback onBack;
+
+  const _CodeVerifyForm({
+    required this.subtitle,
+    required this.codeController,
+    required this.ttlRemaining,
+    required this.resendRemaining,
+    required this.busy,
+    required this.error,
+    required this.onResend,
+    required this.onSubmit,
+    required this.onBack,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final s = LocaleScope.of(context);
+    final c = AppColors.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const SizedBox(height: 4),
+        Text(
+          subtitle,
+          style: TextStyle(fontSize: 12, height: 1.5, color: c.textMuted),
+        ),
+        const SizedBox(height: 14),
+        ShadInput(
+          controller: codeController,
+          placeholder: Text(s.accountCodePlaceholder),
+          enabled: !busy,
+          autofocus: true,
+          keyboardType: TextInputType.number,
+          onSubmitted: (_) => onSubmit(),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                ttlRemaining > 0 ? s.accountCodeExpireIn(ttlRemaining) : '',
+                style: TextStyle(fontSize: 11, color: c.textMuted),
+              ),
+            ),
+            ShadButton.link(
+              enabled: resendRemaining <= 0 && !busy,
+              onPressed: onResend,
+              child: Text(
+                resendRemaining > 0
+                    ? s.accountResendCodeIn(resendRemaining)
+                    : s.accountResendCode,
+              ),
+            ),
+          ],
+        ),
+        if (error != null) ...[
+          const SizedBox(height: 6),
+          Text(error!, style: TextStyle(fontSize: 11.5, color: c.statusError)),
+        ],
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            Expanded(
+              child: ShadButton.outline(
+                enabled: !busy,
+                onPressed: onBack,
+                child: Text(s.back),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: ShadButton(
+                enabled: !busy,
+                onPressed: onSubmit,
+                child: busy
+                    ? SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 1.5,
+                          color: c.dialogBg,
+                        ),
+                      )
+                    : Text(s.accountVerifySubmit),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+// 登录对话框：验证码 / 密码 两种方式 Tab 切换；密码登录命中新设备时
+// 转入验证码验证子界面；命中 registration_incomplete 时转去注册对话框重发验证码。
+// ─────────────────────────────────────────────
+
+enum _LoginTab { code, password }
+
+enum _LoginStep { form, deviceVerify }
+
+class _LoginDialogContent extends StatefulWidget {
+  const _LoginDialogContent();
+
+  @override
+  State<_LoginDialogContent> createState() => _LoginDialogContentState();
+}
+
+class _LoginDialogContentState extends State<_LoginDialogContent> {
+  _LoginTab _tab = _LoginTab.code;
+  _LoginStep _step = _LoginStep.form;
+
+  final _accountController = TextEditingController();
+  final _passwordController = TextEditingController();
+  final _codeController = TextEditingController();
+
+  bool _busy = false;
+  String? _error;
+  bool _codeSent = false;
+
+  Timer? _timer;
+  int _ttlRemaining = 0;
+  int _resendRemaining = 0;
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _accountController.dispose();
+    _passwordController.dispose();
+    _codeController.dispose();
+    super.dispose();
+  }
+
+  /// 账号输入：验证码 tab 语义为邮箱；密码 tab（及新设备验证）接受邮箱或纯数字 Origin ID。
+  String get _account => _accountController.text.trim();
+
+  /// 纯数字视为 Origin ID 登录，本地不做邮箱格式校验（交由服务端判定）。
+  bool get _isNumericAccount => RegExp(r'^\d+$').hasMatch(_account);
+
+  /// 引导重注册预填邮箱：账号栏是号码时号码不是邮箱，预填留空。
+  String get _emailPrefillForRegister => _isNumericAccount ? '' : _account;
+
+  void _startCountdown(int ttlSeconds) {
+    _timer?.cancel();
+    setState(() {
+      _ttlRemaining = ttlSeconds;
+      _resendRemaining = 60;
+    });
+    _timer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) {
+        t.cancel();
+        return;
+      }
+      setState(() {
+        if (_ttlRemaining > 0) _ttlRemaining--;
+        if (_resendRemaining > 0) _resendRemaining--;
+      });
+      if (_ttlRemaining <= 0 && _resendRemaining <= 0) t.cancel();
+    });
+  }
+
+  Future<void> _sendLoginCode() async {
+    if (_account.isEmpty) return;
+    final s = LocaleScope.of(context);
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final ttl = await CloudAuthService.instance.sendCode(_account);
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _codeSent = true;
+      });
+      _startCountdown(ttl);
+    } on CloudApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = _cloudErrorText(s, e);
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = e.toString();
+      });
+    }
+  }
+
+  Future<void> _submitCodeLogin() async {
+    final code = _codeController.text.trim();
+    if (_account.isEmpty || code.isEmpty) return;
+    final s = LocaleScope.of(context);
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await CloudAuthService.instance.verifyCode(
+        email: _account,
+        code: code,
+        // 邮箱不存在时会自动注册新用户，恒传默认昵称建议（服务端仅在该分支采用，
+        // 已存在用户忽略）；跟随当前界面语言，不固定中文。
+        nickname: NicknamePool.suggest(currentLocale.startsWith('zh')),
+      );
+      if (!mounted) return;
+      Navigator.of(context).pop();
+    } on CloudApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = _cloudErrorText(s, e);
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = e.toString();
+      });
+    }
+  }
+
+  /// 密码登录：既用于初次提交，也用于新设备验证步骤的"重新发送"
+  /// （服务端 60s 限频外会重新发码，限频内仍返回 deviceVerificationRequired）。
+  Future<void> _performLogin() async {
+    if (_account.isEmpty || _passwordController.text.isEmpty) return;
+    final s = LocaleScope.of(context);
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final result = await CloudAuthService.instance.login(
+        account: _account,
+        password: _passwordController.text,
+      );
+      if (!mounted) return;
+      switch (result) {
+        case LoginOk():
+          Navigator.of(context).pop();
+        case LoginDeviceVerificationRequired(:final ttlSeconds):
+          setState(() {
+            _busy = false;
+            _step = _LoginStep.deviceVerify;
+          });
+          _startCountdown(ttlSeconds);
+      }
+    } on CloudApiException catch (e) {
+      if (!mounted) return;
+      if (_step == _LoginStep.form && e.code == 'registration_incomplete') {
+        final email = _emailPrefillForRegister;
+        final password = _passwordController.text;
+        Navigator.of(context).pop();
+        _showRegisterDialog(context, initialEmail: email, initialPassword: password);
+        return;
+      }
+      setState(() {
+        _busy = false;
+        _error = _cloudErrorText(s, e);
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = e.toString();
+      });
+    }
+  }
+
+  Future<void> _submitDeviceVerify() async {
+    final code = _codeController.text.trim();
+    if (code.isEmpty) return;
+    final s = LocaleScope.of(context);
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await CloudAuthService.instance.loginVerify(
+        account: _account,
+        password: _passwordController.text,
+        code: code,
+      );
+      if (!mounted) return;
+      Navigator.of(context).pop();
+    } on CloudApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = _cloudErrorText(s, e);
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = e.toString();
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = LocaleScope.of(context);
+    final c = AppColors.of(context);
+
+    if (_step == _LoginStep.deviceVerify) {
+      return ShadDialog(
+        title: Text(s.accountDeviceVerifyTitle),
+        constraints: const BoxConstraints(maxWidth: 400),
+        child: _CodeVerifyForm(
+          // 号码登录命中新设备验证时，验证码仍发到账号绑定邮箱（服务端语义），
+          // 但客户端并不知道具体邮箱地址，退化为通用文案。
+          subtitle: _isNumericAccount
+              ? s.accountDeviceVerifySubtitleGeneric
+              : s.accountDeviceVerifySubtitle(_account),
+          codeController: _codeController,
+          ttlRemaining: _ttlRemaining,
+          resendRemaining: _resendRemaining,
+          busy: _busy,
+          error: _error,
+          onResend: _performLogin,
+          onSubmit: _submitDeviceVerify,
+          onBack: () => setState(() {
+            _step = _LoginStep.form;
+            _error = null;
+            _codeController.clear();
+          }),
+        ),
+      );
+    }
+
+    Widget tab(String label, bool selected, VoidCallback onTap) {
+      return Expanded(
+        child: GestureDetector(
+          onTap: onTap,
+          behavior: HitTestBehavior.opaque,
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 7),
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: selected ? c.surface1 : Colors.transparent,
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 12.5,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                color: selected ? c.textPrimary : c.textMuted,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    final useCode = _tab == _LoginTab.code;
+
+    return ShadDialog(
+      title: Text(s.accountLoginDialogTitle),
+      constraints: const BoxConstraints(maxWidth: 400),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.all(3),
+            decoration: BoxDecoration(
+              color: c.surface2,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(
+              children: [
+                tab(
+                  s.accountLoginTabCode,
+                  useCode,
+                  () => setState(() {
+                    _tab = _LoginTab.code;
+                    _error = null;
+                  }),
+                ),
+                tab(
+                  s.accountLoginTabPassword,
+                  !useCode,
+                  () => setState(() {
+                    _tab = _LoginTab.password;
+                    _error = null;
+                  }),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+          ShadInput(
+            controller: _accountController,
+            // 验证码 tab 只认邮箱；密码 tab 接受邮箱或纯数字 Origin ID。
+            placeholder: Text(
+              useCode ? s.accountEmailPlaceholder : s.accountLoginAccountPlaceholder,
+            ),
+            enabled: !_busy,
+            keyboardType: useCode ? TextInputType.emailAddress : TextInputType.text,
+          ),
+          const SizedBox(height: 10),
+          if (useCode) ...[
+            Row(
+              children: [
+                Expanded(
+                  child: ShadInput(
+                    controller: _codeController,
+                    placeholder: Text(s.accountCodePlaceholder),
+                    enabled: !_busy,
+                    keyboardType: TextInputType.number,
+                    onSubmitted: (_) => _submitCodeLogin(),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ShadButton.outline(
+                  size: ShadButtonSize.sm,
+                  enabled: !_busy && _account.isNotEmpty && _resendRemaining <= 0,
+                  onPressed: _sendLoginCode,
+                  child: Text(
+                    _resendRemaining > 0 ? '${_resendRemaining}s' : s.accountSendCode,
+                  ),
+                ),
+              ],
+            ),
+            if (_codeSent && _ttlRemaining > 0) ...[
+              const SizedBox(height: 6),
+              Text(
+                s.accountCodeExpireIn(_ttlRemaining),
+                style: TextStyle(fontSize: 11, color: c.textMuted),
+              ),
+            ],
+          ] else ...[
+            ShadInput(
+              controller: _passwordController,
+              placeholder: Text(s.accountPasswordPlaceholder),
+              obscureText: true,
+              enabled: !_busy,
+              onSubmitted: (_) => _performLogin(),
+            ),
+          ],
+          if (_error != null) ...[
+            const SizedBox(height: 8),
+            Text(_error!, style: TextStyle(fontSize: 11.5, color: c.statusError)),
+          ],
+          const SizedBox(height: 16),
+          ShadButton(
+            enabled: !_busy,
+            onPressed: useCode ? _submitCodeLogin : _performLogin,
+            child: _busy
+                ? SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 1.5,
+                      color: c.dialogBg,
+                    ),
+                  )
+                : Text(s.accountLogin),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                s.accountNoAccountYet,
+                style: TextStyle(fontSize: 11.5, color: c.textMuted),
+              ),
+              ShadButton.link(
+                onPressed: () {
+                  final email = _emailPrefillForRegister;
+                  Navigator.of(context).pop();
+                  _showRegisterDialog(context, initialEmail: email);
+                },
+                child: Text(s.accountRegister),
+              ),
+            ],
+          ),
+          Text(
+            s.accountLoginTerms,
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 10.5, color: c.textMuted),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+// 注册对话框：邮箱+密码+昵称(选填) → 验证码验证
+// ─────────────────────────────────────────────
+
+enum _RegisterStep { form, verify }
+
+class _RegisterDialogContent extends StatefulWidget {
+  final String? initialEmail;
+  final String? initialPassword;
+
+  const _RegisterDialogContent({this.initialEmail, this.initialPassword});
+
+  @override
+  State<_RegisterDialogContent> createState() => _RegisterDialogContentState();
+}
+
+class _RegisterDialogContentState extends State<_RegisterDialogContent> {
+  _RegisterStep _step = _RegisterStep.form;
+  late final _emailController = TextEditingController(text: widget.initialEmail ?? '');
+  late final _passwordController =
+      TextEditingController(text: widget.initialPassword ?? '');
+  final _nicknameController = TextEditingController();
+  final _codeController = TextEditingController();
+
+  bool _busy = false;
+  String? _error;
+  Timer? _timer;
+  int _ttlRemaining = 0;
+  int _resendRemaining = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    // 预填「盲盒兽名」默认昵称建议（跟随当前界面语言），情绪触点前置；
+    // 用户可改可清空，清空时提交前会静默重新生成（见 _register）。
+    _nicknameController.text = NicknamePool.suggest(currentLocale.startsWith('zh'));
+  }
+
+  /// 🎲 换一换：显式用户操作，重新随机生成一个「盲盒兽名」覆盖当前输入框
+  /// （不受“用户手改后不自动覆盖”限制——那条规则约束的是无操作触发的自动覆盖）。
+  void _rerollNickname() {
+    setState(() {
+      _nicknameController.text = NicknamePool.suggest(currentLocale.startsWith('zh'));
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _emailController.dispose();
+    _passwordController.dispose();
+    _nicknameController.dispose();
+    _codeController.dispose();
+    super.dispose();
+  }
+
+  void _startCountdown(int ttlSeconds) {
+    _timer?.cancel();
+    setState(() {
+      _ttlRemaining = ttlSeconds;
+      _resendRemaining = 60;
+    });
+    _timer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) {
+        t.cancel();
+        return;
+      }
+      setState(() {
+        if (_ttlRemaining > 0) _ttlRemaining--;
+        if (_resendRemaining > 0) _resendRemaining--;
+      });
+      if (_ttlRemaining <= 0 && _resendRemaining <= 0) t.cancel();
+    });
+  }
+
+  Future<void> _register() async {
+    final s = LocaleScope.of(context);
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final nicknameInput = _nicknameController.text.trim();
+      // 预填建议被用户清空：提交前静默重新生成一个（跟随当前界面语言），
+      // 保证账户不会落到服务端默认名，不打断用户的提交操作。
+      final nickname = nicknameInput.isNotEmpty
+          ? nicknameInput
+          : NicknamePool.suggest(currentLocale.startsWith('zh'));
+      final ttl = await CloudAuthService.instance.register(
+        email: _emailController.text.trim(),
+        password: _passwordController.text,
+        nickname: nickname,
+      );
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _step = _RegisterStep.verify;
+      });
+      _startCountdown(ttl);
+    } on CloudApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = _cloudErrorText(s, e);
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = e.toString();
+      });
+    }
+  }
+
+  Future<void> _submitForm() async {
+    final s = LocaleScope.of(context);
+    final email = _emailController.text.trim();
+    final password = _passwordController.text;
+    if (email.isEmpty || password.length < 8) {
+      setState(() => _error = s.accountErrorValidation);
+      return;
+    }
+    await _register();
+  }
+
+  Future<void> _submitVerify() async {
+    final code = _codeController.text.trim();
+    if (code.isEmpty) return;
+    final s = LocaleScope.of(context);
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await CloudAuthService.instance.registerVerify(
+        email: _emailController.text.trim(),
+        code: code,
+      );
+      if (!mounted) return;
+      Navigator.of(context).pop();
+    } on CloudApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = _cloudErrorText(s, e);
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = e.toString();
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = LocaleScope.of(context);
+    final c = AppColors.of(context);
+
+    if (_step == _RegisterStep.verify) {
+      return ShadDialog(
+        title: Text(s.accountRegisterVerifyTitle),
+        constraints: const BoxConstraints(maxWidth: 400),
+        child: _CodeVerifyForm(
+          subtitle: s.accountRegisterVerifySubtitle(_emailController.text.trim()),
+          codeController: _codeController,
+          ttlRemaining: _ttlRemaining,
+          resendRemaining: _resendRemaining,
+          busy: _busy,
+          error: _error,
+          onResend: _register,
+          onSubmit: _submitVerify,
+          onBack: () => setState(() {
+            _step = _RegisterStep.form;
+            _error = null;
+            _codeController.clear();
+          }),
+        ),
+      );
+    }
+
+    return ShadDialog(
+      title: Text(s.accountRegisterDialogTitle),
+      constraints: const BoxConstraints(maxWidth: 400),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: 8),
+          ShadInput(
+            controller: _emailController,
+            placeholder: Text(s.accountEmailPlaceholder),
+            enabled: !_busy,
+            keyboardType: TextInputType.emailAddress,
+          ),
+          const SizedBox(height: 10),
+          ShadInput(
+            controller: _passwordController,
+            placeholder: Text(s.accountPasswordPlaceholder),
+            obscureText: true,
+            enabled: !_busy,
+          ),
+          const SizedBox(height: 4),
+          Text(
+            s.accountPasswordHint,
+            style: TextStyle(fontSize: 10.5, color: c.textMuted),
+          ),
+          const SizedBox(height: 10),
+          ShadInput(
+            controller: _nicknameController,
+            placeholder: Text(s.accountNicknamePlaceholder),
+            enabled: !_busy,
+            onSubmitted: (_) => _submitForm(),
+            trailing: ShadTooltip(
+              builder: (_) => Text(s.accountNicknameReroll),
+              child: MouseRegion(
+                cursor: _busy ? MouseCursor.defer : SystemMouseCursors.click,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: _busy ? null : _rerollNickname,
+                  child: Icon(LucideIcons.dices, size: 15, color: c.textMuted),
+                ),
+              ),
+            ),
+          ),
+          if (_error != null) ...[
+            const SizedBox(height: 8),
+            Text(_error!, style: TextStyle(fontSize: 11.5, color: c.statusError)),
+          ],
+          const SizedBox(height: 16),
+          ShadButton(
+            enabled: !_busy,
+            onPressed: _submitForm,
+            child: _busy
+                ? SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 1.5,
+                      color: c.dialogBg,
+                    ),
+                  )
+                : Text(s.accountRegister),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                s.accountAlreadyHaveAccount,
+                style: TextStyle(fontSize: 11.5, color: c.textMuted),
+              ),
+              ShadButton.link(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                  _showLoginDialog(context);
+                },
+                child: Text(s.accountLogin),
+              ),
+            ],
+          ),
+          Text(
+            s.accountLoginTerms,
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 10.5, color: c.textMuted),
           ),
         ],
       ),

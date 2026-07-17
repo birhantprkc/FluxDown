@@ -19,6 +19,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter/services.dart';
 import 'package:rinf/rinf.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
+import 'flux_sonner.dart';
 import '../bindings/bindings.dart';
 import '../i18n/locale_provider.dart';
 
@@ -533,7 +534,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
       if (!mounted) return;
 
       if (imported.isEmpty) {
-        ShadSonner.of(
+        FluxSonner.of(
           context,
         ).show(ShadToast(title: Text(currentS.importTxtNoUrls)));
         return;
@@ -546,7 +547,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
       final merged = [...existing, ...toAdd];
       _urlController.text = merged.map(_entryToText).join('\n');
 
-      ShadSonner.of(
+      FluxSonner.of(
         context,
       ).show(ShadToast(title: Text(currentS.importTxtFound(imported.length))));
     } on FilePickerException catch (e) {
@@ -633,7 +634,7 @@ class _NewDownloadDialogContentState extends State<_NewDownloadDialogContent> {
       FilePickerFailReason.nativeDialogFailed => s.filePickerErrorNative,
       FilePickerFailReason.unknown => s.filePickerErrorGeneric,
     };
-    ShadSonner.of(context).show(ShadToast.destructive(title: Text(message)));
+    FluxSonner.of(context).show(ShadToast.destructive(title: Text(message)));
   }
 
   bool get _isBatch => _urlCount > 1;

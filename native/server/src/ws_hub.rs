@@ -270,6 +270,9 @@ impl EventSink for EngineEventSink {
             EngineEvent::QueuesChanged(queues) => WsServerMsg::QueuesChanged {
                 queues: queues.into_iter().map(Into::into).collect(),
             },
+            EngineEvent::TaskQueueChanged { task_id, queue_id } => {
+                WsServerMsg::TaskQueueChanged { task_id, queue_id }
+            }
             EngineEvent::PriorityTaskChanged {
                 priority_task_id,
                 auto_paused_count,

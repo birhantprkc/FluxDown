@@ -648,6 +648,13 @@ pub struct AllQueues {
     pub queues: Vec<QueueInfo>,
 }
 
+/// Single task moved to another queue (Rust → Dart)
+#[derive(Serialize, RustSignal)]
+pub struct TaskQueueChanged {
+    pub task_id: String,
+    pub queue_id: String,
+}
+
 /// 启动队列：置运行态并按队列内顺序恢复其中所有待下载任务 (Dart → Rust)
 #[derive(Deserialize, DartSignal)]
 pub struct StartQueue {

@@ -119,6 +119,7 @@ class DownloadController extends ChangeNotifier {
   StreamSubscription<RustSignalPack<AllQueues>>? _allQueuesSub;
   StreamSubscription<RustSignalPack<PriorityTaskChanged>>? _prioritySub;
   StreamSubscription<RustSignalPack<FileMissingChanged>>? _fileMissingSub;
+  StreamSubscription<RustSignalPack<TaskQueueChanged>>? _taskQueueChangedSub;
   StreamSubscription<RustSignalPack<PluginHookActivityEvent>>? _pluginHookSub;
   StreamSubscription<RustSignalPack<TaskSegmentsUpdated>>? _segmentsUpdatedSub;
 
@@ -147,6 +148,7 @@ class DownloadController extends ChangeNotifier {
     _allQueuesSub?.cancel();
     _prioritySub?.cancel();
     _fileMissingSub?.cancel();
+    _taskQueueChangedSub?.cancel();
     _pluginHookSub?.cancel();
     _segmentsUpdatedSub?.cancel();
     for (final timer in _pluginHookWatchdogs.values) {
@@ -1113,6 +1115,9 @@ class DownloadController extends ChangeNotifier {
     _fileMissingSub = FileMissingChanged.rustSignalStream.listen(
       _onFileMissingChanged,
     );
+    _taskQueueChangedSub = TaskQueueChanged.rustSignalStream.listen(
+      _onTaskQueueChanged,
+    );
     _pluginHookSub = PluginHookActivityEvent.rustSignalStream.listen(
       _onPluginHookActivity,
     );
@@ -1201,6 +1206,19 @@ class DownloadController extends ChangeNotifier {
       }
     }
     if (changed) _safeNotifyListeners();
+  }
+
+  /// 任务队列归属变化：move_task_to_queue 后引擎定向广播。只 copyWith 单个
+  /// 字段、不重建整表（与文件跟踪同理），沿用 _deletedTaskIds 守卫。
+  void _onTaskQueueChanged(RustSignalPack<TaskQueueChanged> pack) {
+    if (_disposed) return;
+    final m = pack.message;
+    if (_deletedTaskIds.contains(m.taskId)) return;
+    final idx = _tasks.indexWhere((t) => t.id == m.taskId);
+    if (idx >= 0 && _tasks[idx].queueId != m.queueId) {
+      _tasks[idx] = _tasks[idx].copyWith(queueId: m.queueId);
+      _safeNotifyListeners();
+    }
   }
 
   /// 插件钩子活动指示：`running=true` 加入 `(taskId, pluginId)` 并设/重置

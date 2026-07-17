@@ -3,6 +3,7 @@ import 'dart:ui';
 
 import 'package:flutter/widgets.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
+import '../widgets/flux_sonner.dart';
 
 import '../models/download_task.dart';
 import '../theme/app_colors.dart';
@@ -68,7 +69,7 @@ IconData mobileCategoryIcon(FileCategory category) {
 
 /// 轻量 Toast（复用 ShadSonner）
 void showMobileToast(BuildContext context, String message) {
-  ShadSonner.of(context).show(
+  FluxSonner.of(context).show(
     ShadToast(
       alignment: Alignment.topCenter,
       title: Text(message, maxLines: 2, overflow: TextOverflow.ellipsis),

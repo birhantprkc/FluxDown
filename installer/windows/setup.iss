@@ -89,6 +89,14 @@ Root: HKCU; Subkey: "Software\Classes\FluxDown.TorrentFile"; ValueType: string; 
 Root: HKCU; Subkey: "Software\Classes\FluxDown.TorrentFile\DefaultIcon"; ValueType: string; ValueData: """{app}\{#MyAppExeName}"",0"; Flags: uninsdeletekey; Tasks: torrentassoc
 Root: HKCU; Subkey: "Software\Classes\FluxDown.TorrentFile\shell\open\command"; ValueType: string; ValueData: """{app}\{#MyAppExeName}"" ""%1"""; Flags: uninsdeletekey; Tasks: torrentassoc
 
+[UninstallDelete]
+; 删除 KvStore 落盘文件（含匿名统计设备 ID / 首装标记 / 窗口状态等本地偏好）。
+; 语义：卸载后重装 = 生成新设备 ID = 统计为新安装；升级/覆盖安装不触发本节，ID 保留。
+; 路径 = shared_preferences_windows：%APPDATA%\<CompanyName>\<ProductName>（Runner.rc 均为 FluxDown）。
+Type: files; Name: "{userappdata}\FluxDown\FluxDown\shared_preferences.json"
+Type: dirifempty; Name: "{userappdata}\FluxDown\FluxDown"
+Type: dirifempty; Name: "{userappdata}\FluxDown"
+
 [Code]
 function DesktopIconAlreadyExists: Boolean;
 begin

@@ -101,6 +101,53 @@ svg { display: block; }
 .icon-btn.sm { width: 26px; height: 26px; }
 .icon-btn.sm svg { width: 14px; height: 14px; }
 .icon-btn.active { background: var(--accent-weak); color: var(--accent); }
+.icon-btn.accent { color: var(--accent); }
+.icon-btn.accent:hover { background: var(--accent-weak); color: var(--accent); }
+.icon-btn.danger { color: var(--danger); }
+.icon-btn.danger:hover { background: rgba(239,68,68,.1); color: var(--danger); }
+
+/* 文字链接按钮（跨表单切换 / 重新发送验证码等）：unlayered，显式声明 color 才能
+   压过下方 `button{color:inherit}` 的全局重置（Tailwind 的 text-accent 等工具类
+   是 layered，不管特异度多高都赢不了 unlayered 声明，见设置页云账户组件说明）。 */
+.link-btn { color: var(--accent); font-weight: 600; }
+.link-btn:hover { text-decoration: underline; }
+.link-btn:disabled { color: var(--text3); cursor: not-allowed; text-decoration: none; }
+
+/* Origin ID 徽标（资料卡 meta 行）：胶囊 pill，同 .link-btn 注释——unlayered，显式声明
+   背景/颜色才压得过下方全局 button 重置。disabled 态（pending 用户，originId 为空）
+   降级为中性灰底，不可点。 */
+.origin-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2.5px 9px; border-radius: 999px;
+  background: var(--accent-weak); color: var(--accent);
+  font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums;
+  transition: filter .15s;
+}
+.origin-badge svg { width: 11px; height: 11px; }
+.origin-badge:hover:not(:disabled) { filter: brightness(1.08); }
+.origin-badge:disabled { background: var(--surface2); color: var(--text3); cursor: default; }
+
+/* 等宽分段控件（验证码/密码登录 Tab 等）：对齐 .day-chip 的实心 pill 语言。 */
+.seg-tabs { display: flex; gap: 2px; padding: 3px; background: var(--surface2); border-radius: 9px; }
+.seg-tab { flex: 1; padding: 7px 0; border-radius: 7px; font-size: 12.5px; font-weight: 500; color: var(--text3); text-align: center; transition: all .15s; }
+.seg-tab:hover { color: var(--text2); }
+.seg-tab.active { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(15,18,25,.08); }
+
+/* 云账户卡片（设置页内嵌登录/注册，非全屏 #screen-login）：窄卡 + 图标标题区，
+   呼应 .login-card 的层次感，但克制到能嵌进设置正文列宽内。 */
+.cloud-card {
+  width: 100%; max-width: 400px; margin: 0 auto;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 14px; padding: 28px 26px 24px;
+}
+.cloud-card-head { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-bottom: 20px; text-align: center; }
+.cloud-card-icon {
+  width: 44px; height: 44px; border-radius: 12px; flex-shrink: 0;
+  display: grid; place-items: center;
+  background: var(--accent-weak); color: var(--accent);
+}
+.cloud-card-head h3 { font-size: 15px; font-weight: 600; }
+.cloud-card-head p { font-size: 11.5px; color: var(--text3); line-height: 1.5; }
 
 .field-label {
   display: block; font-size: 12px; font-weight: 500;
@@ -649,6 +696,35 @@ svg { display: block; }
 .set-row .text-input.short { width: 120px; }
 .set-row .select { width: 220px; flex-shrink: 0; }
 .set-row .btn { flex-shrink: 0; }
+
+/* FluxCloud 设备列表可收纳：内联最多 5 行，超出「查看全部」展开为限高滚动容器 +
+   顶部过滤输入框（几十台设备也不会撑爆设置页）。 */
+.device-filter { padding: 10px 16px; border-bottom: 1px solid var(--border); }
+.device-scroll { max-height: 360px; overflow-y: auto; }
+.device-scroll::-webkit-scrollbar { width: 5px; }
+.device-scroll::-webkit-scrollbar-thumb { background: var(--track); border-radius: 4px; }
+.device-list-empty { padding: 16px; text-align: center; font-size: 12px; color: var(--text3); }
+.device-list-toggle {
+  display: flex; align-items: center; justify-content: center; gap: 4px;
+  width: 100%; padding: 10px 16px; border-top: 1px solid var(--border);
+  font-size: 12px; font-weight: 500; color: var(--accent);
+}
+.device-list-toggle:hover { background: var(--hover); }
+
+/* 设备行详情：点击行主体展开/收起，字段用 .d-field 语言网格排布（对标 Telegram/
+   Google 设备管理的信息量：平台、App 版本、最近登录 IP、首次信任、最近活跃、设备 ID）。 */
+.device-item { border-bottom: 1px solid var(--border); }
+.device-item:last-child { border-bottom: none; }
+.device-item .set-row { border-bottom: none; }
+.device-row-main { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; cursor: pointer; }
+.device-chevron { width: 13px; height: 13px; color: var(--text3); flex-shrink: 0; transition: transform .15s; }
+.device-chevron.open { transform: rotate(90deg); }
+.device-detail {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px 16px;
+  padding: 2px 16px 14px 55px;
+}
+.device-detail .d-field { margin-bottom: 0; }
+.device-detail .d-field.mono > p { font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; color: var(--text3); }
 
 .token-box {
   display: flex; align-items: center; gap: 8px;

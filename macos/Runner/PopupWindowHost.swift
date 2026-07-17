@@ -68,6 +68,8 @@ final class PopupWindowHost: NSObject, NSWindowDelegate {
     private var pendingPayload: String?
     /// reveal 兜底定时器（show 时武装；reveal 到达 / 隐藏时作废）。
     private var revealFallback: DispatchWorkItem?
+    /// Backing-change observer for the persistent popup window (#100).
+    private var backingObserver: NSObjectProtocol?
 
     // -------------------------------------------------------------------
     // 主引擎侧接线
@@ -153,6 +155,25 @@ final class PopupWindowHost: NSObject, NSWindowDelegate {
         guard let win = window else { return }
         win.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        syncPopupScale()
+    }
+
+    /// #100: the first frame renders while the window is ordered out, latching
+    /// the FlutterView layer at the wrong contentsScale, and AppKit does not
+    /// reliably re-push backing metrics when the window lands on a HiDPI screen.
+    /// Runs on EVERY present and on backing changes; the metrics re-push is
+    /// unconditional because the engine may hold a stale pixel ratio even when
+    /// the layer scale already looks right.
+    private func syncPopupScale() {
+        guard let win = window, let view = popupController?.view else { return }
+        // Ordered-out windows report screen == nil; fall back like repositionCentered.
+        let scale = win.screen?.backingScaleFactor
+            ?? NSScreen.screens.first?.backingScaleFactor
+            ?? win.backingScaleFactor
+        if let layer = view.layer, layer.contentsScale != scale {
+            layer.contentsScale = scale
+        }
+        view.viewDidChangeBackingProperties()
     }
 
     /// 统一隐藏入口：隐藏窗口并作废 pending 的 reveal 兜底。
@@ -237,6 +258,15 @@ final class PopupWindowHost: NSObject, NSWindowDelegate {
         childChannel = channel
 
         window = win
+
+        // queue nil = synchronous on the posting (main) thread.
+        backingObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didChangeBackingPropertiesNotification,
+            object: win,
+            queue: nil
+        ) { [weak self] _ in
+            self?.syncPopupScale()
+        }
         return win
     }
 

@@ -754,10 +754,10 @@ class _QueueAddButtonState extends State<_QueueAddButton> {
       onExit: (_) => setState(() => _isHovered = false),
       child: GestureDetector(
         onTap: widget.onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 120),
+        child: Container(
           width: 16,
           height: 16,
+          alignment: Alignment.center,
           decoration: BoxDecoration(
             color: _isHovered ? c.hoverBg : Colors.transparent,
             borderRadius: m.brSm,
@@ -984,7 +984,7 @@ class _QueueActionIconState extends State<_QueueActionIcon> {
           decoration: BoxDecoration(
             color: _isHovered
                 ? m.soft(color)
-                : Colors.transparent,
+                : m.soft(color).withValues(alpha: 0),
             borderRadius: m.brSm,
           ),
           child: Icon(widget.icon, size: 11, color: color),
@@ -1464,7 +1464,7 @@ class _UpdateActionButtonState extends State<_UpdateActionButton> {
             decoration: BoxDecoration(
               color: _isHovered
                   ? m.active(widget.color)
-                  : Colors.transparent,
+                  : m.active(widget.color).withValues(alpha: 0),
               borderRadius: m.brSm,
             ),
             child: Icon(widget.icon, size: 13, color: widget.color),

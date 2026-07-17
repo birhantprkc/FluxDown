@@ -67,6 +67,10 @@ pub enum EngineEvent {
 
     /// 全部命名队列 — 启动时与任意队列变化后发送。对应 `hub::signals::AllQueues`。
     QueuesChanged(Vec<QueueInfo>),
+    /// 单任务队列归属变化 —— `move_task_to_queue` 成功后发送，客户端据此
+    /// 原位更新该任务的 `queue_id`，避免重发整表任务快照导致 UI 闪烁。
+    /// hub → `TaskQueueChanged` 信号；server → WS `taskQueueChanged`。
+    TaskQueueChanged { task_id: String, queue_id: String },
 
     /// Boost 模式的优先下载任务发生变化。对应 `hub::signals::PriorityTaskChanged`。
     PriorityTaskChanged {

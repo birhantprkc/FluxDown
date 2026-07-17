@@ -24,6 +24,7 @@ import 'package:flutter/material.dart'
 import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter/widgets.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
+import 'flux_sonner.dart';
 
 import '../i18n/locale_provider.dart';
 import '../models/download_queue.dart';
@@ -430,7 +431,7 @@ class _QuickDownloadFormState extends State<QuickDownloadForm> {
       FilePickerFailReason.nativeDialogFailed => s.filePickerErrorNative,
       FilePickerFailReason.unknown => s.filePickerErrorGeneric,
     };
-    ShadSonner.of(context).show(ShadToast.destructive(title: Text(message)));
+    FluxSonner.of(context).show(ShadToast.destructive(title: Text(message)));
   }
 
   bool get _isBatch => _urlCount > 1;

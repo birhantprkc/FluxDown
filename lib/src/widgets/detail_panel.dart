@@ -4,6 +4,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
+import 'flux_sonner.dart';
 import '../bindings/bindings.dart';
 import '../models/download_controller.dart';
 import '../models/download_task.dart';
@@ -1129,7 +1130,7 @@ class _CopyValueButtonState extends State<_CopyValueButton> {
     await Clipboard.setData(ClipboardData(text: widget.value));
     if (!mounted) return;
     setState(() => _copied = true);
-    ShadSonner.of(context).show(
+    FluxSonner.of(context).show(
       ShadToast(
         title: Text(widget.toastText ?? currentS.urlCopied),
         duration: const Duration(seconds: 2),

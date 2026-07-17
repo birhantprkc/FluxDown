@@ -347,7 +347,7 @@ class _QueueManagerDialogState extends State<QueueManagerDialog> {
                   vertical: 6,
                 ),
                 decoration: BoxDecoration(
-                  color: _tab == i ? c.accentBg : Colors.transparent,
+                  color: _tab == i ? c.accentBg : c.accentBg.withValues(alpha: 0),
                   borderRadius: m.brMd,
                 ),
                 child: Text(
@@ -995,7 +995,7 @@ class _OrderIconButtonState extends State<_OrderIconButton> {
             decoration: BoxDecoration(
               color: _hovered && widget.enabled
                   ? c.hoverBg
-                  : Colors.transparent,
+                  : c.hoverBg.withValues(alpha: 0),
               borderRadius: m.brSm,
             ),
             child: Icon(
@@ -1058,7 +1058,7 @@ class _MoveTargetRowState extends State<_MoveTargetRow> {
                 ? c.accentBg
                 : _hovered
                 ? c.hoverBg
-                : Colors.transparent,
+                : c.hoverBg.withValues(alpha: 0),
             borderRadius: m.brMd,
           ),
           child: Row(

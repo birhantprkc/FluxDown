@@ -37,6 +37,19 @@ ShadButtonSizesTheme _buttonSizes(FluxThemeTokens tokens) {
 /// 缓存
 FluxThemeTokens? _cachedTokens;
 ShadThemeData? _cachedThemeData;
+/// 对话框进出场动效：120ms 淡入 + 轻微缩放（默认 300ms 偏慢，观感拖沓）。
+const _dialogAnimateIn = <AnimateEffect<dynamic>>[
+  FadeEffect(duration: Duration(milliseconds: 120)),
+  ScaleEffect(
+    begin: Offset(.97, .97),
+    end: Offset(1, 1),
+    duration: Duration(milliseconds: 120),
+    curve: Curves.easeOutCubic,
+  ),
+];
+const _dialogAnimateOut = <AnimateEffect<dynamic>>[
+  FadeEffect(begin: 1, end: 0, duration: Duration(milliseconds: 90)),
+];
 
 /// 从 [FluxThemeTokens] 构建 [ShadThemeData]。
 ///
@@ -69,6 +82,8 @@ ShadThemeData buildThemeFromTokens(FluxThemeTokens tokens) {
       ),
       inputTheme: ShadInputTheme(cursorColor: tokens.accent),
       primaryDialogTheme: ShadDialogTheme(
+        animateIn: _dialogAnimateIn,
+        animateOut: _dialogAnimateOut,
         backgroundColor: tokens.dialogBackground,
         border: Border.all(color: tokens.border, width: 1),
         shadows: [
@@ -80,6 +95,8 @@ ShadThemeData buildThemeFromTokens(FluxThemeTokens tokens) {
         ],
       ),
       alertDialogTheme: ShadDialogTheme(
+        animateIn: _dialogAnimateIn,
+        animateOut: _dialogAnimateOut,
         backgroundColor: tokens.dialogBackground,
         border: Border.all(color: tokens.border, width: 1),
         shadows: [
@@ -106,6 +123,14 @@ ShadThemeData buildThemeFromTokens(FluxThemeTokens tokens) {
       outlineButtonTheme: ShadButtonTheme(
         hoverBackgroundColor: tokens.elementHover,
       ),
+      primaryDialogTheme: const ShadDialogTheme(
+        animateIn: _dialogAnimateIn,
+        animateOut: _dialogAnimateOut,
+      ),
+      alertDialogTheme: const ShadDialogTheme(
+        animateIn: _dialogAnimateIn,
+        animateOut: _dialogAnimateOut,
+      ),
       primaryToastTheme: _primaryToastTheme(tokens),
       destructiveToastTheme: _destructiveToastTheme(tokens, colorScheme),
     );
@@ -114,9 +139,12 @@ ShadThemeData buildThemeFromTokens(FluxThemeTokens tokens) {
   return _cachedThemeData!;
 }
 
-/// Toast 通用布局（紧凑卡片，统一宽度，右下角堆叠美观）
-const _toastPadding = EdgeInsets.symmetric(horizontal: 16, vertical: 12);
-const _toastConstraints = BoxConstraints(minWidth: 320, maxWidth: 380);
+/// Toast 通用布局：内容自适应宽度、仅限最大宽。
+/// 不设 minWidth——ShadToast 内部 Row 会铺满约束，短文案会变成大片空白的白板
+/// （视觉上像"边距被涂了背景色"）；过宽还会被 ShadSonner 的 ClipRect 裁掉右侧圆角。
+/// 尾部 34 = 关闭按钮预留（8 边距 + 20 图标 + 6 间隙），否则悬浮 × 会压住文字。
+const _toastPadding = EdgeInsetsDirectional.fromSTEB(16, 12, 34, 12);
+const _toastConstraints = BoxConstraints(maxWidth: 380);
 
 List<BoxShadow> _toastShadows(FluxThemeTokens tokens) => [
   BoxShadow(
@@ -140,6 +168,10 @@ ShadToastTheme _primaryToastTheme(FluxThemeTokens tokens) {
     shadows: _toastShadows(tokens),
     padding: _toastPadding,
     constraints: _toastConstraints,
+    // Row 收拢到内容宽度，卡片随文案长度自适应。
+    // 关闭按钮定位带拉伸满高（配合 FluxSonner 注入的 Center 包裹按钮），任意高度垂直居中。
+    closeIconPosition: const ShadPosition(top: 0, bottom: 0, right: 8),
+    mainAxisSize: MainAxisSize.min,
     titleStyle: TextStyle(
       fontFamily: _fontFamily,
       fontSize: 13,
@@ -169,6 +201,8 @@ ShadToastTheme _destructiveToastTheme(
     shadows: _toastShadows(tokens),
     padding: _toastPadding,
     constraints: _toastConstraints,
+    mainAxisSize: MainAxisSize.min,
+    closeIconPosition: const ShadPosition(top: 0, bottom: 0, right: 8),
     titleStyle: TextStyle(
       fontFamily: _fontFamily,
       fontSize: 13,

@@ -1285,6 +1285,8 @@ impl Db {
             ("close_to_tray", "true"),
             ("auto_startup", "false"),
             ("auto_check_update", "true"),
+            // 匿名使用统计（每日活跃事件）；首装事件由 Dart 侧一次性上报，不受此开关控制。
+            ("analytics_enabled", "true"),
             ("bt_enable_dht", "true"),
             ("bt_enable_upnp", "true"),
             ("bt_port_start", "6881"),

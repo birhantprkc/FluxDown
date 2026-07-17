@@ -8,6 +8,7 @@
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
+import 'flux_sonner.dart';
 
 import '../bindings/bindings.dart';
 import '../i18n/locale_provider.dart';
@@ -319,7 +320,7 @@ class _SettingFieldRow extends StatelessWidget {
   Future<void> _copyHelperScript(BuildContext context) async {
     await Clipboard.setData(ClipboardData(text: field.helperScript));
     if (!context.mounted) return;
-    ShadSonner.of(context).show(
+    FluxSonner.of(context).show(
       ShadToast(title: Text(currentS.pluginHelperScriptCopied)),
     );
   }

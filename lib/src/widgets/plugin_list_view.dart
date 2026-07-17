@@ -6,6 +6,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/widgets.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
+import 'flux_sonner.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../bindings/bindings.dart';
@@ -86,7 +87,7 @@ class _PluginListViewState extends State<PluginListView> {
         _ => null,
       };
       if (message == null) return;
-      ShadSonner.of(context).show(
+      FluxSonner.of(context).show(
         ShadToast(title: Text(message), duration: const Duration(seconds: 2)),
       );
       // 安装成功但声明权限所需的基础组件缺失 → 弹依赖提醒（提醒式非阻断，
@@ -103,7 +104,7 @@ class _PluginListViewState extends State<PluginListView> {
       'set_enabled' => s.pluginOpEnabledFailed(result.message),
       _ => s.pluginOpGenericFailed(result.message),
     };
-    ShadSonner.of(context).show(ShadToast.destructive(title: Text(message)));
+    FluxSonner.of(context).show(ShadToast.destructive(title: Text(message)));
   }
 
   Future<void> _pickZip() async {
@@ -121,7 +122,7 @@ class _PluginListViewState extends State<PluginListView> {
       }
     } on FilePickerException catch (e) {
       if (mounted) {
-        ShadSonner.of(context).show(
+        FluxSonner.of(context).show(
           ShadToast.destructive(
             title: Text(currentS.pluginInstallZipFailed(e.toString())),
           ),

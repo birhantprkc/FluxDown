@@ -176,6 +176,8 @@ pub enum WsServerMsg {
     },
     /// 命名队列列表变化。
     QueuesChanged { queues: Vec<QueueDto> },
+    /// 单任务队列归属变化（move_task_to_queue 定向广播）。
+    TaskQueueChanged { task_id: String, queue_id: String },
     /// 队列内位置批量更新。
     QueuePositionsChanged { positions: Vec<QueuePositionDto> },
     /// Boost 优先任务变化。
@@ -764,6 +766,18 @@ mod tests {
         assert_eq!(v["queues"][0]["queueId"], "q1");
         assert_eq!(v["queues"][0]["speedLimitKbps"], 512);
         assert_eq!(v["queues"][0]["defaultSaveDir"], "/downloads/work");
+    }
+
+    #[test]
+    fn ws_server_msg_task_queue_changed_variant() {
+        let msg = WsServerMsg::TaskQueueChanged {
+            task_id: "t1".into(),
+            queue_id: "later".into(),
+        };
+        let v: serde_json::Value = serde_json::to_value(&msg).unwrap();
+        assert_eq!(v["type"], "taskQueueChanged");
+        assert_eq!(v["taskId"], "t1");
+        assert_eq!(v["queueId"], "later");
     }
 
     #[test]
