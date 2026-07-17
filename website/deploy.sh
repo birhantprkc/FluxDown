@@ -18,7 +18,7 @@ cd "${SCRIPT_DIR}"
 
 # 仓库根目录（website 的上一级）
 REPO_DIR="$(git -C "${SCRIPT_DIR}" rev-parse --show-toplevel)"
-BRANCH="${DEPLOY_BRANCH:-main}"
+BRANCH="${DEPLOY_BRANCH:-develop}"
 
 # ── Docker 调用自适应 sudo ────────────────────
 # 当前用户若不在 docker 组（无法免密调用 docker），自动回退到 sudo。
