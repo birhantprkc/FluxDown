@@ -18,6 +18,7 @@ void main() {
     proxyUrl: '',
     queueId: '',
     checksum: '',
+    ignoreTlsErrors: false,
     fileMissing: false,
     completedAt: '',
     segments: 0,

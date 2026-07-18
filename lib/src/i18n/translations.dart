@@ -774,6 +774,8 @@ class S {
   String get taskProxyPlaceholder => _r('taskProxyPlaceholder');
   String get taskProxyAdvanced => _r('taskProxyAdvanced');
   String get taskProxyFormatHint => _r('taskProxyFormatHint');
+  String get taskIgnoreTlsErrors => _r('taskIgnoreTlsErrors');
+  String get taskIgnoreTlsErrorsDesc => _r('taskIgnoreTlsErrorsDesc');
 
   // 任务 Cookie（新建下载对话框高级选项）
   String get taskCookie => _r('taskCookie');

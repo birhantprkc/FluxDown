@@ -155,6 +155,7 @@ pub struct DownloadRequest {
 ///     proxy_url: String::new(),
 ///     queue_id: String::new(),
 ///     checksum: String::new(),
+///     ignore_tls_errors: false,
 ///     file_missing: false,
 ///     completed_at: String::new(),
 ///     segments: 0,
@@ -186,6 +187,9 @@ pub struct TaskDto {
     pub queue_id: String,
     /// Checksum spec，格式 `algo=hexhash`（空 = 跳过校验）。
     pub checksum: String,
+    /// 是否显式忽略 HTTPS 证书错误。默认 false（严格验证）。
+    #[serde(default)]
+    pub ignore_tls_errors: bool,
     /// 文件跟踪：completed 任务的目标文件是否已丢失（被删除/移动）。默认 false。
     #[serde(default)]
     pub file_missing: bool,
@@ -213,6 +217,7 @@ impl From<fluxdown_engine::model::TaskInfo> for TaskDto {
             proxy_url: t.proxy_url,
             queue_id: t.queue_id,
             checksum: t.checksum,
+            ignore_tls_errors: t.ignore_tls_errors,
             file_missing: t.file_missing,
             completed_at: t.completed_at,
             referrer: t.referrer,
@@ -341,6 +346,9 @@ pub struct CreateTaskRequest {
     /// Checksum spec，格式 `algo=hexhash`（空 = 跳过校验）。
     #[serde(default)]
     pub checksum: String,
+    /// 忽略 HTTPS 证书错误。缺省 false（严格验证）。
+    #[serde(default)]
+    pub ignore_tls_errors: bool,
     /// 附加 HTTP 请求头。
     #[serde(default)]
     pub headers: Option<HashMap<String, String>>,
@@ -758,6 +766,7 @@ mod tests {
             proxy_url: String::new(),
             queue_id: String::new(),
             checksum: String::new(),
+            ignore_tls_errors: false,
             file_missing: false,
             completed_at: String::new(),
             referrer: String::new(),
@@ -775,6 +784,7 @@ mod tests {
         assert_eq!(v["proxyUrl"], "");
         assert_eq!(v["queueId"], "");
         assert_eq!(v["checksum"], "");
+        assert_eq!(v["ignoreTlsErrors"], false);
         // 蛇形字段名不应残留（防止漏掉 rename_all）。
         assert!(v.get("task_id").is_none());
         assert!(v.get("file_name").is_none());

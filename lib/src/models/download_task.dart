@@ -254,6 +254,8 @@ class DownloadTask {
   /// 展示与「创建后改线程数」编辑。与运行时实际分片数 [segments] 不同。
   final int configuredSegments;
 
+  /// 当前任务是否显式接受无效 HTTPS 证书。
+  final bool ignoreTlsErrors;
   /// Source page URL captured by the browser extension (empty = none).
   final String referrer;
 
@@ -276,6 +278,7 @@ class DownloadTask {
     this.fileNameConfirmed = false,
     this.fileMissing = false,
     this.configuredSegments = 0,
+    this.ignoreTlsErrors = false,
     this.referrer = '',
     this.completedAt,
     DateTime? createdAt,
@@ -302,6 +305,7 @@ class DownloadTask {
       fileNameConfirmed: hasName,
       fileMissing: info.fileMissing,
       configuredSegments: info.segments,
+      ignoreTlsErrors: info.ignoreTlsErrors,
       referrer: info.referrer,
       createdAt: seconds > 0
           ? DateTime.fromMillisecondsSinceEpoch(seconds * 1000)
@@ -332,6 +336,7 @@ class DownloadTask {
     bool? fileNameConfirmed,
     bool? fileMissing,
     int? configuredSegments,
+    bool? ignoreTlsErrors,
     String? referrer,
     DateTime? createdAt,
     DateTime? completedAt,
@@ -355,6 +360,7 @@ class DownloadTask {
       fileNameConfirmed: fileNameConfirmed ?? this.fileNameConfirmed,
       fileMissing: fileMissing ?? this.fileMissing,
       configuredSegments: configuredSegments ?? this.configuredSegments,
+      ignoreTlsErrors: ignoreTlsErrors ?? this.ignoreTlsErrors,
       referrer: referrer ?? this.referrer,
       createdAt: createdAt ?? this.createdAt,
       completedAt: clearCompletedAt ? null : (completedAt ?? this.completedAt),

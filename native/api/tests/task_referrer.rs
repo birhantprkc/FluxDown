@@ -18,6 +18,7 @@ fn task_dto_json_carries_referrer() {
         proxy_url: String::new(),
         queue_id: String::new(),
         checksum: String::new(),
+        ignore_tls_errors: false,
         file_missing: false,
         completed_at: String::new(),
         segments: 0,

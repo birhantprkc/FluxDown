@@ -31,6 +31,9 @@ pub struct CreateTask {
     /// Empty = skip verification.
     #[serde(default)]
     pub checksum: String,
+    /// Ignore HTTPS certificate errors for this task. Secure default: false.
+    #[serde(default)]
+    pub ignore_tls_errors: bool,
     /// Custom HTTP request headers (key/value) for this task.
     /// Cookie is handled separately via `cookies`; do not mix the two.
     /// Empty = no extra headers.
@@ -83,6 +86,9 @@ pub struct BatchCreateTask {
     /// Named queue ID to assign all tasks to. Empty = default queue.
     #[serde(default)]
     pub queue_id: String,
+    /// Ignore HTTPS certificate errors for every task in this batch.
+    #[serde(default)]
+    pub ignore_tls_errors: bool,
     /// 浏览器 cookies，用于需要认证的批量下载。
     /// 批次内所有任务共享。
     #[serde(default)]
@@ -243,6 +249,9 @@ pub struct ConfirmExternalDownload {
     /// Named queue ID. Empty = default queue.
     #[serde(default)]
     pub queue_id: String,
+    /// Ignore HTTPS certificate errors for this confirmed task.
+    #[serde(default)]
+    pub ignore_tls_errors: bool,
     /// 音频轨 URL（通用「视频轨+音频轨」离散下载对语义）。
     /// 空 = 普通单 URL 下载；非空 = url 是视频轨，本字段是音频轨，
     /// create_task 尾参按此非空/空转换为 Some/None。
@@ -303,6 +312,9 @@ pub struct TaskInfo {
     /// Checksum spec for integrity verification (empty = skip).
     #[serde(default)]
     pub checksum: String,
+    /// Whether this task explicitly accepts invalid HTTPS certificates.
+    #[serde(default)]
+    pub ignore_tls_errors: bool,
     /// 文件跟踪：completed 任务的目标文件是否已丢失（被删除/移动）。默认 false。
     #[serde(default)]
     pub file_missing: bool,
